@@ -1,3 +1,7 @@
+# Project specific data
+*.mid
+build/
+
 # Logs
 logs
 *.log
