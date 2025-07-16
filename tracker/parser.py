@@ -1,9 +1,7 @@
 import mido
 import json
 from collections import defaultdict
-
-FRAME_RATE_HZ = 60
-FRAME_MS = 1000 / FRAME_RATE_HZ
+from constants import FRAME_MS
 
 def parse_midi_to_frames(midi_path):
     mid = mido.MidiFile(midi_path)
