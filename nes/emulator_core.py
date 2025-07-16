@@ -1,6 +1,7 @@
 from collections import defaultdict
-from nes_pitch_table import PitchProcessor
+from .pitch_table import PitchProcessor
 from collections import defaultdict
+from .envelope_processor import EnvelopeProcessor
 
 
 class NESEmulatorCore:
@@ -94,83 +95,3 @@ class NESEmulatorCore:
 
         return processed
 
-
-class EnvelopeProcessor:
-    """
-    Handles ADSR envelope processing for NES audio channels.
-    """
-    def __init__(self):
-        self.envelope_definitions = {
-            # Format: (attack, decay, sustain, release)
-            "default": (0, 0, 15, 0),  # Default: no attack/decay, full sustain, no release
-            "piano": (1, 3, 10, 2),    # Piano-like: quick attack, some decay, medium sustain
-            "pad": (5, 10, 8, 5),      # Pad-like: slow attack, long decay, medium sustain
-            "pluck": (0, 8, 0, 0),     # Pluck: no attack, quick decay, no sustain
-            "percussion": (0, 15, 0, 0) # Percussion: no attack, immediate decay
-        }
-        
-    def get_envelope_value(self, envelope_type, frame_offset, note_duration):
-        """
-        Calculate envelope value for a specific frame offset within a note.
-        
-        Args:
-            envelope_type: String identifier for envelope type
-            frame_offset: Number of frames since note start
-            note_duration: Total duration of note in frames
-            
-        Returns:
-            Volume value (0-15) for the current frame
-        """
-        if envelope_type not in self.envelope_definitions:
-            envelope_type = "default"
-            
-        attack, decay, sustain, release = self.envelope_definitions[envelope_type]
-        
-        # Calculate envelope phases in frames
-        attack_end = attack
-        decay_end = attack_end + decay
-        sustain_end = note_duration - release
-        
-        # Determine current envelope phase
-        if frame_offset < attack_end and attack > 0:
-            # Attack phase: volume ramps up
-            return int((frame_offset / attack) * 15)
-        elif frame_offset < decay_end and decay > 0:
-            # Decay phase: volume ramps down to sustain level
-            decay_progress = (frame_offset - attack_end) / decay
-            return int(15 - ((15 - sustain) * decay_progress))
-        elif frame_offset < sustain_end:
-            # Sustain phase: volume stays constant
-            return sustain
-        else:
-            # Release phase: volume ramps down to zero
-            if release == 0 or sustain_end >= note_duration:
-                return 0
-            release_progress = (frame_offset - sustain_end) / release
-            return int(sustain * (1 - release_progress))
-
-    def get_envelope_control_byte(self, envelope_type, frame_offset, note_duration, duty_cycle=2):
-        """
-        Generate NES control byte for pulse channels with envelope and duty cycle.
-        
-        Args:
-            envelope_type: String identifier for envelope type
-            frame_offset: Number of frames since note start
-            note_duration: Total duration of note in frames
-            duty_cycle: Duty cycle value (0-3)
-            
-        Returns:
-            Control byte for NES pulse channel
-        """
-        volume = self.get_envelope_value(envelope_type, frame_offset, note_duration)
-        
-        # Duty cycle bits (bits 6-7)
-        duty_bits = (duty_cycle & 0x03) << 6
-        
-        # Envelope bits
-        # Bit 4: Envelope loop flag (0 for now)
-        # Bit 5: Length counter halt (1 to disable length counter)
-        envelope_bits = 0x30  # 0011 0000
-        
-        # Combine with volume (bits 0-3)
-        return duty_bits | envelope_bits | (volume & 0x0F)

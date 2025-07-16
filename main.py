@@ -5,7 +5,7 @@ from pathlib import Path
 
 from parser import parse_midi_to_frames
 from track_mapper import assign_tracks_to_nes_channels
-from nes_emulator_core import NESEmulatorCore
+from nes.emulator_core import NESEmulatorCore
 from exporter_nsftxt import generate_nsftxt
 from exporter_ca65 import export_ca65_tables
 

@@ -6,7 +6,7 @@ import os
 # Add the project root directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from nes_emulator_core import EnvelopeProcessor
+from nes.envelope_processor import EnvelopeProcessor
 
 class TestEnvelopeProcessor(unittest.TestCase):
     def setUp(self):

@@ -1,5 +1,5 @@
 import unittest
-from nes_pitch_table import NES_NOTE_TABLE, PitchProcessor, get_noise_period
+from nes.pitch_table import NES_NOTE_TABLE, PitchProcessor, get_noise_period
 
 
 class TestPitchTables(unittest.TestCase):

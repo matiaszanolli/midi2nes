@@ -1,7 +1,7 @@
 # tests/test_core.py
 import unittest
-from nes_emulator_core import NESEmulatorCore, EnvelopeProcessor
-from nes_pitch_table import PitchProcessor
+from nes.emulator_core import NESEmulatorCore
+from nes.pitch_table import PitchProcessor
 
 class TestNESCore(unittest.TestCase):
     def setUp(self):
