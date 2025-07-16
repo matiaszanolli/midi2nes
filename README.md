@@ -7,15 +7,25 @@ This project converts MIDI files into NES-compatible audio data that can be used
 The compiler processes MIDI files through several stages:
 1. **Parse** - Convert MIDI to intermediate JSON format
 2. **Map** - Assign MIDI tracks to NES audio channels (2 pulse, 1 triangle, 1 noise, 1 DPCM)
-3. **Frames** - Generate frame-by-frame audio data
+3. **Frames** - Generate frame-by-frame audio data with envelope processing
 4. **Export** - Output as CA65 assembly or FamiTracker format
 
 ## NES Audio Channels
 
-- **Pulse 1 & 2**: Melody and harmony with duty cycle control
+- **Pulse 1 & 2**: Melody and harmony with duty cycle control and envelope processing
 - **Triangle**: Bass lines (no volume control)
 - **Noise**: Percussion and sound effects
 - **DPCM**: Drum samples and voice
+
+## Features
+
+- ✅ Complete MIDI parsing pipeline
+- ✅ Channel mapping with priority system
+- ✅ Accurate NES pitch tables with per-channel processing
+- ✅ ADSR envelope processing for pulse channels
+- ✅ Multiple duty cycle patterns
+- ✅ Basic drum mapping and DPCM support
+- ✅ CA65 and FamiTracker export formats
 
 ## Usage
 
@@ -33,11 +43,41 @@ python main.py frames mapped.json frames.json
 python main.py export frames.json output.s --format ca65
 ```
 
-## Current Status
+## Current Status and Roadmap
 
-The basic pipeline is implemented but several features are still needed:
-- Proper NES pitch tables
-- Envelope and duty cycle configurations
-- Tempo control and pattern jumps
-- Multiple song support
-- Better drum mapping
+### Completed (v0.2.0)
+- ✅ Basic MIDI parsing and channel mapping
+- ✅ Accurate NES pitch tables implementation
+- ✅ ADSR envelope processing
+- ✅ Duty cycle patterns
+- ✅ Comprehensive test coverage
+
+### In Progress (v0.3.0)
+- 🔄 Enhanced tempo handling
+- 🔄 Pattern and loop support
+- 🔄 Multi-song capability
+- 🔄 Advanced drum mapping
+
+### Planned (v0.4.0)
+- Memory optimization
+- Pattern compression
+- Performance improvements
+- Real-time preview capability
+
+### Future (v1.0.0)
+- GUI frontend
+- Direct emulator integration
+- Effect support
+- Fine-tuning controls
+
+## Development
+
+The project uses Python 3.x and includes a comprehensive test suite. To run the tests:
+
+```bash
+python -m unittest discover tests
+```
+
+## Contributing
+
+Contributions are welcome! Please check the issues page for current tasks and feature requests.
