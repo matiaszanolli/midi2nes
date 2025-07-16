@@ -5,7 +5,7 @@ from pathlib import Path
 
 from parser import parse_midi_to_frames
 from track_mapper import assign_tracks_to_nes_channels
-from nes_emulator_core import process_all_tracks
+from nes_emulator_core import NESEmulatorCore
 from exporter_nsftxt import generate_nsftxt
 from exporter_ca65 import export_ca65_tables
 
@@ -23,9 +23,10 @@ def run_map(args):
 
 def run_frames(args):
     mapped = json.loads(Path(args.input).read_text())
-    frames = process_all_tracks(mapped)
+    emulator = NESEmulatorCore()
+    frames = emulator.process_all_tracks(mapped)
     Path(args.output).write_text(json.dumps(frames, indent=2))
-    print(f"✅ Generated frames -> {args.output}")
+    print(f" Generated frames -> {args.output}")
 
 def run_export(args):
     frames = json.loads(Path(args.input).read_text())
