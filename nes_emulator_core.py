@@ -1,5 +1,6 @@
 from collections import defaultdict
-from typing import List, Dict
+from typing import List, Dict, Optional
+from implementation_examples import EnvelopeProcessor
 
 # Accurate NES note table for NTSC
 NES_NOTE_TABLE = {
@@ -28,9 +29,10 @@ def midi_to_nes_pitch(note, channel_type='pulse'):
 
 def compile_channel_to_frames(events: List[Dict], channel_type='pulse', default_duty=2, sustain_frames=4):
     """
-    Extend note-on events to simulate duration across frames.
+    Extend note-on events to simulate duration across frames with envelope processing.
     """
     frames = defaultdict(dict)
+    envelope_processor = EnvelopeProcessor()
 
     # Sort events by frame
     events = sorted(events, key=lambda e: e['frame'])
@@ -51,19 +53,33 @@ def compile_channel_to_frames(events: List[Dict], channel_type='pulse', default_
                 break
 
         pitch = midi_to_nes_pitch(event['note'], channel_type)
-        volume = min(15, event.get('velocity', 0) // 8)
+        envelope_type = event.get('envelope_type', 'default')
         arpeggio = event.get('arpeggio', False)
 
         for f in range(start_frame, end_frame):
-            frames[f] = {
-                "pitch": pitch,
-                "duty": default_duty,
-                "volume": volume,
-                "arpeggio": arpeggio,
-                "note": event['note']
-            }
+            frame_offset = f - start_frame
+            if channel_type.startswith('pulse'):
+                control_byte = envelope_processor.get_envelope_control_byte(
+                    envelope_type, frame_offset, end_frame - start_frame, default_duty
+                )
+                frames[f] = {
+                    "pitch": pitch,
+                    "control": control_byte,
+                    "arpeggio": arpeggio,
+                    "note": event['note']
+                }
+            else:
+                # For non-pulse channels, use simple volume calculation
+                volume = min(15, event.get('velocity', 0) // 8)
+                frames[f] = {
+                    "pitch": pitch,
+                    "volume": volume,
+                    "arpeggio": arpeggio,
+                    "note": event['note']
+                }
 
     return dict(sorted(frames.items()))
+
 
 def process_all_tracks(nes_tracks: Dict[str, List[Dict]]) -> Dict[str, Dict[int, Dict]]:
     processed = {}

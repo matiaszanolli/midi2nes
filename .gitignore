@@ -5,6 +5,7 @@ frames.json
 *.mid
 mapped*.json
 parsed.json
-test*
+test*.json
+test*.txt
 output*
 dpcm_index.json
