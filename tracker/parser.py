@@ -3,12 +3,14 @@ import json
 from collections import defaultdict
 from constants import FRAME_MS
 from tracker.tempo_map import TempoMap
-
+from tracker.pattern_detector import PatternDetector
+from tracker.loop_manager import LoopManager
 
 def parse_midi_to_frames(midi_path):
     mid = mido.MidiFile(midi_path)
     tempo_map = TempoMap(ticks_per_beat=mid.ticks_per_beat)
     track_events = defaultdict(list)
+    track_metadata = defaultdict(dict)
 
     # First pass: collect all tempo changes
     for track in mid.tracks:
@@ -45,8 +47,38 @@ def parse_midi_to_frames(midi_path):
                     "tempo": tempo_map.get_tempo_at_tick(current_tick)
                 })
 
-    return track_events
+    # Third pass: detect patterns and loops for each track
+    pattern_detector = PatternDetector()
+    loop_manager = LoopManager()
 
+    for track_name, events in track_events.items():
+        # Filter only note_on events for pattern detection
+        note_on_events = [
+            event for event in events 
+            if event['type'] == 'note_on' and event['volume'] > 0
+        ]
+
+        # Detect patterns
+        patterns = pattern_detector.detect_patterns(note_on_events)
+        
+        # Detect loops based on patterns
+        loops = loop_manager.detect_loops(note_on_events, patterns)
+        
+        # Generate jump table
+        jump_table = loop_manager.generate_jump_table(loops)
+        
+        # Store metadata for this track
+        track_metadata[track_name] = {
+            "patterns": patterns,
+            "loops": loops,
+            "jump_table": jump_table
+        }
+
+    # Return both events and metadata
+    return {
+        "events": dict(track_events),
+        "metadata": dict(track_metadata)
+    }
 
 if __name__ == "__main__":
     import sys
