@@ -107,26 +107,29 @@ class TempoMap:
             
         total_time_ms = 0.0
         current_tick = start_tick
+        current_tempo = self.get_tempo_at_tick(start_tick)
         
-        for i, (change_tick, tempo) in enumerate(self.tempo_changes):
-            if change_tick >= end_tick:
-                # Calculate remaining segment
-                remaining_ticks = end_tick - current_tick
-                remaining_time = self._ticks_to_ms(remaining_ticks, tempo)
-                total_time_ms += remaining_time
-                break
-            elif change_tick > current_tick:
-                # Calculate segment up to tempo change
-                segment_ticks = change_tick - current_tick
-                segment_time = self._ticks_to_ms(segment_ticks, tempo)
-                total_time_ms += segment_time
-                current_tick = change_tick
+        for next_tick, next_tempo in self.tempo_changes:
+            if next_tick <= start_tick:
+                current_tempo = next_tempo
+                continue
                 
+            if next_tick >= end_tick:
+                break
+                
+            # Calculate time until this tempo change
+            segment_ticks = next_tick - current_tick
+            segment_time = self._ticks_to_ms(segment_ticks, current_tempo)
+            total_time_ms += segment_time
+            
+            current_tick = next_tick
+            current_tempo = next_tempo
+            
+        # Calculate remaining time
         if current_tick < end_tick:
-            # Handle remaining ticks with last tempo
-            last_tempo = self.tempo_changes[-1][1]
             remaining_ticks = end_tick - current_tick
-            total_time_ms += self._ticks_to_ms(remaining_ticks, last_tempo)
+            remaining_time = self._ticks_to_ms(remaining_ticks, current_tempo)
+            total_time_ms += remaining_time
             
         self._time_cache[cache_key] = total_time_ms
         return total_time_ms
@@ -167,13 +170,22 @@ class TempoMap:
 
 
 class EnhancedTempoMap(TempoMap):
-    """Enhanced TempoMap with validation, optimization, and pattern support"""
-    
     def __init__(self, initial_tempo=500000, ticks_per_beat=480,
                  validation_config: Optional[TempoValidationConfig] = None,
                  optimization_strategy: TempoOptimizationStrategy = TempoOptimizationStrategy.FRAME_ALIGNED):
-        super().__init__(initial_tempo, ticks_per_beat)
         self.validation_config = validation_config or TempoValidationConfig()
+        
+        # Validate initial tempo before calling parent
+        initial_bpm = 60_000_000 / initial_tempo
+        if not (self.validation_config.min_tempo_bpm <= initial_bpm <= 
+                self.validation_config.max_tempo_bpm):
+            raise TempoValidationError(
+                f"Initial tempo {initial_bpm:.1f} BPM outside valid range "
+                f"[{self.validation_config.min_tempo_bpm}, "
+                f"{self.validation_config.max_tempo_bpm}]"
+            )
+            
+        super().__init__(initial_tempo, ticks_per_beat)
         self.optimization_strategy = optimization_strategy
         
         # Enhanced features
@@ -187,17 +199,11 @@ class EnhancedTempoMap(TempoMap):
                         change_type: TempoChangeType = TempoChangeType.IMMEDIATE,
                         duration_ticks: int = 0, curve_factor: float = 1.0,
                         pattern_id: Optional[str] = None):
-        """
-        Add a tempo change with enhanced features
-        
-        Args:
-            tick: MIDI tick where the change starts
-            tempo: Target tempo in microseconds per quarter note
-            change_type: Type of tempo change (immediate, linear, curve, pattern_sync)
-            duration_ticks: Duration of gradual change in ticks (0 for immediate)
-            curve_factor: Factor for curved changes (1.0 = linear, >1 = exponential)
-            pattern_id: Optional pattern ID for pattern-specific changes
-        """
+        """Add a tempo change with enhanced features"""
+        # Don't allow changes at tick 0 (reserved for initial tempo)
+        if tick == 0:
+            raise TempoValidationError("Cannot add tempo change at tick 0")
+            
         change = TempoChange(tick, tempo, change_type, duration_ticks, 
                            curve_factor, pattern_id)
         
@@ -210,6 +216,7 @@ class EnhancedTempoMap(TempoMap):
         
         # Convert to base class format for compatibility
         if change_type == TempoChangeType.IMMEDIATE:
+            # Update base class tempo changes
             super().add_tempo_change(tick, tempo)
         else:
             # Create intermediate steps for gradual changes
@@ -219,10 +226,15 @@ class EnhancedTempoMap(TempoMap):
         self._time_cache = {}
         self._frame_cache = {}
         
+    def get_tempo_at_tick(self, tick: int) -> int:
+        """Override to ensure correct tempo retrieval"""
+        # Use parent class implementation for accurate tempo lookup
+        return super().get_tempo_at_tick(tick)
+        
     def _validate_tempo_change(self, change: TempoChange):
         """Validate a tempo change against configuration rules"""
+        # First check BPM range
         bpm = 60_000_000 / change.tempo
-        
         if not (self.validation_config.min_tempo_bpm <= bpm <= 
                 self.validation_config.max_tempo_bpm):
             raise TempoValidationError(
@@ -231,6 +243,7 @@ class EnhancedTempoMap(TempoMap):
                 f"{self.validation_config.max_tempo_bpm}]"
             )
             
+        # Then check duration if applicable
         if change.duration_ticks > 0:
             frames = self.get_frame_for_tick(change.duration_ticks)
             if not (self.validation_config.min_duration_frames <= frames <= 
@@ -241,23 +254,24 @@ class EnhancedTempoMap(TempoMap):
                     f"{self.validation_config.max_duration_frames}]"
                 )
                 
-        # Check tempo change ratio
-        prev_tempo = self.get_tempo_at_tick(max(0, change.tick - 1))
-        ratio = max(change.tempo / prev_tempo, prev_tempo / change.tempo)
-        
-        if ratio > self.validation_config.max_tempo_change_ratio:
-            raise TempoValidationError(
-                f"Tempo change ratio {ratio:.2f} exceeds maximum "
-                f"{self.validation_config.max_tempo_change_ratio}"
-            )
-            
+        # Finally check tempo change ratio for non-initial changes
+        if change.tick > 0:  # Skip ratio check for initial tempo
+            prev_tempo = self.get_tempo_at_tick(change.tick - 1)
+            if prev_tempo > 0:  # Only check ratio if we have a valid previous tempo
+                ratio = max(change.tempo / prev_tempo, prev_tempo / change.tempo)
+                if ratio > self.validation_config.max_tempo_change_ratio:
+                    raise TempoValidationError(
+                        f"Tempo change ratio {ratio:.2f} exceeds maximum "
+                        f"{self.validation_config.max_tempo_change_ratio}"
+                    )
+                    
     def _create_gradual_change_steps(self, change: TempoChange):
         """Create intermediate steps for gradual tempo changes"""
         if change.duration_ticks <= 0:
             return
             
         start_tempo = self.get_tempo_at_tick(change.tick)
-        steps = max(1, change.duration_ticks // (self.ticks_per_beat // 4))  # 16th note resolution
+        steps = max(1, change.duration_ticks // (self.ticks_per_beat // 4))
         
         for i in range(steps + 1):
             current_tick = change.tick + (i * change.duration_ticks // steps)
@@ -271,14 +285,12 @@ class EnhancedTempoMap(TempoMap):
                 current_tempo = self._calculate_curved_tempo(
                     start_tempo, change.tempo, progress, change.curve_factor
                 )
-            elif change.change_type == TempoChangeType.PATTERN_SYNC:
-                current_tempo = self._calculate_pattern_sync_tempo(
-                    start_tempo, change.tempo, progress
-                )
             else:
                 current_tempo = change.tempo
                 
-            super().add_tempo_change(current_tick, current_tempo)
+            # Update base TempoMap's tempo changes
+            if i > 0:  # Skip first step as it's already at the start tempo
+                super().add_tempo_change(current_tick, current_tempo)
             
     def _calculate_linear_tempo(self, start_tempo: int, end_tempo: int, 
                               progress: float) -> int:
