@@ -8,7 +8,8 @@ The compiler processes MIDI files through several stages:
 1. **Parse** - Convert MIDI to intermediate JSON format
 2. **Map** - Assign MIDI tracks to NES audio channels (2 pulse, 1 triangle, 1 noise, 1 DPCM)
 3. **Frames** - Generate frame-by-frame audio data with envelope processing
-4. **Export** - Output as CA65 assembly or FamiTracker format
+4. **Pattern Detection** - Detect and compress repeating musical patterns (optional)
+5. **Export** - Output as CA65 assembly or FamiTracker format
 
 ## NES Audio Channels
 
@@ -19,13 +20,14 @@ The compiler processes MIDI files through several stages:
 
 ## Features
 
-- ✅ Complete MIDI parsing pipeline
-- ✅ Channel mapping with priority system
-- ✅ Accurate NES pitch tables with per-channel processing
-- ✅ ADSR envelope processing for pulse channels
-- ✅ Multiple duty cycle patterns
-- ✅ Basic drum mapping and DPCM support
-- ✅ CA65 and FamiTracker export formats
+-  Complete MIDI parsing pipeline
+-  Channel mapping with priority system
+-  Accurate NES pitch tables with per-channel processing
+-  ADSR envelope processing for pulse channels
+-  Multiple duty cycle patterns
+-  Basic drum mapping and DPCM support
+-  Pattern detection and compression
+-  CA65 and FamiTracker export formats
 
 ## Usage
 
@@ -39,7 +41,13 @@ python main.py map parsed.json mapped.json
 # Generate frame data
 python main.py frames mapped.json frames.json
 
-# Export to assembly
+# Optional: Detect and compress patterns
+python main.py detect-patterns frames.json patterns.json
+
+# Export to assembly (with pattern compression)
+python main.py export frames.json output.s --format ca65 --patterns patterns.json
+
+# Or export without pattern compression
 python main.py export frames.json output.s --format ca65
 
 # Prepare output project

@@ -7,8 +7,11 @@ from tracker.parser import parse_midi_to_frames
 from tracker.track_mapper import assign_tracks_to_nes_channels
 from nes.emulator_core import NESEmulatorCore
 from nes.project_builder import NESProjectBuilder
-from exporter_nsftxt import generate_nsftxt
-from exporter_ca65 import export_ca65_tables
+from exporter.exporter_nsftxt import generate_nsftxt
+from exporter.exporter_ca65 import export_ca65_tables, export_ca65_tables_with_patterns
+from exporter.exporter import generate_famitracker_txt_with_patterns
+from tracker.pattern_detector import EnhancedPatternDetector  # Add this import
+from tracker.tempo_map import EnhancedTempoMap  # Add this import
 
 def run_parse(args):
     midi_data = parse_midi_to_frames(args.input)
@@ -40,14 +43,58 @@ def run_prepare(args):
         print(" 2. ./build.sh  (or build.bat on Windows)")
 
 def run_export(args):
+    """Modified export function to support pattern compression"""
     frames = json.loads(Path(args.input).read_text())
+    
+    # Check if we have pattern data
+    pattern_data = None
+    if args.patterns:
+        pattern_data = json.loads(Path(args.patterns).read_text())
+    
     if args.format == "nsftxt":
-        output = generate_nsftxt(frames)
+        if pattern_data:
+            output = generate_famitracker_txt_with_patterns(
+                frames,
+                pattern_data['patterns'],
+                pattern_data['references']
+            )
+        else:
+            output = generate_nsftxt(frames)
         Path(args.output).write_text(output)
-        print(f"✅ Exported FamiTracker TXT -> {args.output}")
+        print(f" Exported FamiTracker TXT -> {args.output}")
+    
     elif args.format == "ca65":
-        export_ca65_tables(frames, args.output)
+        if pattern_data:
+            export_ca65_tables_with_patterns(
+                frames,
+                pattern_data['patterns'],
+                pattern_data['references'],
+                args.output
+            )
+        else:
+            export_ca65_tables(frames, args.output)
         print(f"✅ Exported CA65 ASM -> {args.output}")
+
+def run_detect_patterns(args):
+    """Detect and compress patterns in the frame data"""
+    frames = json.loads(Path(args.input).read_text())
+    
+    # Create tempo map and pattern detector
+    tempo_map = EnhancedTempoMap(initial_tempo=500000)  # 120 BPM default
+    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3)
+    
+    # Detect patterns
+    pattern_result = detector.detect_patterns(frames)
+    
+    # Save compressed patterns
+    output = {
+        'patterns': pattern_result['patterns'],
+        'references': pattern_result['references'],
+        'stats': pattern_result['stats']
+    }
+    Path(args.output).write_text(json.dumps(output, indent=2))
+    print(f" Detected patterns -> {args.output}")
+    print(f" Compression ratio: {pattern_result['stats']['compression_ratio']:.2f}")
 
 def main():
     parser = argparse.ArgumentParser(description="MIDI to NES compiler")
@@ -69,10 +116,17 @@ def main():
     p_frames.add_argument('output')
     p_frames.set_defaults(func=run_frames)
 
+    p_patterns = subparsers.add_parser('detect-patterns', 
+                                      help='Detect and compress patterns in frame data')
+    p_patterns.add_argument('input')
+    p_patterns.add_argument('output')
+    p_patterns.set_defaults(func=run_detect_patterns)
+
     p_export = subparsers.add_parser('export', help='Export NES-ready files (ca65/FamiTracker)')
     p_export.add_argument('input')
     p_export.add_argument('output')
     p_export.add_argument('--format', choices=['nsftxt', 'ca65'], default='ca65')
+    p_export.add_argument('--patterns', help='Path to pattern data JSON (optional)')
     p_export.set_defaults(func=run_export)
 
     p_prepare = subparsers.add_parser('prepare', help='Prepare CA65 project for compilation')
