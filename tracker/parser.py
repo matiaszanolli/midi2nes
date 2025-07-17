@@ -1,14 +1,26 @@
 import mido
 import json
 from collections import defaultdict
-from constants import FRAME_MS
-from tracker.tempo_map import TempoMap
-from tracker.pattern_detector import PatternDetector
-from tracker.loop_manager import LoopManager
+from constants import FRAME_MS, FRAME_RATE_HZ
+from tracker.tempo_map import (EnhancedTempoMap, TempoValidationConfig, TempoOptimizationStrategy,
+                               TempoChangeType, TempoValidationError)
+from tracker.pattern_detector import EnhancedPatternDetector
+from tracker.loop_manager import EnhancedLoopManager
 
 def parse_midi_to_frames(midi_path):
     mid = mido.MidiFile(midi_path)
-    tempo_map = TempoMap(ticks_per_beat=mid.ticks_per_beat)
+    # Initialize with validation and optimization
+    config = TempoValidationConfig(
+        min_tempo_bpm=40.0,
+        max_tempo_bpm=250.0,
+        min_duration_frames=2,
+        max_duration_frames=FRAME_RATE_HZ * 30  # 30 seconds
+    )
+    tempo_map = EnhancedTempoMap(
+        initial_tempo=500000,  # 120 BPM
+        validation_config=config,
+        optimization_strategy=TempoOptimizationStrategy.FRAME_ALIGNED
+    )
     track_events = defaultdict(list)
     track_metadata = defaultdict(dict)
 
@@ -18,8 +30,17 @@ def parse_midi_to_frames(midi_path):
         for msg in track:
             current_tick += msg.time
             if msg.type == 'set_tempo':
-                tempo_map.add_tempo_change(current_tick, msg.tempo)
-
+                try:
+                    tempo_map.add_tempo_change(
+                        current_tick,  # tick
+                        msg.tempo,  # 150 BPM
+                        TempoChangeType.LINEAR,
+                        duration_ticks=960
+                    )
+                except TempoValidationError as e:
+                    print(f"Invalid tempo change: {e}")
+        tempo_map.optimize_tempo_changes()
+        
     # Second pass: process notes with accurate timing
     for i, track in enumerate(mid.tracks):
         current_tick = 0
@@ -48,8 +69,8 @@ def parse_midi_to_frames(midi_path):
                 })
 
     # Third pass: detect patterns and loops for each track
-    pattern_detector = PatternDetector()
-    loop_manager = LoopManager()
+    pattern_detector = EnhancedPatternDetector()
+    loop_manager = EnhancedLoopManager()
 
     for track_name, events in track_events.items():
         # Filter only note_on events for pattern detection

@@ -1,6 +1,7 @@
 # tracker/pattern_detector.py
 from collections import defaultdict
-from typing import List, Dict, Tuple, Set
+from typing import List, Dict, Tuple
+from tracker.tempo_map import TempoChangeType, TempoChange, EnhancedTempoMap
 
 class PatternDetector:
     def __init__(self, min_pattern_length=3, max_pattern_length=32):
@@ -89,3 +90,54 @@ class PatternDetector:
                 used_positions.update(positions)
         
         return optimized
+
+class EnhancedPatternDetector(PatternDetector):
+    def __init__(self, tempo_map: EnhancedTempoMap, 
+                 min_pattern_length=3, max_pattern_length=32):
+        super().__init__(min_pattern_length, max_pattern_length)
+        self.tempo_map = tempo_map
+        
+    def detect_patterns(self, events: List[Dict]) -> Dict:
+        patterns = super().detect_patterns(events)
+        
+        # Enhance patterns with tempo information
+        for pattern_id, pattern_info in patterns.items():
+            self._analyze_pattern_tempo(pattern_id, pattern_info, events)
+            
+        return patterns
+    
+    def _analyze_pattern_tempo(self, pattern_id: str, 
+                             pattern_info: Dict, events: List[Dict]):
+        """Analyze tempo characteristics of a pattern"""
+        positions = pattern_info['positions']
+        length = pattern_info['length']
+        
+        # Calculate average tempo for the pattern
+        pattern_tempos = []
+        for pos in positions:
+            segment_tempos = [
+                self.tempo_map.get_tempo_at_tick(tick)
+                for tick in range(pos, pos + length)
+            ]
+            pattern_tempos.append(sum(segment_tempos) / len(segment_tempos))
+            
+        base_tempo = int(sum(pattern_tempos) / len(pattern_tempos))
+        
+        # Detect tempo variations within the pattern
+        variations = []
+        for pos in positions:
+            current_tempos = [
+                self.tempo_map.get_tempo_at_tick(tick)
+                for tick in range(pos, pos + length)
+            ]
+            if max(current_tempos) - min(current_tempos) > 1000:  # Significant variation
+                variations.append(
+                    TempoChange(
+                        pos, max(current_tempos),
+                        TempoChangeType.PATTERN_SYNC,
+                        length
+                    )
+                )
+        
+        # Register pattern tempo information
+        self.tempo_map.add_pattern_tempo(pattern_id, base_tempo, variations)

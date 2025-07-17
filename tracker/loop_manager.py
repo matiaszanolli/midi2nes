@@ -1,4 +1,5 @@
-from typing import List, Dict, Optional
+from typing import List, Dict
+from tracker.tempo_map import EnhancedTempoMap
 
 class LoopManager:
     def __init__(self):
@@ -63,3 +64,37 @@ class LoopManager:
             jump_table[loop_info['end']] = loop_info['start']
         
         return jump_table
+
+class EnhancedLoopManager(LoopManager):
+    def __init__(self, tempo_map: EnhancedTempoMap):
+        super().__init__()
+        self.tempo_map = tempo_map
+        
+    def detect_loops(self, events: List[Dict], pattern_info: Dict) -> Dict:
+        loops = super().detect_loops(events, pattern_info)
+        
+        # Register tempo information for each loop
+        for loop_id, loop_info in loops.items():
+            self.tempo_map.register_loop_point(
+                loop_id,
+                loop_info['start'],
+                loop_info['end']
+            )
+            
+        return loops
+    
+    def generate_jump_table(self, loops: Dict) -> Dict:
+        jump_table = super().generate_jump_table(loops)
+        
+        # Enhance jump table with tempo information
+        enhanced_table = {}
+        for end_pos, start_pos in jump_table.items():
+            enhanced_table[end_pos] = {
+                'start_pos': start_pos,
+                'tempo_state': self.tempo_map.loop_points.get(
+                    f"loop_{end_pos}_{start_pos}",
+                    None
+                )
+            }
+            
+        return enhanced_table
