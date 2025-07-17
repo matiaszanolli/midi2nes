@@ -52,17 +52,32 @@ def apply_arpeggio_fallback(events, max_notes=3, style="default"):
 
 
 def apply_arpeggio_pattern(notes, pattern="up"):
-    """Apply a specific arpeggio pattern to notes"""
+    """
+    Apply an arpeggio pattern to a list of notes.
+    Some patterns intentionally repeat notes for musical effect.
+    
+    Args:
+        notes: List of MIDI note numbers
+        pattern: One of "up", "down", "up_down", "down_up", "random"
+        
+    Returns:
+        List of notes in the specified pattern
+    """
+    if not notes:
+        return []
+        
+    if len(notes) == 1:
+        return notes
+        
     PATTERNS = {
         "up": lambda notes: notes,                          # [C, E, G]
         "down": lambda notes: list(reversed(notes)),        # [G, E, C]
         "up_down": lambda notes: notes + list(reversed(notes[1:-1])),  # [C, E, G, E]
         "down_up": lambda notes: list(reversed(notes)) + notes[1:],    # [G, E, C, E, G]
-        "random": lambda notes: random.sample(notes * 2, len(notes)),  # Random order
+        "random": lambda notes: random.sample(notes, len(notes)),  # Random order, no duplicates
     }
     
     return PATTERNS.get(pattern, PATTERNS["up"])(notes)
-
 
 def detect_chord(notes):
     """Detect chord type from notes"""
