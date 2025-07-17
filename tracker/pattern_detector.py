@@ -96,15 +96,29 @@ class EnhancedPatternDetector(PatternDetector):
                  min_pattern_length=3, max_pattern_length=32):
         super().__init__(min_pattern_length, max_pattern_length)
         self.tempo_map = tempo_map
+        self.compressor = PatternCompressor()
         
     def detect_patterns(self, events: List[Dict]) -> Dict:
+        # Detect basic patterns first
         patterns = super().detect_patterns(events)
         
         # Enhance patterns with tempo information
         for pattern_id, pattern_info in patterns.items():
             self._analyze_pattern_tempo(pattern_id, pattern_info, events)
-            
-        return patterns
+        
+        # Compress patterns
+        compressed_patterns, pattern_refs = self.compressor.compress_patterns(patterns)
+        
+        # Add compression information to the result
+        compression_stats = self.compressor.calculate_compression_stats(
+            patterns, compressed_patterns
+        )
+        
+        return {
+            'patterns': compressed_patterns,
+            'references': pattern_refs,
+            'stats': compression_stats
+        }
     
     def _analyze_pattern_tempo(self, pattern_id: str, 
                              pattern_info: Dict, events: List[Dict]):
@@ -141,3 +155,66 @@ class EnhancedPatternDetector(PatternDetector):
         
         # Register pattern tempo information
         self.tempo_map.add_pattern_tempo(pattern_id, base_tempo, variations)
+
+
+class PatternCompressor:
+    def __init__(self):
+        self.compressed_patterns = {}
+        self.pattern_references = defaultdict(list)
+        
+    def compress_patterns(self, patterns: Dict) -> Tuple[Dict, Dict]:
+        """
+        Compress patterns by identifying identical patterns and creating references.
+        """
+        compressed_data = {}
+        pattern_refs = defaultdict(list)
+        pattern_hash_map = {}
+        
+        # First pass: hash patterns and identify duplicates
+        for pattern_id, pattern_info in patterns.items():
+            pattern_hash = self._hash_pattern(pattern_info['events'])
+            
+            if pattern_hash in pattern_hash_map:
+                # Pattern already exists, add reference
+                original_id = pattern_hash_map[pattern_hash]
+                pattern_refs[original_id].extend(pattern_info['positions'])
+            else:
+                # New unique pattern
+                pattern_hash_map[pattern_hash] = pattern_id
+                compressed_data[pattern_id] = pattern_info.copy()
+                pattern_refs[pattern_id].extend(pattern_info['positions'])
+        
+        # Sort positions for each pattern
+        for pattern_id in pattern_refs:
+            pattern_refs[pattern_id] = sorted(set(pattern_refs[pattern_id]))
+            
+            # Update the positions in the compressed data
+            if pattern_id in compressed_data:
+                compressed_data[pattern_id]['positions'] = pattern_refs[pattern_id]
+        
+        return compressed_data, dict(pattern_refs)
+    
+    def _hash_pattern(self, events: List[Dict]) -> str:
+        """Create a unique hash for a pattern based on its events"""
+        return hash(tuple((e['note'], e['volume']) for e in events))
+    
+    def calculate_compression_stats(self, original: Dict, compressed: Dict) -> Dict:
+        """Calculate compression statistics"""
+        original_size = sum(
+            len(p['events']) * len(p['positions']) 
+            for p in original.values()
+        )
+        compressed_size = sum(
+            len(p['events']) for p in compressed.values()
+        )
+        
+        compression_ratio = 0
+        if original_size > 0:
+            compression_ratio = ((original_size - compressed_size) / original_size) * 100
+            
+        return {
+            'original_size': original_size,
+            'compressed_size': compressed_size,
+            'compression_ratio': compression_ratio,
+            'unique_patterns': len(compressed)
+        }

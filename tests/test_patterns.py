@@ -1,7 +1,8 @@
 # tests/test_patterns.py
 import unittest
-from tracker.pattern_detector import PatternDetector
+from tracker.pattern_detector import PatternDetector, PatternCompressor, EnhancedPatternDetector
 from tracker.loop_manager import LoopManager
+from tracker.tempo_map import EnhancedTempoMap
 
 class TestPatternDetection(unittest.TestCase):
     def setUp(self):
@@ -271,6 +272,187 @@ class TestPatternEdgeCases(unittest.TestCase):
             longest_pattern = max(patterns.values(), key=lambda x: x['length'])
             self.assertEqual(longest_pattern['length'], 6, 
                            "Should prefer longer patterns during optimization")
+
+class TestPatternCompression(unittest.TestCase):
+    def setUp(self):
+        self.pattern_detector = PatternDetector(min_pattern_length=3)
+        self.compressor = PatternCompressor()
+        
+        # Test data with repeating patterns
+        self.test_events = [
+            # Pattern A
+            {'frame': 0, 'note': 60, 'volume': 100},
+            {'frame': 1, 'note': 64, 'volume': 100},
+            {'frame': 2, 'note': 67, 'volume': 100},
+            # Pattern B
+            {'frame': 3, 'note': 72, 'volume': 100},
+            {'frame': 4, 'note': 76, 'volume': 100},
+            {'frame': 5, 'note': 79, 'volume': 100},
+            # Pattern A repeats
+            {'frame': 6, 'note': 60, 'volume': 100},
+            {'frame': 7, 'note': 64, 'volume': 100},
+            {'frame': 8, 'note': 67, 'volume': 100},
+            # Pattern B repeats
+            {'frame': 9, 'note': 72, 'volume': 100},
+            {'frame': 10, 'note': 76, 'volume': 100},
+            {'frame': 11, 'note': 79, 'volume': 100},
+        ]
+
+    def test_basic_compression(self):
+        """Test basic pattern compression with identical patterns"""
+        # First detect patterns
+        patterns = self.pattern_detector.detect_patterns(self.test_events)
+        
+        # Create pattern data in the expected format
+        pattern_data = {}
+        for i, (start, length) in enumerate([(0, 3), (3, 3), (6, 3), (9, 3)]):
+            pattern_id = f"pattern_{i}"
+            events = self.test_events[start:start + length]
+            pattern_data[pattern_id] = {
+                'events': events,
+                'positions': [start],
+                'length': length
+            }
+        
+        compressed_data, pattern_refs = self.compressor.compress_patterns(pattern_data)
+        
+        # Should have exactly 2 unique patterns (A and B)
+        self.assertEqual(len(compressed_data), 2, 
+                        "Should detect 2 unique patterns")
+
+    def test_compression_stats(self):
+        """Test compression statistics calculation"""
+        # Create test pattern data
+        pattern_data = {
+            'pattern_1': {
+                'events': self.test_events[0:3],
+                'positions': [0, 6],
+                'length': 3
+            },
+            'pattern_2': {
+                'events': self.test_events[3:6],
+                'positions': [3, 9],
+                'length': 3
+            }
+        }
+        
+        compressed_data, pattern_refs = self.compressor.compress_patterns(pattern_data)
+        stats = self.compressor.calculate_compression_stats(pattern_data, compressed_data)
+        
+        # Original size: 2 patterns × 3 events × 2 positions = 12
+        # Compressed size: 2 patterns × 3 events = 6
+        self.assertEqual(stats['original_size'], 12)
+        self.assertEqual(stats['compressed_size'], 6)
+        self.assertGreater(stats['compression_ratio'], 0)
+
+    def test_pattern_with_volume_variations(self):
+        """Test compression with same notes but different volumes"""
+        # Create pattern data with volume variations
+        pattern_data = {
+            'pattern_1': {
+                'events': [
+                    {'frame': 0, 'note': 60, 'volume': 100},
+                    {'frame': 1, 'note': 64, 'volume': 100},
+                    {'frame': 2, 'note': 67, 'volume': 100}
+                ],
+                'positions': [0],
+                'length': 3
+            },
+            'pattern_2': {
+                'events': [
+                    {'frame': 3, 'note': 60, 'volume': 80},
+                    {'frame': 4, 'note': 64, 'volume': 80},
+                    {'frame': 5, 'note': 67, 'volume': 80}
+                ],
+                'positions': [3],
+                'length': 3
+            }
+        }
+        
+        compressed_data, pattern_refs = self.compressor.compress_patterns(pattern_data)
+        self.assertEqual(len(compressed_data), 2,
+                        "Patterns with different volumes should be distinct")
+
+    def test_empty_patterns(self):
+        """Test compression with empty input"""
+        compressed_data, pattern_refs = self.compressor.compress_patterns({})
+        self.assertEqual(len(compressed_data), 0)
+        self.assertEqual(len(pattern_refs), 0)
+
+    def test_single_pattern_multiple_occurrences(self):
+        """Test compression with single pattern occurring multiple times"""
+        pattern_data = {
+            'pattern_1': {
+                'events': self.test_events[0:3],
+                'positions': [0, 3, 6],
+                'length': 3
+            }
+        }
+        
+        compressed_data, pattern_refs = self.compressor.compress_patterns(pattern_data)
+        self.assertEqual(len(compressed_data), 1)
+        pattern_id = list(compressed_data.keys())[0]
+        self.assertEqual(len(pattern_refs[pattern_id]), 3)
+
+    def test_pattern_reference_ordering(self):
+        """Test that pattern references are properly ordered"""
+        pattern_data = {
+            'pattern_1': {
+                'events': self.test_events[0:3],
+                'positions': [6, 0, 3],  # Unordered positions
+                'length': 3
+            }
+        }
+        
+        compressed_data, pattern_refs = self.compressor.compress_patterns(pattern_data)
+        for pattern_id, positions in pattern_refs.items():
+            self.assertEqual(positions, sorted(positions))
+
+def test_compression_integration(self):
+    """Test integration with EnhancedPatternDetector"""
+    # Create a mock tempo map for testing
+    tempo_map = EnhancedTempoMap(initial_tempo=500000)  # 120 BPM
+    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3)
+    
+    # Create test data with a pattern that repeats 3 times
+    test_events = [
+        # Pattern A - First occurrence
+        {'frame': 0, 'note': 60, 'volume': 100},
+        {'frame': 1, 'note': 64, 'volume': 100},
+        {'frame': 2, 'note': 67, 'volume': 100},
+        
+        # Pattern A - Second occurrence
+        {'frame': 3, 'note': 60, 'volume': 100},
+        {'frame': 4, 'note': 64, 'volume': 100},
+        {'frame': 5, 'note': 67, 'volume': 100},
+        
+        # Pattern A - Third occurrence
+        {'frame': 6, 'note': 60, 'volume': 100},
+        {'frame': 7, 'note': 64, 'volume': 100},
+        {'frame': 8, 'note': 67, 'volume': 100},
+        
+        # Some different notes to avoid false patterns
+        {'frame': 9, 'note': 72, 'volume': 100},
+        {'frame': 10, 'note': 76, 'volume': 100},
+        {'frame': 11, 'note': 79, 'volume': 100},
+    ]
+    
+    # Add a tempo change at a valid tick position
+    tempo_map.add_tempo_change(480, 400000)  # Change to 150 BPM at tick 480
+    
+    result = detector.detect_patterns(test_events)
+    
+    # Basic structure checks
+    self.assertIsInstance(result, dict)
+    self.assertIn('patterns', result)
+    self.assertIn('references', result)
+    self.assertIn('stats', result)
+    
+    # Verify compression results
+    self.assertTrue(len(result['patterns']) > 0, "Should detect patterns")
+    self.assertTrue(result['stats']['compression_ratio'] >= 0,
+                   "Should achieve some compression")
+
 
 if __name__ == '__main__':
     unittest.main()

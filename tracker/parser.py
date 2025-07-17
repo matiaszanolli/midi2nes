@@ -40,7 +40,7 @@ def parse_midi_to_frames(midi_path):
                 except TempoValidationError as e:
                     print(f"Invalid tempo change: {e}")
         tempo_map.optimize_tempo_changes()
-        
+
     # Second pass: process notes with accurate timing
     for i, track in enumerate(mid.tracks):
         current_tick = 0
@@ -80,17 +80,21 @@ def parse_midi_to_frames(midi_path):
         ]
 
         # Detect patterns
-        patterns = pattern_detector.detect_patterns(note_on_events)
+        pattern_data = pattern_detector.detect_patterns(note_on_events)
         
-        # Detect loops based on patterns
-        loops = loop_manager.detect_loops(note_on_events, patterns)
+        # Detect loops based on compressed patterns
+        loops = loop_manager.detect_loops(
+            note_on_events, pattern_data['patterns']
+        )
         
         # Generate jump table
         jump_table = loop_manager.generate_jump_table(loops)
         
         # Store metadata for this track
         track_metadata[track_name] = {
-            "patterns": patterns,
+            "patterns": pattern_data['patterns'],
+            "pattern_refs": pattern_data['references'],
+            "compression_stats": pattern_data['stats'],
             "loops": loops,
             "jump_table": jump_table
         }
