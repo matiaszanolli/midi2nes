@@ -2,52 +2,47 @@ import mido
 import json
 from collections import defaultdict
 from constants import FRAME_MS
+from tracker.tempo_map import TempoMap
+
 
 def parse_midi_to_frames(midi_path):
     mid = mido.MidiFile(midi_path)
-    ticks_per_beat = mid.ticks_per_beat
-    current_tempos = [500000]  # List of tempo changes (default 120 BPM)
-
-    # Dict of {track_name: [events]}
+    tempo_map = TempoMap(ticks_per_beat=mid.ticks_per_beat)
     track_events = defaultdict(list)
 
-    for i, track in enumerate(mid.tracks):
+    # First pass: collect all tempo changes
+    for track in mid.tracks:
         current_tick = 0
-        current_time_ms = 0
-        tempo = 500000
-
-        track_name = f"track_{i}"
         for msg in track:
             current_tick += msg.time
-
             if msg.type == 'set_tempo':
-                tempo = msg.tempo
-                current_tempos.append(tempo)
+                tempo_map.add_tempo_change(current_tick, msg.tempo)
 
-            # Recalculate time with new tempo
-            time_per_tick = tempo / ticks_per_beat / 1000.0
-            current_time_ms = current_tick * time_per_tick
+    # Second pass: process notes with accurate timing
+    for i, track in enumerate(mid.tracks):
+        current_tick = 0
+        track_name = f"track_{i}"
+
+        for msg in track:
+            current_tick += msg.time
+            current_time_ms = tempo_map.calculate_time_ms(0, current_tick)
             frame = int(current_time_ms / FRAME_MS)
 
             if msg.type == 'track_name':
                 track_name = msg.name.strip().replace(" ", "_")
-
-            elif msg.type == 'note_on' or msg.type == 'note_off':
+            elif msg.type in ['note_on', 'note_off']:
                 note = msg.note
                 velocity = msg.velocity if msg.type == 'note_on' else 0
 
-                # Ignore note_on with velocity 0 (acts as note_off)
-                if msg.type == 'note_on' and velocity == 0:
-                    msg_type = 'note_off'
-                    velocity = 0
-                else:
-                    msg_type = msg.type
+                # Handle note_on with velocity 0
+                msg_type = 'note_off' if (msg.type == 'note_on' and velocity == 0) else msg.type
 
                 track_events[track_name].append({
                     "frame": frame,
                     "note": note,
-                    "volume": velocity,  # volume is the expected key
-                    "type": msg_type
+                    "volume": velocity,
+                    "type": msg_type,
+                    "tempo": tempo_map.get_tempo_at_tick(current_tick)
                 })
 
     return track_events
