@@ -41,6 +41,9 @@ python main.py frames mapped.json frames.json
 
 # Export to assembly
 python main.py export frames.json output.s --format ca65
+
+# Prepare output project
+python main.py prepare output.s output_project_dir
 ```
 
 ## Current Status and Roadmap

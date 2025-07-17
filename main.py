@@ -6,6 +6,7 @@ from pathlib import Path
 from tracker.parser import parse_midi_to_frames
 from tracker.track_mapper import assign_tracks_to_nes_channels
 from nes.emulator_core import NESEmulatorCore
+from nes.project_builder import NESProjectBuilder
 from exporter_nsftxt import generate_nsftxt
 from exporter_ca65 import export_ca65_tables
 
@@ -17,7 +18,8 @@ def run_parse(args):
 def run_map(args):
     midi_data = json.loads(Path(args.input).read_text())
     dpcm_index_path = 'dpcm_index.json'
-    mapped = assign_tracks_to_nes_channels(midi_data, dpcm_index_path)
+    # Extract just the events from the parsed data
+    mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
     Path(args.output).write_text(json.dumps(mapped, indent=2))
     print(f"✅ Mapped tracks -> {args.output}")
 
@@ -27,6 +29,15 @@ def run_frames(args):
     frames = emulator.process_all_tracks(mapped)
     Path(args.output).write_text(json.dumps(frames, indent=2))
     print(f" Generated frames -> {args.output}")
+
+def run_prepare(args):
+    builder = NESProjectBuilder(args.output)
+    if builder.prepare_project(args.input):
+        print(f" Prepared NES project -> {args.output}")
+        print(" Ready for CC65 compilation!")
+        print(" To build:")
+        print(f" 1. cd {args.output}")
+        print(" 2. ./build.sh  (or build.bat on Windows)")
 
 def run_export(args):
     frames = json.loads(Path(args.input).read_text())
@@ -63,6 +74,11 @@ def main():
     p_export.add_argument('output')
     p_export.add_argument('--format', choices=['nsftxt', 'ca65'], default='ca65')
     p_export.set_defaults(func=run_export)
+
+    p_prepare = subparsers.add_parser('prepare', help='Prepare CA65 project for compilation')
+    p_prepare.add_argument('input', help='Input music.asm file')
+    p_prepare.add_argument('output', help='Output project directory')
+    p_prepare.set_defaults(func=run_prepare)
 
     args = parser.parse_args()
 

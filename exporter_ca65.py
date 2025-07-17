@@ -58,11 +58,9 @@ def export_ca65_tables(frames_data, output_path):
     for channel_data in frames_data.values():
         all_frames.update(int(f) for f in channel_data.keys())
     
+    # If no frames, create minimal data with one silent frame
     if not all_frames:
-        # Create empty file if no data
-        with open(output_path, 'w') as f:
-            f.write("; No audio data to export\n")
-        return
+        all_frames = {0}
     
     sorted_frames = sorted(all_frames)
     max_frame = max(sorted_frames)
@@ -78,88 +76,67 @@ def export_ca65_tables(frames_data, output_path):
     lines.append(f"music_frame_count = {max_frame + 1}")
     lines.append("")
     
-    # Export pulse channel data
-    for pulse_num in [1, 2]:
-        channel_name = f"pulse{pulse_num}"
+    # Define all channel sections, even if empty
+    channels = {
+        'pulse1': {'bytes': 3, 'duty': 2},  # 50% duty cycle
+        'pulse2': {'bytes': 3, 'duty': 2},
+        'triangle': {'bytes': 3, 'duty': None},
+        'noise': {'bytes': 2, 'duty': None}
+    }
+    
+    for channel_name, config in channels.items():
+        lines.append(f"; {channel_name.capitalize()} Channel Data")
+        lines.append(f"{channel_name}_frames:")
+        
         if channel_name in frames_data and frames_data[channel_name]:
-            lines.append(f"; Pulse {pulse_num} Channel Data")
-            lines.append(f"pulse{pulse_num}_frames:")
-            
-            # Create frame-by-frame data
+            # Channel has data - export it
             for frame in range(max_frame + 1):
                 frame_str = str(frame)
                 if frame_str in frames_data[channel_name]:
                     data = frames_data[channel_name][frame_str]
-                    timer_val = midi_note_to_timer_value(data['note'])
-                    volume = min(15, max(0, data['volume']))
                     
-                    # Duty cycle (default to 50%)
-                    duty = 2  # 0=12.5%, 1=25%, 2=50%, 3=75%
-                    ctrl_byte = (duty << 6) | volume
+                    if channel_name.startswith('pulse'):
+                        timer_val = midi_note_to_timer_value(data['note'])
+                        volume = min(15, max(0, data['volume']))
+                        ctrl_byte = (config['duty'] << 6) | volume
+                        timer_lo = timer_val & 0xFF
+                        timer_hi = (timer_val >> 8) & 0x07
+                        lines.append(f"    .byte ${ctrl_byte:02X}, ${timer_lo:02X}, ${timer_hi:02X}  ; Frame {frame}")
                     
-                    timer_lo = timer_val & 0xFF
-                    timer_hi = (timer_val >> 8) & 0x07
+                    elif channel_name == 'triangle':
+                        timer_val = midi_note_to_timer_value(data['note'])
+                        ctrl_byte = 0x80 if data['volume'] > 0 else 0x00
+                        timer_lo = timer_val & 0xFF
+                        timer_hi = (timer_val >> 8) & 0x07
+                        lines.append(f"    .byte ${ctrl_byte:02X}, ${timer_lo:02X}, ${timer_hi:02X}  ; Frame {frame}")
                     
-                    lines.append(f"    .byte ${ctrl_byte:02X}, ${timer_lo:02X}, ${timer_hi:02X}  ; Frame {frame}")
+                    elif channel_name == 'noise':
+                        volume = min(15, max(0, data['volume']))
+                        period_index = 8  # default noise period
+                        lines.append(f"    .byte ${volume:02X}, ${period_index:02X}  ; Frame {frame}")
                 else:
                     # Silent frame
-                    lines.append(f"    .byte $00, $00, $00  ; Frame {frame} (silent)")
-            lines.append("")
-    
-    # Export triangle channel data
-    if "triangle" in frames_data and frames_data["triangle"]:
-        lines.append("; Triangle Channel Data")
-        lines.append("triangle_frames:")
-        
-        for frame in range(max_frame + 1):
-            frame_str = str(frame)
-            if frame_str in frames_data["triangle"]:
-                data = frames_data["triangle"][frame_str]
-                timer_val = midi_note_to_timer_value(data['note'])
-                volume = data['volume']
-                
-                # Triangle has no volume control, only on/off
-                ctrl_byte = 0x80 if volume > 0 else 0x00  # Linear counter control
-                timer_lo = timer_val & 0xFF
-                timer_hi = (timer_val >> 8) & 0x07
-                
-                lines.append(f"    .byte ${ctrl_byte:02X}, ${timer_lo:02X}, ${timer_hi:02X}  ; Frame {frame}")
+                    if config['bytes'] == 3:
+                        lines.append(f"    .byte $00, $00, $00  ; Frame {frame} (silent)")
+                    else:
+                        lines.append(f"    .byte $00, $00  ; Frame {frame} (silent)")
+        else:
+            # Channel has no data - add single silent frame
+            if config['bytes'] == 3:
+                lines.append("    .byte $00, $00, $00  ; Silent frame")
             else:
-                lines.append(f"    .byte $00, $00, $00  ; Frame {frame} (silent)")
+                lines.append("    .byte $00, $00  ; Silent frame")
         lines.append("")
     
-    # Export noise channel data
-    if "noise" in frames_data and frames_data["noise"]:
-        lines.append("; Noise Channel Data")
-        lines.append("noise_frames:")
-        
-        for frame in range(max_frame + 1):
-            frame_str = str(frame)
-            if frame_str in frames_data["noise"]:
-                data = frames_data["noise"][frame_str]
-                volume = min(15, max(0, data['volume']))
-                
-                # Use a default noise period (index 8 = period 202)
-                period_index = 8
-                ctrl_byte = volume
-                period_byte = period_index
-                
-                lines.append(f"    .byte ${ctrl_byte:02X}, ${period_byte:02X}  ; Frame {frame}")
-            else:
-                lines.append(f"    .byte $00, $00  ; Frame {frame} (silent)")
-        lines.append("")
-    
-    # Export DPCM channel data
+    # Export DPCM channel data if present
     if "dpcm" in frames_data and frames_data["dpcm"]:
         lines.append("; DPCM Channel Data")
         lines.append("dpcm_frames:")
-        
         for frame in range(max_frame + 1):
             frame_str = str(frame)
             if frame_str in frames_data["dpcm"]:
                 data = frames_data["dpcm"][frame_str]
                 sample_id = data['sample_id']
-                
                 lines.append(f"    .byte ${sample_id:02X}  ; Frame {frame}")
             else:
                 lines.append(f"    .byte $FF  ; Frame {frame} (no sample)")
@@ -292,6 +269,7 @@ def export_ca65_tables(frames_data, output_path):
     # Write to file
     with open(output_path, 'w') as f:
         f.write('\n'.join(lines))
+
 
 if __name__ == "__main__":
     import sys
