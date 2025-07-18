@@ -75,8 +75,10 @@ class EnhancedLoopManager(LoopManager):
         
         # Register tempo information for each loop
         for loop_id, loop_info in loops.items():
+            # Generate consistent loop ID
+            consistent_loop_id = f"loop_{loop_info['end']}_{loop_info['start']}"
             self.tempo_map.register_loop_point(
-                loop_id,
+                consistent_loop_id,
                 loop_info['start'],
                 loop_info['end']
             )
@@ -89,12 +91,11 @@ class EnhancedLoopManager(LoopManager):
         # Enhance jump table with tempo information
         enhanced_table = {}
         for end_pos, start_pos in jump_table.items():
+            # Use same loop ID format as in detect_loops
+            loop_id = f"loop_{end_pos}_{start_pos}"
             enhanced_table[end_pos] = {
                 'start_pos': start_pos,
-                'tempo_state': self.tempo_map.loop_points.get(
-                    f"loop_{end_pos}_{start_pos}",
-                    None
-                )
+                'tempo_state': self.tempo_map.loop_points.get(loop_id, None)
             }
             
         return enhanced_table
