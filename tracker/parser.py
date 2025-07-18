@@ -69,8 +69,8 @@ def parse_midi_to_frames(midi_path):
                 })
 
     # Third pass: detect patterns and loops for each track
-    pattern_detector = EnhancedPatternDetector()
-    loop_manager = EnhancedLoopManager()
+    pattern_detector = EnhancedPatternDetector(tempo_map)  # Pass tempo_map here
+    loop_manager = EnhancedLoopManager(tempo_map)  # Pass tempo_map here
 
     for track_name, events in track_events.items():
         # Filter only note_on events for pattern detection
