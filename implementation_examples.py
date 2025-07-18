@@ -1,7 +1,5 @@
-from nes.song_bank import SongBank
 import mido
 from collections import defaultdict
-from pathlib import Path
 
 def parse_midi_with_tempo_changes(midi_path):
     """

@@ -252,43 +252,78 @@ class TestEnhancedTempoMap(unittest.TestCase):
     def test_frame_boundary_validation(self):
         """Test that tempo changes align with frame boundaries"""
         tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            ticks_per_beat=480,
+            validation_config=self.default_config
+        )
+        # Enable frame boundary validation for this test only
+        tempo_map._validate_frame_boundaries = True
+        
+        # This should raise an error because it's not frame-aligned
+        with self.assertRaises(TempoValidationError):
+            tempo_map.add_tempo_change(17, 400000)  # Not aligned
+
+    def test_frame_alignment_detailed(self):
+        """Test frame alignment with detailed checks at each step"""
+        tempo_map = EnhancedTempoMap(
             initial_tempo=500000,  # 120 BPM
+            ticks_per_beat=480,
             validation_config=self.default_config,
             optimization_strategy=TempoOptimizationStrategy.FRAME_ALIGNED
         )
+
+        # Add a tempo change and check alignment immediately
+        tempo_map.add_tempo_change(16, 400000)  # 150 BPM
         
-        # Calculate a tick that aligns with frame boundary
-        frame_time = FRAME_MS  # One frame
-        aligned_tick = tempo_map._find_tick_at_time(frame_time)
-        tempo_map.add_tempo_change(aligned_tick, 400000)  # Should pass
+        # Check the actual time of the tempo change
+        time_ms = tempo_map.calculate_time_ms(0, 16)
+        frame_number = time_ms / FRAME_MS
+        print(f"\nDebug info for tick 16:")
+        print(f"Time: {time_ms} ms")
+        print(f"Frame number: {frame_number}")
+        print(f"Remainder: {time_ms % FRAME_MS} ms")
         
-        # Calculate an unaligned tick
-        unaligned_tick = aligned_tick + 1  # Off by one tick
-        with self.assertRaises(TempoValidationError):
-            tempo_map.add_tempo_change(unaligned_tick, 400000)
+        # Add another change and check its alignment
+        tempo_map.add_tempo_change(32, 450000)  # 133.33 BPM
+        time_ms = tempo_map.calculate_time_ms(0, 32)
+        frame_number = time_ms / FRAME_MS
+        print(f"\nDebug info for tick 32:")
+        print(f"Time: {time_ms} ms")
+        print(f"Frame number: {frame_number}")
+        print(f"Remainder: {time_ms % FRAME_MS} ms")
+        
+        # Get all tempo changes and their timings
+        for tick, tempo in tempo_map.tempo_changes:
+            time_ms = tempo_map.calculate_time_ms(0, tick)
+            frame_number = time_ms / FRAME_MS
+            print(f"\nTempo change at tick {tick}:")
+            print(f"Tempo: {tempo} microseconds ({60_000_000/tempo:.2f} BPM)")
+            print(f"Time: {time_ms} ms")
+            print(f"Frame number: {frame_number}")
+            print(f"Remainder: {time_ms % FRAME_MS} ms")
+            
+            # Verify frame alignment
+            self.assertAlmostEqual(time_ms % FRAME_MS, 0, places=3,
+                msg=f"Tempo change at tick {tick} not aligned to frame boundary")
 
     def test_frame_alignment_optimization(self):
         """Test frame alignment optimization strategy"""
         tempo_map = EnhancedTempoMap(
-            initial_tempo=500000,
-            validation_config=self.default_config
+            initial_tempo=500000,  # 120 BPM
+            ticks_per_beat=480,
+            validation_config=self.default_config,
+            optimization_strategy=TempoOptimizationStrategy.FRAME_ALIGNED
         )
+
+        # Add tempo changes that will need alignment
+        tempo_map.add_tempo_change(15, 400000)  # Slightly before frame boundary
+        tempo_map.add_tempo_change(33, 450000)  # Slightly after frame boundary
         
-        # Add changes at frame-aligned ticks
-        frame_time = 16.67  # One frame at 60fps
-        aligned_tick = tempo_map._find_tick_at_time(frame_time)
-        tempo_map.add_tempo_change(aligned_tick, 400000)
-        tempo_map.add_tempo_change(aligned_tick * 2, 450000)
-        tempo_map.add_tempo_change(aligned_tick * 3, 500000)
-        
-        # Optimize
-        tempo_map.optimization_strategy = TempoOptimizationStrategy.FRAME_ALIGNED
-        tempo_map.optimize_tempo_changes()
-        
-        # Verify frame alignment
-        for tick, tempo in tempo_map.tempo_changes[1:]:  # Skip initial
-            frame_time = tempo_map.calculate_time_ms(0, tick)
-            self.assertAlmostEqual(frame_time % FRAME_MS, 0, places=1)
+        # After optimization, verify that each tempo change is at a frame boundary
+        for tick, tempo in tempo_map.tempo_changes:
+            time_ms = tempo_map.calculate_time_ms(0, tick)
+            self.assertAlmostEqual(time_ms % FRAME_MS, 0, places=1,
+                msg=f"Tempo change at tick {tick} not aligned to frame boundary")
 
     def test_curved_tempo_optimization(self):
         """Test NES-optimized curve calculations"""
