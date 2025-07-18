@@ -14,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tracker.tempo_map import (
     TempoMap, EnhancedTempoMap, TempoValidationConfig,
     TempoChangeType, TempoValidationError,
-    TempoChange
+    TempoChange, TempoOptimizationStrategy
 )
 from constants import FRAME_MS, FRAME_RATE_HZ
 
@@ -248,6 +248,170 @@ class TestEnhancedTempoMap(unittest.TestCase):
         tempo_map.add_tempo_change(960, min_tempo)
         
         self.assertEqual(tempo_map.get_tempo_at_tick(960), min_tempo)
+    
+    def test_frame_boundary_validation(self):
+        """Test that tempo changes align with frame boundaries"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,  # 120 BPM
+            validation_config=self.default_config,
+            optimization_strategy=TempoOptimizationStrategy.FRAME_ALIGNED
+        )
+        
+        # Calculate a tick that aligns with frame boundary
+        frame_time = FRAME_MS  # One frame
+        aligned_tick = tempo_map._find_tick_at_time(frame_time)
+        tempo_map.add_tempo_change(aligned_tick, 400000)  # Should pass
+        
+        # Calculate an unaligned tick
+        unaligned_tick = aligned_tick + 1  # Off by one tick
+        with self.assertRaises(TempoValidationError):
+            tempo_map.add_tempo_change(unaligned_tick, 400000)
+
+    def test_frame_alignment_optimization(self):
+        """Test frame alignment optimization strategy"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config
+        )
+        
+        # Add changes at frame-aligned ticks
+        frame_time = 16.67  # One frame at 60fps
+        aligned_tick = tempo_map._find_tick_at_time(frame_time)
+        tempo_map.add_tempo_change(aligned_tick, 400000)
+        tempo_map.add_tempo_change(aligned_tick * 2, 450000)
+        tempo_map.add_tempo_change(aligned_tick * 3, 500000)
+        
+        # Optimize
+        tempo_map.optimization_strategy = TempoOptimizationStrategy.FRAME_ALIGNED
+        tempo_map.optimize_tempo_changes()
+        
+        # Verify frame alignment
+        for tick, tempo in tempo_map.tempo_changes[1:]:  # Skip initial
+            frame_time = tempo_map.calculate_time_ms(0, tick)
+            self.assertAlmostEqual(frame_time % FRAME_MS, 0, places=1)
+
+    def test_curved_tempo_optimization(self):
+        """Test NES-optimized curve calculations"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config
+        )
+        
+        start_tempo = 500000
+        end_tempo = 400000
+        
+        # Test different curve factors
+        for curve_factor in [0.5, 1.0, 2.0]:
+            result = tempo_map._calculate_curved_tempo(
+                start_tempo, end_tempo, 0.5, curve_factor
+            )
+            
+            # Quantize result to 16 microsecond steps before testing
+            quantized_result = (result // 16) * 16
+            self.assertEqual(quantized_result, result)
+            
+            # Check that result is within bounds
+            self.assertTrue(min(start_tempo, end_tempo) <= result <= max(start_tempo, end_tempo))
+
+    def test_pattern_tempo_optimization(self):
+        """Test pattern-specific tempo optimization"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config
+        )
+        
+        pattern_id = "test_pattern"
+        base_tempo = 500000
+        
+        # Calculate frame-aligned ticks
+        frame_time = 16.67  # One frame at 60fps
+        aligned_tick = tempo_map._find_tick_at_time(frame_time)
+        
+        # Add pattern with frame-aligned variations
+        variations = [
+            TempoChange(aligned_tick, 450000, TempoChangeType.LINEAR, 240),
+            TempoChange(aligned_tick * 2, 520000, TempoChangeType.CURVE, 240, 1.5),
+            TempoChange(aligned_tick * 3, 510000, TempoChangeType.IMMEDIATE)
+        ]
+        
+        tempo_map.add_pattern_tempo(pattern_id, base_tempo, variations)
+        
+        # Optimize pattern tempos
+        tempo_map.optimize_pattern_tempos()
+        
+        # Check that variations are optimized
+        pattern_info = tempo_map.pattern_tempos[pattern_id]
+        for var in pattern_info.variations:
+            # Check frame alignment
+            frame_time = tempo_map.calculate_time_ms(0, var.tick)
+            self.assertAlmostEqual(frame_time % FRAME_MS, 0, places=1)
+            
+            # Check significant difference threshold
+            tempo_diff_ratio = abs(var.tempo - base_tempo) / base_tempo
+            self.assertGreater(tempo_diff_ratio, 0.05)
+
+    def test_memory_optimization(self):
+        """Test memory usage optimization"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config
+        )
+        
+        # Add several similar tempo changes
+        tempo_map.add_tempo_change(480, 500000)
+        tempo_map.add_tempo_change(720, 502000)  # Small difference
+        tempo_map.add_tempo_change(960, 550000)  # Significant difference
+        
+        initial_count = len(tempo_map.tempo_changes)
+        
+        # Optimize
+        tempo_map.optimization_strategy = TempoOptimizationStrategy.MINIMIZE_CHANGES
+        tempo_map.optimize_tempo_changes()
+        
+        # Check that similar changes were combined
+        optimized_count = len(tempo_map.tempo_changes)
+        self.assertLess(optimized_count, initial_count)
+        
+        # Check that significant changes were preserved
+        found_significant = False
+        for tick, tempo in tempo_map.tempo_changes:
+            if tempo == 550000:
+                found_significant = True
+                break
+        self.assertTrue(found_significant)
+
+def test_optimization_statistics(self):
+    """Test optimization statistics tracking"""
+    tempo_map = EnhancedTempoMap(
+        initial_tempo=500000,
+        validation_config=self.default_config
+    )
+    
+    # Calculate frame-aligned ticks
+    frame_time = 16.67  # One frame at 60fps
+    aligned_tick = tempo_map._find_tick_at_time(frame_time)
+    
+    # Add changes at frame-aligned ticks
+    tempo_map.add_tempo_change(aligned_tick, 500000)
+    tempo_map.add_tempo_change(aligned_tick * 2, 502000)
+    tempo_map.add_tempo_change(aligned_tick * 3, 550000)
+    
+    # Add pattern variations
+    pattern_id = "test_pattern"
+    tempo_map.add_pattern_tempo(
+        pattern_id, 500000,
+        [TempoChange(aligned_tick * 4, 450000, TempoChangeType.LINEAR, 240)]
+    )
+    
+    # Optimize
+    tempo_map.optimize_tempo_changes()
+    
+    # Check statistics
+    stats = tempo_map.get_optimization_stats()
+    self.assertIn('changes_combined', stats)
+    self.assertIn('frame_alignments', stats)
+    self.assertIn('pattern_tempo_optimizations', stats)
+
 
 class TestTempoValidationConfig(unittest.TestCase):
     """Test TempoValidationConfig functionality"""

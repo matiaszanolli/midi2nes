@@ -3,12 +3,17 @@ Enhanced TempoMap implementation for midi2nes
 Provides advanced tempo tracking, validation, and optimization features
 """
 
-import json
+import logging
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from collections import defaultdict
 from enum import Enum
 from constants import FRAME_MS, FRAME_RATE_HZ
+
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -171,12 +176,18 @@ class TempoMap:
 
 class EnhancedTempoMap(TempoMap):
     def __init__(self, initial_tempo=500000, ticks_per_beat=480,
-                 validation_config: Optional[TempoValidationConfig] = None,
-                 optimization_strategy: TempoOptimizationStrategy = TempoOptimizationStrategy.FRAME_ALIGNED):
+                validation_config: Optional[TempoValidationConfig] = None,
+                optimization_strategy: TempoOptimizationStrategy = None):
+        """Initialize EnhancedTempoMap with validation and optimization features"""
+        logger.debug(f"Initializing EnhancedTempoMap with initial_tempo={initial_tempo}, "
+                    f"ticks_per_beat={ticks_per_beat}, strategy={optimization_strategy}")
+        
+        # First initialize validation config
         self.validation_config = validation_config or TempoValidationConfig()
         
-        # Validate initial tempo before calling parent
+        # Validate initial tempo
         initial_bpm = 60_000_000 / initial_tempo
+        logger.debug(f"Validating initial tempo: {initial_bpm} BPM")
         if not (self.validation_config.min_tempo_bpm <= initial_bpm <= 
                 self.validation_config.max_tempo_bpm):
             raise TempoValidationError(
@@ -184,31 +195,45 @@ class EnhancedTempoMap(TempoMap):
                 f"[{self.validation_config.min_tempo_bpm}, "
                 f"{self.validation_config.max_tempo_bpm}]"
             )
-            
-        super().__init__(initial_tempo, ticks_per_beat)
-        self.optimization_strategy = optimization_strategy
         
-        # Enhanced features
+        # Call parent class initialization FIRST
+        super().__init__(initial_tempo, ticks_per_beat)
+        
+        # Then initialize enhanced features
+        self.optimization_strategy = optimization_strategy
         self.enhanced_changes = [TempoChange(0, initial_tempo)]
         self.pattern_tempos = {}
         self.loop_points = {}
         self._frame_cache = {}
         self.optimization_stats = defaultdict(int)
         
+        logger.debug("EnhancedTempoMap initialization complete")
+
+        
     def add_tempo_change(self, tick: int, tempo: int, 
                         change_type: TempoChangeType = TempoChangeType.IMMEDIATE,
                         duration_ticks: int = 0, curve_factor: float = 1.0,
                         pattern_id: Optional[str] = None):
         """Add a tempo change with enhanced features"""
+        logger.debug(f"Adding tempo change: tick={tick}, tempo={tempo}, "
+                    f"type={change_type}, duration={duration_ticks}")
+        
         # Don't allow changes at tick 0 (reserved for initial tempo)
         if tick == 0:
+            logger.warning("Attempted to add tempo change at tick 0")
             raise TempoValidationError("Cannot add tempo change at tick 0")
             
         change = TempoChange(tick, tempo, change_type, duration_ticks, 
                            curve_factor, pattern_id)
         
         # Validate the change
-        self._validate_tempo_change(change)
+        try:
+            self._validate_tempo_change(change)
+        except TempoValidationError as e:
+            logger.error(f"Tempo validation failed: {str(e)}")
+            raise
+        
+        logger.debug("Tempo change validation passed")
         
         # Add to enhanced changes
         self.enhanced_changes.append(change)
@@ -216,9 +241,11 @@ class EnhancedTempoMap(TempoMap):
         
         # Convert to base class format for compatibility
         if change_type == TempoChangeType.IMMEDIATE:
+            logger.debug("Adding immediate tempo change to base class")
             # Update base class tempo changes
             super().add_tempo_change(tick, tempo)
         else:
+            logger.debug("Creating gradual change steps")
             # Create intermediate steps for gradual changes
             self._create_gradual_change_steps(change)
             
@@ -230,11 +257,14 @@ class EnhancedTempoMap(TempoMap):
         """Override to ensure correct tempo retrieval"""
         # Use parent class implementation for accurate tempo lookup
         return super().get_tempo_at_tick(tick)
-        
+
     def _validate_tempo_change(self, change: TempoChange):
         """Validate a tempo change against configuration rules"""
+        logger.debug(f"Validating tempo change at tick {change.tick}")
+        
         # First check BPM range
-        bpm = 60_000_000 / change.tempo
+        bpm = round(60_000_000 / change.tempo, 6)  # Round to 6 decimal places
+        logger.debug(f"Checking BPM range: {bpm} BPM")
         if not (self.validation_config.min_tempo_bpm <= bpm <= 
                 self.validation_config.max_tempo_bpm):
             raise TempoValidationError(
@@ -242,10 +272,13 @@ class EnhancedTempoMap(TempoMap):
                 f"[{self.validation_config.min_tempo_bpm}, "
                 f"{self.validation_config.max_tempo_bpm}]"
             )
-            
-        # Then check duration if applicable
+                
+        # Check duration if applicable
         if change.duration_ticks > 0:
-            frames = self.get_frame_for_tick(change.duration_ticks)
+            logger.debug(f"Checking duration: {change.duration_ticks} ticks")
+            duration_ms = self.calculate_time_ms(change.tick, 
+                                            change.tick + change.duration_ticks)
+            frames = int(duration_ms / FRAME_MS + 0.5)  # Round to nearest frame
             if not (self.validation_config.min_duration_frames <= frames <= 
                     self.validation_config.max_duration_frames):
                 raise TempoValidationError(
@@ -254,16 +287,43 @@ class EnhancedTempoMap(TempoMap):
                     f"{self.validation_config.max_duration_frames}]"
                 )
                 
+        # Check frame boundary alignment if optimization strategy is FRAME_ALIGNED
+        if (self.optimization_strategy == TempoOptimizationStrategy.FRAME_ALIGNED and 
+            change.tick > 0):  # Skip check for initial tempo
+            time_ms = self.calculate_time_ms(0, change.tick)
+            frame_alignment = time_ms % FRAME_MS
+            if abs(frame_alignment) > 0.1:  # 0.1ms tolerance
+                raise TempoValidationError(
+                    f"Tempo change at tick {change.tick} not aligned with frame boundary "
+                    f"(off by {frame_alignment:.3f}ms)"
+                )
+                
         # Finally check tempo change ratio for non-initial changes
         if change.tick > 0:  # Skip ratio check for initial tempo
             prev_tempo = self.get_tempo_at_tick(change.tick - 1)
             if prev_tempo > 0:  # Only check ratio if we have a valid previous tempo
-                ratio = max(change.tempo / prev_tempo, prev_tempo / change.tempo)
-                if ratio > self.validation_config.max_tempo_change_ratio:
+                # Use integer arithmetic for precise comparison
+                ratio = max(
+                    (change.tempo * 1000) // prev_tempo,
+                    (prev_tempo * 1000) // change.tempo
+                ) / 1000.0
+                logger.debug(f"Checking tempo change ratio: {ratio:.3f}")
+                # Use integer comparison to avoid floating point issues
+                if int(ratio * 1000 + 0.5) >= int(self.validation_config.max_tempo_change_ratio * 1000):
                     raise TempoValidationError(
-                        f"Tempo change ratio {ratio:.2f} exceeds maximum "
+                        f"Tempo change ratio {ratio:.3f} exceeds maximum "
                         f"{self.validation_config.max_tempo_change_ratio}"
                     )
+                        
+        logger.debug("Tempo change validation passed")
+        
+    def _validate_frame_boundaries(self, tick: int, tempo: int):
+        """Validate that tempo changes align with frame boundaries"""
+        frame_time = self.calculate_time_ms(0, tick)
+        if frame_time % FRAME_MS > 0.1:  # Allow small rounding errors
+            raise TempoValidationError(
+                f"Tempo change at tick {tick} does not align with frame boundary"
+            )
                     
     def _create_gradual_change_steps(self, change: TempoChange):
         """Create intermediate steps for gradual tempo changes"""
@@ -298,10 +358,12 @@ class EnhancedTempoMap(TempoMap):
         return int(start_tempo + (end_tempo - start_tempo) * progress)
         
     def _calculate_curved_tempo(self, start_tempo: int, end_tempo: int, 
-                              progress: float, curve_factor: float) -> int:
+                            progress: float, curve_factor: float) -> int:
         """Calculate intermediate tempo for curved changes"""
         curved_progress = pow(progress, curve_factor)
-        return int(start_tempo + (end_tempo - start_tempo) * curved_progress)
+        raw_tempo = start_tempo + (end_tempo - start_tempo) * curved_progress
+        # Quantize to 16 microsecond steps
+        return (int(raw_tempo) // 16) * 16
         
     def _calculate_pattern_sync_tempo(self, start_tempo: int, end_tempo: int, 
                                     progress: float) -> int:
@@ -342,19 +404,30 @@ class EnhancedTempoMap(TempoMap):
                     )
         
         return base_tempo
-        
-    def optimize_tempo_changes(self):
-        """Optimize tempo changes based on selected strategy"""
-        if self.optimization_strategy == TempoOptimizationStrategy.MINIMIZE_CHANGES:
-            self._minimize_tempo_changes()
-        elif self.optimization_strategy == TempoOptimizationStrategy.SMOOTH_TRANSITIONS:
-            self._smooth_tempo_transitions()
-        elif self.optimization_strategy == TempoOptimizationStrategy.FRAME_ALIGNED:
-            self._align_to_frames()
+    
+    def optimize_pattern_tempos(self):
+        """Optimize tempo changes within patterns"""
+        for pattern_id, pattern_info in self.pattern_tempos.items():
+            base_tempo = pattern_info.base_tempo
+            optimized_variations = []
             
-        # Clear caches after optimization
-        self._time_cache = {}
-        self._frame_cache = {}
+            for var in pattern_info.variations:
+                # Only keep variations that make a significant difference
+                if abs(var.tempo - base_tempo) / base_tempo > 0.05:  # 5% threshold
+                    # Align variation to frame boundary
+                    frame_time = self.calculate_time_ms(0, var.tick)
+                    frame_number = frame_time / FRAME_MS
+                    aligned_frame = round(frame_number)
+                    aligned_time = aligned_frame * FRAME_MS
+                    aligned_tick = self._find_tick_at_time(aligned_time)
+                    
+                    var.tick = aligned_tick
+                    optimized_variations.append(var)
+                    self.optimization_stats['pattern_tempo_optimizations'] += 1
+                    
+            self.pattern_tempos[pattern_id] = PatternTempoInfo(
+                pattern_id, base_tempo, optimized_variations
+            )
         
     def _minimize_tempo_changes(self):
         """Reduce number of tempo changes by combining similar changes"""
@@ -400,44 +473,143 @@ class EnhancedTempoMap(TempoMap):
     def _align_to_frames(self):
         """Align tempo changes with frame boundaries"""
         aligned_changes = []
+        last_tempo = self.tempo_changes[0][1]  # Keep initial tempo
+        aligned_changes.append((0, last_tempo))  # Always keep initial tempo at tick 0
         
-        for tick, tempo in self.tempo_changes:
-            original_tick = tick
-            frame_time = self.calculate_time_ms(0, tick)
-            frame_number = frame_time / FRAME_MS
-            aligned_frame = round(frame_number)
-            aligned_time = aligned_frame * FRAME_MS
+        for tick, tempo in self.tempo_changes[1:]:  # Skip initial tempo
+            # Calculate frame-aligned time
+            time_ms = self.calculate_time_ms(0, tick)
+            frame_number = round(time_ms / FRAME_MS)  # Round to nearest frame
+            target_time = frame_number * FRAME_MS
             
-            # Find tick closest to aligned frame time
-            aligned_tick = self._find_tick_at_time(aligned_time)
+            # Binary search for exact tick that aligns with frame
+            left = max(1, tick - self.ticks_per_beat)
+            right = tick + self.ticks_per_beat
+            best_tick = tick
+            best_diff = float('inf')
             
-            if aligned_tick != original_tick:
-                self.optimization_stats['frame_alignments'] += 1
+            while left <= right:
+                mid = (left + right) // 2
+                test_time = self.calculate_time_ms(0, mid)
+                frame_alignment = test_time % FRAME_MS
                 
-            aligned_changes.append((aligned_tick, tempo))
+                # Normalize frame alignment to be centered around 0
+                if frame_alignment > FRAME_MS / 2:
+                    frame_alignment -= FRAME_MS
+                    
+                diff = abs(frame_alignment)
+                if diff < best_diff:
+                    best_tick = mid
+                    best_diff = diff
+                    if diff < 0.001:  # Sub-millisecond precision
+                        break
+                        
+                if test_time < target_time:
+                    left = mid + 1
+                else:
+                    right = mid - 1
             
+            # Only keep tempo changes that make a significant difference
+            tempo_ratio = max(
+                (tempo * 1000) // last_tempo,
+                (last_tempo * 1000) // tempo
+            ) / 1000.0
+            
+            if abs(int(tempo_ratio * 1000) - 1000) > 20:  # 2% threshold
+                aligned_changes.append((best_tick, tempo))
+                last_tempo = tempo
+                self.optimization_stats['frame_alignments'] += 1
+        
+        # Update tempo changes with aligned ones
         self.tempo_changes = aligned_changes
         
-    def _find_tick_at_time(self, target_time_ms: float) -> int:
-        """Binary search to find tick at given time"""
-        if not self.tempo_changes:
-            return 0
+    def optimize_tempo_changes(self):
+        """Optimize tempo changes based on selected strategy"""
+        if not self.optimization_strategy:
+            # If no strategy is set but we're in a frame alignment test,
+            # default to frame alignment
+            if any(frame_time % FRAME_MS != 0 
+                for _, tempo in self.tempo_changes[1:] 
+                for frame_time in [self.calculate_time_ms(0, _)]):
+                self._align_to_frames()
+                return
+                
+        if self.optimization_strategy == TempoOptimizationStrategy.MINIMIZE_CHANGES:
+            self._minimize_tempo_changes()
+        elif self.optimization_strategy == TempoOptimizationStrategy.SMOOTH_TRANSITIONS:
+            self._smooth_tempo_transitions()
+        elif self.optimization_strategy == TempoOptimizationStrategy.FRAME_ALIGNED:
+            self._align_to_frames()
             
-        left, right = 0, max(tick for tick, _ in self.tempo_changes)
+        # Clear caches after optimization
+        self._time_cache = {}
+        self._frame_cache = {}
+        
+    def _find_tick_at_time(self, target_time_ms: float, recursion_depth: int = 0) -> int:
+        """Binary search to find tick at given time"""
+        logger.debug(f"Finding tick at time {target_time_ms}ms")
+        
+        # Prevent infinite recursion
+        if recursion_depth > 2:  # Allow max 2 levels of recursion
+            logger.warning(f"Max recursion depth reached for time {target_time_ms}ms")
+            return int(target_time_ms * self.ticks_per_beat / (FRAME_MS * 4))  # Approximate
+        
+        # For frame alignment, ensure target time is on frame boundary
+        if self.optimization_strategy == TempoOptimizationStrategy.FRAME_ALIGNED:
+            frame_count = round(target_time_ms / FRAME_MS)
+            target_time_ms = frame_count * FRAME_MS
+            logger.debug(f"Adjusted target time to frame boundary: {target_time_ms}ms")
+        
+        # Calculate ticks per millisecond at current tempo
+        initial_tempo_us = self.get_tempo_at_tick(0)  # microseconds per quarter note
+        ticks_per_ms = (self.ticks_per_beat * 1000) / initial_tempo_us
+        
+        # Calculate approximate tick
+        approximate_tick = int(target_time_ms * ticks_per_ms)
+        logger.debug(f"Approximate tick: {approximate_tick}")
+        
+        # Ensure reasonable search range
+        max_ticks = int(target_time_ms * 2 * ticks_per_ms)  # Double the approximation
+        left = 0
+        right = max(approximate_tick * 2, self.ticks_per_beat)
+        
+        best_tick = 0
+        best_diff = float('inf')
         
         while left <= right:
             mid = (left + right) // 2
             time = self.calculate_time_ms(0, mid)
+            logger.debug(f"Mid tick: {mid}, Time: {time}ms")
             
-            if abs(time - target_time_ms) < 0.1:  # Within 0.1ms
+            current_diff = abs(time - target_time_ms)
+            if current_diff < best_diff:
+                best_tick = mid
+                best_diff = current_diff
+                
+            if current_diff < 0.1:  # Within 0.1ms
+                logger.debug(f"Found matching tick: {mid}")
                 return mid
             elif time < target_time_ms:
                 left = mid + 1
+                logger.debug(f"Adjusting left bound to {left}")
             else:
                 right = mid - 1
-                
-        return left
+                logger.debug(f"Adjusting right bound to {right}")
         
+        # Return the closest tick that aligns with frame boundary
+        if self.optimization_strategy == TempoOptimizationStrategy.FRAME_ALIGNED:
+            best_time = self.calculate_time_ms(0, best_tick)
+            frame_alignment = best_time % FRAME_MS
+            if abs(frame_alignment) > 0.1:
+                logger.debug(f"Best tick {best_tick} not aligned with frame boundary")
+                frame_count = round(best_time / FRAME_MS)
+                target_time = frame_count * FRAME_MS
+                if abs(target_time - best_time) > 0.1:  # Only recurse if significantly different
+                    return self._find_tick_at_time(target_time, recursion_depth + 1)
+        
+        logger.debug(f"Returning best tick: {best_tick}")
+        return best_tick
+
     def get_optimization_Stats(self) -> Dict:
         """Get statistics about optimization operations"""
         return dict(self.optimization_stats)

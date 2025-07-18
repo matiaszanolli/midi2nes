@@ -81,9 +81,53 @@ pulse2_frames:  .byte $00, $00, $00
 triangle_frames: .byte $00, $00, $00
 noise_frames:   .byte $00, $00
 """
-
+    
     def __init__(self, project_path: str):
         self.project_path = Path(project_path)
+        self.song_bank = None
+
+    def add_song_bank(self, song_bank):
+        """Add multi-song bank support to the project"""
+        self.song_bank = song_bank
+        
+        # Update linker config to support multiple banks
+        self.LINKER_CONFIG = self._generate_multi_bank_config()
+        
+        return True
+
+    def _generate_multi_bank_config(self):
+        """Generate linker config with support for multiple banks"""
+        if not self.song_bank:
+            return self.LINKER_CONFIG
+            
+        config = """MEMORY {
+    ZP:     start = $00,    size = $0100, type = rw, file = "";
+    RAM:    start = $0200,  size = $0600, type = rw, file = "";
+    HEADER: start = $0000,  size = $0010, type = ro, file = %O, fill = yes;
+"""
+        
+        # Add bank segments
+        for bank_num in self.song_bank.get_banks():
+            config += f"    BANK{bank_num}: start = ${8000 + bank_num * 0x4000}, " \
+                     f"size = $4000, type = ro, file = %O, fill = yes;\n"
+        
+        config += """    VECTORS: start = $FFFA, size = $0006, type = ro, file = %O, fill = yes;
+}
+
+SEGMENTS {
+    HEADER:   load = HEADER,  type = ro;
+    ZEROPAGE: load = ZP,      type = zp;
+    BSS:      load = RAM,     type = bss, define = yes;
+"""
+        
+        # Add bank segments
+        for bank_num in self.song_bank.get_banks():
+            config += f"    BANK{bank_num}:  load = BANK{bank_num}, type = ro;\n"
+            
+        config += """    VECTORS:  load = VECTORS, type = ro;
+}"""
+        
+        return config
 
     def prepare_project(self, music_asm_path: str):
         """Creates a complete NES project structure ready for CC65 compilation"""
