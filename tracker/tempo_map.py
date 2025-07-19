@@ -221,11 +221,6 @@ class EnhancedTempoMap(TempoMap):
         logger.debug(f"Adding tempo change: tick={tick}, tempo={tempo}, "
                     f"type={change_type}, duration={duration_ticks}")
         
-        # Don't allow changes at tick 0 (reserved for initial tempo)
-        if tick == 0:
-            logger.warning("Attempted to add tempo change at tick 0")
-            raise TempoValidationError("Cannot add tempo change at tick 0")
-            
         change = TempoChange(tick, tempo, change_type, duration_ticks, 
                         curve_factor, pattern_id)
         

@@ -8,7 +8,7 @@ from tracker.track_mapper import assign_tracks_to_nes_channels
 from nes.emulator_core import NESEmulatorCore
 from nes.project_builder import NESProjectBuilder
 from exporter.exporter_nsftxt import generate_nsftxt
-from exporter.exporter_ca65 import export_ca65_tables, export_ca65_tables_with_patterns
+from exporter.exporter_ca65 import export_ca65_tables_with_patterns
 from exporter.exporter import generate_famitracker_txt_with_patterns
 from tracker.pattern_detector import EnhancedPatternDetector  # Add this import
 from tracker.tempo_map import EnhancedTempoMap  # Add this import
@@ -16,7 +16,7 @@ from tracker.tempo_map import EnhancedTempoMap  # Add this import
 def run_parse(args):
     midi_data = parse_midi_to_frames(args.input)
     Path(args.output).write_text(json.dumps(midi_data, indent=2))
-    print(f"✅ Parsed MIDI -> {args.output}")
+    print(f"[OK] Parsed MIDI -> {args.output}")
 
 def run_map(args):
     midi_data = json.loads(Path(args.input).read_text())
@@ -24,7 +24,7 @@ def run_map(args):
     # Extract just the events from the parsed data
     mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
     Path(args.output).write_text(json.dumps(mapped, indent=2))
-    print(f"✅ Mapped tracks -> {args.output}")
+    print(f"[OK] Mapped tracks -> {args.output}")
 
 def run_frames(args):
     mapped = json.loads(Path(args.input).read_text())
@@ -64,27 +64,45 @@ def run_export(args):
         print(f" Exported FamiTracker TXT -> {args.output}")
     
     elif args.format == "ca65":
+        # Always use export_ca65_tables_with_patterns, with empty patterns if none provided
         if pattern_data:
-            export_ca65_tables_with_patterns(
-                frames,
-                pattern_data['patterns'],
-                pattern_data['references'],
-                args.output
-            )
+            patterns = pattern_data['patterns']
+            references = pattern_data['references']
         else:
-            export_ca65_tables(frames, args.output)
-        print(f"✅ Exported CA65 ASM -> {args.output}")
+            patterns = []
+            references = {}
+            
+        export_ca65_tables_with_patterns(
+            frames,
+            patterns,
+            references,
+            args.output
+        )
+        print(f" Exported CA65 ASM -> {args.output}")
 
 def run_detect_patterns(args):
-    """Detect and compress patterns in the frame data"""
     frames = json.loads(Path(args.input).read_text())
     
     # Create tempo map and pattern detector
     tempo_map = EnhancedTempoMap(initial_tempo=500000)  # 120 BPM default
     detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3)
     
+    # Extract events from frames structure
+    events = []
+    for channel_name, channel_frames in frames.items():
+        for frame_num, frame_data in channel_frames.items():
+            event = {
+                'frame': int(frame_num),
+                'note': frame_data.get('note', 0),
+                'volume': frame_data.get('volume', 0)
+            }
+            events.append(event)
+    
+    # Sort events by frame number
+    events.sort(key=lambda x: x['frame'])
+    
     # Detect patterns
-    pattern_result = detector.detect_patterns(frames)
+    pattern_result = detector.detect_patterns(events)
     
     # Save compressed patterns
     output = {

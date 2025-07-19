@@ -53,12 +53,12 @@ def midi_note_to_timer_value(midi_note):
 
 # exporter_ca65.py (modified version)
 
-def export_ca65_tables_with_patterns(frames_data, compressed_patterns, pattern_refs, output_path):
-    """Export frame data as CA65 assembly tables with pattern compression"""
-    pattern_exporter = PatternExporter(compressed_patterns, pattern_refs)
-    
-    # Get the maximum frame number
-    max_frame = pattern_exporter.get_max_frame()
+def export_ca65_tables_with_patterns(frames, patterns, references, output_path):
+    # Convert patterns list to dictionary if needed
+    if isinstance(patterns, list):
+        patterns_dict = {f"pattern_{i}": pattern for i, pattern in enumerate(patterns)}
+    else:
+        patterns_dict = patterns
     
     lines = []
     lines.append("; CA65 Assembly Export (Pattern Compressed)")
@@ -69,7 +69,7 @@ def export_ca65_tables_with_patterns(frames_data, compressed_patterns, pattern_r
     
     # Export pattern data
     lines.append("; Pattern Data")
-    for pattern_id, pattern in compressed_patterns.items():
+    for pattern_id, pattern in patterns_dict.items():
         lines.append(f"pattern_{pattern_id}:")
         for event in pattern['events']:
             # Convert event data to bytes
@@ -79,12 +79,16 @@ def export_ca65_tables_with_patterns(frames_data, compressed_patterns, pattern_r
                 lines.append(f"    .byte ${volume:02X}, ${timer_val & 0xFF:02X}, ${(timer_val >> 8) & 0x07:02X}")
         lines.append("")
     
+    # Calculate max frame from references
+    max_frame = max(int(frame) for frame in references.keys()) if references else 0
+    
     # Export pattern reference table
     lines.append("; Pattern Reference Table")
     lines.append("pattern_refs:")
     for frame in range(max_frame + 1):
-        if frame in pattern_exporter.pattern_map:
-            pattern_id, offset = pattern_exporter.pattern_map[frame]
+        frame_str = str(frame)
+        if frame_str in references:
+            pattern_id, offset = references[frame_str]
             lines.append(f"    .word pattern_{pattern_id}")
             lines.append(f"    .byte {offset}")
         else:
