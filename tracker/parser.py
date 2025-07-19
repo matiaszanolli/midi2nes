@@ -9,7 +9,7 @@ from tracker.loop_manager import EnhancedLoopManager
 
 def parse_midi_to_frames(midi_path):
     mid = mido.MidiFile(midi_path)
-    # Initialize with validation and optimization
+    # Initialize with validation but NO optimization
     config = TempoValidationConfig(
         min_tempo_bpm=40.0,
         max_tempo_bpm=250.0,
@@ -19,7 +19,7 @@ def parse_midi_to_frames(midi_path):
     tempo_map = EnhancedTempoMap(
         initial_tempo=500000,  # 120 BPM
         validation_config=config,
-        optimization_strategy=TempoOptimizationStrategy.FRAME_ALIGNED
+        optimization_strategy=None  # Disable optimization
     )
     track_events = defaultdict(list)
     track_metadata = defaultdict(dict)
@@ -31,15 +31,14 @@ def parse_midi_to_frames(midi_path):
             current_tick += msg.time
             if msg.type == 'set_tempo':
                 try:
+                    # Use IMMEDIATE tempo changes without duration
                     tempo_map.add_tempo_change(
-                        current_tick,  # tick
-                        msg.tempo,  # 150 BPM
-                        TempoChangeType.LINEAR,
-                        duration_ticks=960
+                        current_tick,
+                        msg.tempo,
+                        TempoChangeType.IMMEDIATE  # Changed from LINEAR
                     )
                 except TempoValidationError as e:
                     print(f"Invalid tempo change: {e}")
-        tempo_map.optimize_tempo_changes()
 
     # Second pass: process notes with accurate timing
     for i, track in enumerate(mid.tracks):
@@ -48,8 +47,8 @@ def parse_midi_to_frames(midi_path):
 
         for msg in track:
             current_tick += msg.time
-            current_time_ms = tempo_map.calculate_time_ms(0, current_tick)
-            frame = int(current_time_ms / FRAME_MS)
+            # Use tempo_map's get_frame_for_tick for consistent frame calculation
+            frame = tempo_map.get_frame_for_tick(current_tick)
 
             if msg.type == 'track_name':
                 track_name = msg.name.strip().replace(" ", "_")

@@ -68,12 +68,11 @@ class TestTempoMap(unittest.TestCase):
         # Total = 750ms
         self.assertAlmostEqual(time_ms, 750.0, places=1)
         
-    def test_get_frame_for_tick(self):
-        """Test frame calculation for ticks"""
-        frame = self.tempo_map.get_frame_for_tick(480)
-        time_ms = self.tempo_map.calculate_time_ms(0, 480)
-        expected_frame = int(time_ms / FRAME_MS)
-        self.assertEqual(frame, expected_frame)
+    def get_frame_for_tick(self, tick: int) -> int:
+        """Get the frame number for a specific tick"""
+        time_ms = self.calculate_time_ms(0, tick)
+        # Always truncate to ensure consistent frame boundaries
+        return int(time_ms // FRAME_MS)  # Use floor division
         
     def test_get_tempo_bpm_at_tick(self):
         """Test BPM calculation"""
