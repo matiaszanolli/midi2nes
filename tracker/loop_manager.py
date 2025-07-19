@@ -2,7 +2,9 @@ from typing import List, Dict
 from tracker.tempo_map import EnhancedTempoMap
 
 class LoopManager:
-    def __init__(self):
+    def __init__(self, simple_mode=False):
+        """Initialize LoopManager."""
+        self.simple_mode = simple_mode
         self.loops = {}
         self.jump_table = {}
 
@@ -13,7 +15,23 @@ class LoopManager:
         """
         loops = {}
         
-        # Find potential loop points from patterns
+        # First check for full sequence loops
+        total_length = 0
+        for pattern_id, info in pattern_info.items():
+            positions = info['positions']
+            if len(positions) > 1:
+                pattern_end = positions[-1] + info['length']
+                total_length = max(total_length, pattern_end)
+                
+                if positions[0] == 0:
+                    loops['full_sequence'] = {
+                        'start': 0,
+                        'end': pattern_end,
+                        'length': pattern_end,
+                        'repetitions': len(positions)
+                    }
+        
+        # Then check for other potential loops
         for pattern_id, info in pattern_info.items():
             positions = info['positions']
             if len(positions) > 1:
@@ -31,12 +49,28 @@ class LoopManager:
         
         return self._optimize_loops(loops)
 
+    def _calculate_loop_quality(self, start: int, end: int, 
+                            pattern_length: int, repetitions: int) -> float:
+        """Calculate quality score for a potential loop."""
+        # Base score from pattern repetitions
+        base_score = min(1.0, repetitions / 4.0)  # Normalize, max at 4 repetitions
+        
+        # Favor loops that align with musical phrases
+        loop_length = end - start
+        musical_alignment = 1.0
+        if loop_length % 16 == 0:  # Full phrase
+            musical_alignment = 1.2
+        elif loop_length % 8 == 0:  # Half phrase
+            musical_alignment = 1.1
+        elif loop_length % 4 == 0:  # Bar
+            musical_alignment = 1.05
+        
+        # Ensure final score is capped at 1.0
+        return min(1.0, base_score * musical_alignment)
+
     def _optimize_loops(self, loops: Dict) -> Dict:
         """
-        Optimize loop selection by:
-        1. Removing nested loops
-        2. Ensuring proper loop boundaries
-        3. Maximizing loop length while minimizing memory usage
+        Optimize loop selection by removing nested loops and ensuring proper boundaries.
         """
         optimized = {}
         
@@ -61,41 +95,78 @@ class LoopManager:
         jump_table = {}
         
         for loop_id, loop_info in loops.items():
-            jump_table[loop_info['end']] = loop_info['start']
-        
+            if loop_info['end'] <= loop_info['start']:
+                continue
+                
+            if self.simple_mode:
+                # Simple mode for pattern detection tests
+                jump_table[loop_info['end']] = loop_info['start']
+            else:
+                # Default mode with optimization hints
+                jump_table[loop_info['end']] = {
+                    'start_pos': loop_info['start'],
+                    'length': loop_info['end'] - loop_info['start'],
+                    'optimization_hint': 'inline' if (loop_info['end'] - loop_info['start']) < 16 else 'subroutine'
+                }
+            
         return jump_table
 
+
 class EnhancedLoopManager(LoopManager):
-    def __init__(self, tempo_map: EnhancedTempoMap):
-        super().__init__()
+    def __init__(self, tempo_map: 'EnhancedTempoMap'):
+        """Initialize EnhancedLoopManager with tempo map."""
+        super().__init__(simple_mode=False)  # Always use enhanced mode
         self.tempo_map = tempo_map
         
     def detect_loops(self, events: List[Dict], pattern_info: Dict) -> Dict:
+        """Detect potential loop points based on patterns."""
         loops = super().detect_loops(events, pattern_info)
         
         # Register tempo information for each loop
         for loop_id, loop_info in loops.items():
-            # Generate consistent loop ID
-            consistent_loop_id = f"loop_{loop_info['end']}_{loop_info['start']}"
-            self.tempo_map.register_loop_point(
-                consistent_loop_id,
-                loop_info['start'],
-                loop_info['end']
-            )
+            start_tempo = self.tempo_map.get_tempo_at_tick(loop_info['start'])
+            end_tempo = self.tempo_map.get_tempo_at_tick(loop_info['end'])
             
-        return loops
-    
-    def generate_jump_table(self, loops: Dict) -> Dict:
-        jump_table = super().generate_jump_table(loops)
-        
-        # Enhance jump table with tempo information
-        enhanced_table = {}
-        for end_pos, start_pos in jump_table.items():
-            # Use same loop ID format as in detect_loops
-            loop_id = f"loop_{end_pos}_{start_pos}"
-            enhanced_table[end_pos] = {
-                'start_pos': start_pos,
-                'tempo_state': self.tempo_map.loop_points.get(loop_id, None)
+            tempo_key = f"loop_{loop_info['end']}_{loop_info['start']}"
+            self.tempo_map.loop_points[tempo_key] = {
+                'start': {
+                    'tempo': start_tempo,
+                    'tick': loop_info['start']
+                },
+                'end': {
+                    'tempo': end_tempo,
+                    'tick': loop_info['end']
+                }
             }
             
-        return enhanced_table
+        return loops
+
+    def generate_jump_table(self, loops: Dict) -> Dict:
+        """Generate enhanced jump table with tempo information."""
+        jump_table = {}
+        
+        for loop_id, loop_info in loops.items():
+            if loop_info['end'] <= loop_info['start']:
+                continue
+                
+            jump_table[loop_info['end']] = {
+                'start_pos': loop_info['start'],
+                'length': loop_info['end'] - loop_info['start'],
+                'optimization_hint': 'inline' if (loop_info['end'] - loop_info['start']) < 16 else 'subroutine',
+                'tempo_state': self.tempo_map.loop_points.get(f"loop_{loop_info['end']}_{loop_info['start']}")
+            }
+            
+        return jump_table
+
+    def _evaluate_loop_quality(self, start: int, end: int, length: int, repetitions: int) -> float:
+        """
+        Evaluate the quality of a potential loop based on multiple factors.
+        Returns a score between 0 and 1.
+        """
+        # Base score from repetitions and length
+        base_score = (repetitions * length) / (end - start)
+        
+        # Adjust based on musical metrics (bars/phrases)
+        musical_alignment = (length % 16) == 0  # aligned to common bar lengths
+        
+        return base_score * (1.2 if musical_alignment else 1.0)
