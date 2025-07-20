@@ -8,7 +8,7 @@ from nes.emulator_core import NESEmulatorCore
 from nes.project_builder import NESProjectBuilder
 from nes.song_bank import SongBank
 from exporter.exporter_nsf import NSFExporter
-from exporter.exporter_ca65 import export_ca65_tables_with_patterns
+from exporter.exporter_ca65 import CA65Exporter
 from exporter.exporter import generate_famitracker_txt_with_patterns
 from tracker.pattern_detector import EnhancedPatternDetector
 from tracker.tempo_map import EnhancedTempoMap
@@ -64,7 +64,7 @@ def run_export(args):
         print(f" Exported NSF -> {args.output}")
     
     elif args.format == "ca65":
-        # Always use export_ca65_tables_with_patterns, with empty patterns if none provided
+        # Always use CA65Exporter, with empty patterns if none provided
         if pattern_data:
             patterns = pattern_data['patterns']
             references = pattern_data['references']
@@ -72,7 +72,8 @@ def run_export(args):
             patterns = {}
             references = {}
             
-        export_ca65_tables_with_patterns(
+        exporter = CA65Exporter()
+        exporter.export_tables_with_patterns(
             frames,
             patterns,
             references,
