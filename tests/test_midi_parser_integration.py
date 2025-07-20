@@ -100,8 +100,8 @@ class TestMIDIParserIntegration(unittest.TestCase):
         # Second segment: 480 ticks at 150 BPM = 400ms
         # Third segment: 480 ticks at 200 BPM = 300ms
         # Total time = 1200ms
-        # At 60fps, frame = 1200/16.67 ≈ 84 frames (rounded up due to frame alignment)
-        expected_frame = 84
+        # At 60fps (16.667ms per frame), frame = 1200/16.667 = 72 frames
+        expected_frame = 72
         self.assertEqual(note_event['frame'], expected_frame)
 
     def test_invalid_tempo_handling(self):

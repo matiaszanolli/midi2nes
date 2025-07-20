@@ -7,8 +7,8 @@ from tracker.track_mapper import assign_tracks_to_nes_channels
 from nes.emulator_core import NESEmulatorCore
 from nes.project_builder import NESProjectBuilder
 from nes.song_bank import SongBank
-from exporter.exporter_nsftxt import generate_nsftxt
-from exporter.exporter_ca65 import export_ca65_tables, export_ca65_tables_with_patterns
+from exporter.exporter_nsf import NSFExporter
+from exporter.exporter_ca65 import export_ca65_tables_with_patterns
 from exporter.exporter import generate_famitracker_txt_with_patterns
 from tracker.pattern_detector import EnhancedPatternDetector
 from tracker.tempo_map import EnhancedTempoMap
@@ -43,7 +43,7 @@ def run_prepare(args):
         print(" 2. ./build.sh  (or build.bat on Windows)")
 
 def run_export(args):
-    """Modified export function to support pattern compression"""
+    """Export function supporting multiple formats with pattern compression"""
     frames = json.loads(Path(args.input).read_text())
     
     # Check if we have pattern data
@@ -52,16 +52,16 @@ def run_export(args):
         pattern_data = json.loads(Path(args.patterns).read_text())
     
     if args.format == "nsftxt":
-        if pattern_data:
-            output = generate_famitracker_txt_with_patterns(
-                frames,
-                pattern_data['patterns'],
-                pattern_data['references']
-            )
-        else:
-            output = generate_nsftxt(frames)
-        Path(args.output).write_text(output)
-        print(f" Exported FamiTracker TXT -> {args.output}")
+        # Create NSF exporter instance
+        exporter = NSFExporter()
+        
+        # Export with optional metadata
+        exporter.export(
+            frames_data=frames,
+            output_path=args.output,
+            song_name="MIDI2NES Export"  # You could add these as optional CLI arguments
+        )
+        print(f" Exported NSF -> {args.output}")
     
     elif args.format == "ca65":
         # Always use export_ca65_tables_with_patterns, with empty patterns if none provided
@@ -206,7 +206,7 @@ def main():
     p_export = subparsers.add_parser('export', help='Export NES-ready files (ca65/FamiTracker)')
     p_export.add_argument('input')
     p_export.add_argument('output')
-    p_export.add_argument('--format', choices=['nsftxt', 'ca65'], default='ca65')
+    p_export.add_argument('--format', choices=['nsf', 'ca65'], default='ca65')
     p_export.add_argument('--patterns', help='Path to pattern data JSON (optional)')
     p_export.set_defaults(func=run_export)
 

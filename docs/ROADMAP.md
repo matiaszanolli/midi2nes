@@ -1,36 +1,32 @@
 # MIDI to NES Compiler Roadmap
 
-## Current Version: v0.2.0
+## Current Version: v0.3.0
 
 ### Completed Features
-- ✅ Basic MIDI parsing pipeline
-- ✅ Channel mapping system
-- ✅ Accurate NES pitch tables
-- ✅ ADSR envelope processing
-- ✅ Duty cycle patterns
-- ✅ Basic export formats (CA65, FamiTracker)
-- ✅ Comprehensive test coverage
-
-## Release Plan
-
-### v0.3.0 - Advanced Features
-**Status: In Progress**
+- Basic MIDI parsing pipeline
+- Channel mapping system
+- Accurate NES pitch tables
+- ADSR envelope processing
+- Duty cycle patterns
+- Basic export formats (CA65, FamiTracker)
+- Comprehensive test coverage
 - Enhanced tempo handling
 - Pattern and loop support
-- Multi-song capability
+- Multi-song capability with bank switching
+- Segment management
+
+### In Progress
 - Advanced drum mapping
 - Extended export format features
 
-### v0.4.0 - Optimization
-**Priority: Medium**
+### Upcoming (v0.4.0)
 - Memory optimization
 - Pattern compression
 - Performance improvements
 - Real-time preview capability
 - Enhanced testing framework
 
-### v1.0.0 - Production Release
-**Priority: Low**
+### Future (v1.0.0)
 - GUI frontend
 - Direct emulator integration
 - Effect support
@@ -39,29 +35,18 @@
 
 ## Implementation Details
 
-### Current Focus (v0.3.0)
-1. **Enhanced Tempo Handling**
-   - Accurate tempo change processing
-   - Frame-accurate timing
-   - Variable speed support
-
-2. **Pattern Support**
-   - Pattern detection
-   - Loop point handling
-   - Jump table optimization
-
-3. **Multi-song Capability**
-   - Song bank support
-   - Segment management
-   - Metadata handling
-
-4. **Advanced Drum Mapping**
+### Current Focus
+1. **Advanced Drum Mapping**
    - Improved pattern recognition
    - Dynamic DPCM sample allocation
    - Noise channel optimization
 
-### Future Enhancements (v0.4.0+)
+2. **Export Format Enhancements**
+   - Additional format support
+   - Output optimization
+   - Enhanced compression
 
+### Next Phase (v0.4.0)
 1. **Memory Optimization**
    - Pattern reuse detection
    - Data compression
@@ -77,24 +62,5 @@
    - Real-time preview
    - Visual feedback
 
-## Technical Debt
-
-1. **Parser Improvements**
-   - MIDI CC handling
-   - Enhanced tempo detection
-   - Track metadata support
-
-2. **Track Mapper Enhancements**
-   - Improved channel assignment
-   - Better polyphony handling
-   - Dynamic reassignment
-
-3. **Audio Generation**
-   - Additional effect support
-   - Channel-specific optimizations
-   - Advanced audio features
-
-4. **Export System**
-   - Output optimization
-   - Enhanced compression
-   - Additional format support
+## Long-term Vision
+Create a comprehensive MIDI to NES conversion tool for chiptune musicians and NES game developers, with advanced features and optimizations.
