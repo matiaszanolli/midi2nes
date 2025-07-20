@@ -49,9 +49,12 @@ SEGMENTS {
     frame_counter:  .res 2  ; Current frame counter
 
 .exportzp ptr1, temp1, temp2, frame_counter
-.import init_music, update_music  ; Import music functions as absolute addresses
 
 .segment "CODE"
+; Import music functions as absolute addresses
+.global init_music
+.global update_music
+
 reset:
     sei                   ; Disable interrupts
     cld                   ; Clear decimal mode
