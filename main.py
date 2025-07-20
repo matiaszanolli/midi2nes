@@ -8,7 +8,7 @@ from nes.emulator_core import NESEmulatorCore
 from nes.project_builder import NESProjectBuilder
 from nes.song_bank import SongBank
 from exporter.exporter_nsftxt import generate_nsftxt
-from exporter.exporter_ca65 import export_ca65_tables, export_ca65_tables_with_patterns
+from exporter.exporter_ca65 import export_ca65_tables_with_patterns
 from exporter.exporter import generate_famitracker_txt_with_patterns
 from tracker.pattern_detector import EnhancedPatternDetector
 from tracker.tempo_map import EnhancedTempoMap
