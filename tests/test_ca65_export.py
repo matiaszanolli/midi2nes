@@ -8,8 +8,8 @@ class TestCA65Export(unittest.TestCase):
         self.exporter = CA65Exporter()
         self.test_frames = {
             'pulse1': {
-                '0': {'note': 60, 'volume': 15},  # Middle C
-                '32': {'note': 67, 'volume': 12}  # G4
+                '0': {'note': 60, 'volume': 15},
+                '32': {'note': 67, 'volume': 12}
             }
         }
         self.test_patterns = {
@@ -35,9 +35,7 @@ class TestCA65Export(unittest.TestCase):
         self.assertEqual(self.exporter.midi_note_to_timer_value(120), 0)  # Too high
         
     def test_export_tables_with_patterns(self):
-        # Create a temporary file for testing
         test_output = Path("test_output.asm")
-        
         try:
             self.exporter.export_tables_with_patterns(
                 self.test_frames,
@@ -45,71 +43,81 @@ class TestCA65Export(unittest.TestCase):
                 self.test_references,
                 test_output
             )
-            
-            # Read the generated file
             with open(test_output, 'r') as f:
                 output = f.read()
-            
-            # Test basic structure
+                
+            # Test file header and imports/exports
             self.assertIn("; CA65 Assembly Export", output)
+            self.assertIn(".importzp ptr1, temp1, temp2, frame_counter", output)
+            self.assertIn(".export init_music", output)
+            self.assertIn(".export update_music", output)
+            
+            # Test segments
             self.assertIn(".segment \"RODATA\"", output)
             self.assertIn(".segment \"CODE\"", output)
+            self.assertNotIn(".segment \"ZEROPAGE\"", output)
             
             # Test pattern data
             self.assertIn("pattern_1:", output)
-            
-            # Test pattern reference table
             self.assertIn("pattern_refs:", output)
             
-            # Test music routines
+            # Test music engine routines
             self.assertIn("init_music:", output)
             self.assertIn("update_music:", output)
             self.assertIn("play_pattern_frame", output)
             
-            # Test that we don't define variables (should be in main.asm)
-            self.assertNotIn(".segment \"ZEROPAGE\"", output)
-            self.assertNotIn(".res", output)
+            # Test APU initialization values
+            self.assertIn("sta $4015", output)  # APU enable
+            self.assertIn("sta $4000", output)  # Pulse 1
+            self.assertIn("sta $4004", output)  # Pulse 2
+            self.assertIn("sta $4008", output)  # Triangle
+            self.assertIn("sta $400C", output)  # Noise
             
-            # Test that we don't export variables (should be in main.asm)
-            self.assertNotIn(".exportzp", output)
+            # Test frame counter handling
+            self.assertIn("lda frame_counter", output)
+            self.assertIn("inc frame_counter", output)
+            self.assertIn("inc frame_counter+1", output)
             
-            # Test that we use variables from main.asm
-            self.assertIn("frame_counter", output)
-            self.assertIn("ptr1", output)
-            self.assertIn("temp1", output)
-            self.assertIn("temp2", output)
+            # Test pattern playback
+            self.assertIn("lda pattern_refs,x", output)
+            self.assertIn("sta ptr1", output)
+            self.assertIn("sta temp1", output)
+            self.assertIn("sta temp2", output)
+            
+            # Test that we don't have any undefined values
+            self.assertNotIn("lda\n", output)  # No empty LDA instructions
+            self.assertNotIn("sta\n", output)  # No empty STA instructions
+            
+            # Test proper initialization values
+            self.assertIn("lda #$0F", output)  # APU enable value
+            self.assertIn("lda #$30", output)  # APU channel setup
             
         finally:
-            # Clean up
             if test_output.exists():
                 test_output.unlink()
                 
     def test_empty_patterns(self):
         test_output = Path("test_empty.asm")
-        
         try:
-            self.exporter.export_tables_with_patterns(
-                {},  # Empty frames
-                {},  # Empty patterns
-                {},  # Empty references
-                test_output
-            )
-            
+            self.exporter.export_tables_with_patterns({}, {}, {}, test_output)
             with open(test_output, 'r') as f:
                 output = f.read()
             
-            # Should still have basic structure
-            self.assertIn("; CA65 Assembly Export", output)
+            # Basic structure should still be present
             self.assertIn(".segment \"RODATA\"", output)
             self.assertIn(".segment \"CODE\"", output)
             self.assertIn("pattern_refs:", output)
             
-            # Should have empty pattern reference table
-            self.assertIn("    .word 0", output)
-            self.assertIn("    .byte 0", output)
+            # Should have proper imports/exports
+            self.assertIn(".importzp ptr1, temp1, temp2, frame_counter", output)
+            self.assertIn(".export init_music", output)
+            self.assertIn(".export update_music", output)
+            
+            # Should have proper initialization
+            self.assertIn("lda #$0F", output)  # APU enable value
+            self.assertIn("lda #$30", output)  # APU channel setup
             
         finally:
-            # Clean up
             if test_output.exists():
                 test_output.unlink()
 

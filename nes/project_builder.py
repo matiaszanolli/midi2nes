@@ -49,17 +49,11 @@ SEGMENTS {
     frame_counter:  .res 2  ; Current frame counter
 
 .exportzp ptr1, temp1, temp2, frame_counter
+.import init_music, update_music
 
+; Initialize variables in the CODE segment
 .segment "CODE"
-    .include "music.asm"
-
-reset:
-    sei                   ; Disable interrupts
-    cld                   ; Clear decimal mode
-    ldx #$FF
-    txs                   ; Set up stack
-
-    ; Initialize variables
+init_vars:
     lda #0
     sta frame_counter
     sta frame_counter+1
@@ -67,9 +61,16 @@ reset:
     sta temp2
     sta ptr1
     sta ptr1+1
+    rts
 
-    ; Initialize APU
-    jsr init_music
+reset:
+    sei                   ; Disable interrupts
+    cld                   ; Clear decimal mode
+    ldx #$FF
+    txs                   ; Set up stack
+
+    jsr init_vars        ; Initialize variables
+    jsr init_music       ; Initialize APU
 
 mainloop:
     jsr update_music
