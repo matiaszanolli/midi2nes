@@ -34,15 +34,27 @@ ADVANCED_MIDI_DRUM_MAPPING = {
 
 def map_drums_to_dpcm(midi_events, dpcm_index_path, use_advanced=True):
     """
-    Enhanced drum mapping with velocity ranges and layering
+    Map MIDI drum events to DPCM samples
     
     Args:
         midi_events: Dictionary of MIDI events
         dpcm_index_path: Path to DPCM sample index
         use_advanced: Whether to use advanced mapping features
+    
+    Returns:
+        tuple: (dpcm_events, noise_events)
+        
+    Raises:
+        FileNotFoundError: If dpcm_index_path doesn't exist
+        json.JSONDecodeError: If dpcm_index_path contains invalid JSON
     """
-    with open(dpcm_index_path, 'r') as f:
-        sample_index = json.load(f)
+    try:
+        with open(dpcm_index_path, 'r') as f:
+            sample_index = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"DPCM index file not found: {dpcm_index_path}")
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(f"Invalid JSON in DPCM index: {dpcm_index_path}", e.doc, e.pos)
 
     dpcm_events = []
     noise_events = []
@@ -56,6 +68,7 @@ def map_drums_to_dpcm(midi_events, dpcm_index_path, use_advanced=True):
 
             midi_note = e['note']
             velocity = e['velocity']
+            sample_name = None
             
             if use_advanced and midi_note in mapping:
                 drum_config = mapping[midi_note]
@@ -79,7 +92,8 @@ def map_drums_to_dpcm(midi_events, dpcm_index_path, use_advanced=True):
             else:
                 # Fallback to basic mapping
                 sample_name = DEFAULT_MIDI_DRUM_MAPPING.get(midi_note)
-                
+            
+            # Add main sample if valid
             if sample_name and sample_name in sample_index:
                 dpcm_events.append({
                     "frame": e['frame'],

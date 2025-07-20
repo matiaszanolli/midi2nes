@@ -1,6 +1,6 @@
 import random
 from collections import defaultdict
-from drum_engine import map_drums_to_dpcm
+from dpcm_sampler.drum_engine import map_drums_to_dpcm
 
 
 # Simplified initial mapping strategy
