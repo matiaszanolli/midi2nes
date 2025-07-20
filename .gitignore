@@ -1,4 +1,3 @@
-/dmc
 /venv
 __pycache__
 frames.json
@@ -8,5 +7,4 @@ parsed.json
 test*.json
 test*.txt
 output*
-dpcm_index.json
 *.asm

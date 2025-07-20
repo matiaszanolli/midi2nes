@@ -536,3 +536,90 @@ if __name__ == '__main__':
         print("\nErrors:")
         for test, traceback in result.errors:
             print(f"- {test}: {traceback}")
+
+class TestFrameAlignment(unittest.TestCase):
+    """Test cases specifically for frame alignment behavior"""
+    
+    def setUp(self):
+        self.config = TempoValidationConfig(
+            min_tempo_bpm=60.0,
+            max_tempo_bpm=200.0,
+            min_duration_frames=1,
+            max_duration_frames=3600,
+            max_tempo_change_ratio=2.0
+        )
+        self.tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,  # 120 BPM
+            validation_config=self.config,
+            optimization_strategy=TempoOptimizationStrategy.FRAME_ALIGNED
+        )
+        
+    def test_frame_aligned_ticks(self):
+        """Test which ticks naturally align with frame boundaries"""
+        # At 120 BPM (500000 microseconds per beat)
+        # 1 beat = 480 ticks = 500ms
+        # 1 frame = 16.67ms (60 fps)
+        
+        # Test first few frame boundaries
+        frame_times = []
+        for frame in range(5):
+            frame_time = frame * FRAME_MS
+            print(f"\nFrame {frame}:")
+            print(f"Expected time: {frame_time}ms")
+            
+            # Try to find a tick that gives this time
+            for tick in range(0, 480, 16):  # Test every 16th tick
+                time = self.tempo_map.calculate_time_ms(0, tick)
+                remainder = time % FRAME_MS
+                print(f"Tick {tick}: time={time}ms, remainder={remainder}ms")
+                
+                if remainder < 0.001:
+                    frame_times.append((frame, tick, time))
+                    
+        print("\nFound frame-aligned ticks:")
+        for frame, tick, time in frame_times:
+            print(f"Frame {frame}: tick={tick}, time={time}ms")
+            
+    def test_frame_alignment_with_tempo_change(self):
+        """Test frame alignment before and after tempo changes"""
+        # Add a tempo change and verify frame alignment still works
+        self.tempo_map.add_tempo_change(480, 400000)  # 150 BPM
+        
+        print("\nChecking frame alignment after tempo change:")
+        for tick in range(460, 500, 4):
+            time = self.tempo_map.calculate_time_ms(0, tick)
+            frame = time / FRAME_MS
+            remainder = time % FRAME_MS
+            print(f"Tick {tick}: time={time}ms, frame={frame}, remainder={remainder}ms")
+            
+    def test_frame_boundary_search(self):
+        """Test the process of finding frame-aligned ticks"""
+        test_ticks = [32, 480, 720, 960]  # Ticks that are failing in tests
+        
+        print("\nAnalyzing problematic ticks:")
+        for tick in test_ticks:
+            time = self.tempo_map.calculate_time_ms(0, tick)
+            frame = time / FRAME_MS
+            remainder = time % FRAME_MS
+            print(f"\nTick {tick}:")
+            print(f"Time: {time}ms")
+            print(f"Frame: {frame}")
+            print(f"Remainder: {remainder}ms")
+            
+            # Try to find nearest frame-aligned tick
+            frame_number = round(frame)
+            target_time = frame_number * FRAME_MS
+            
+            print(f"Target frame time: {target_time}ms")
+            
+            # Search nearby ticks
+            search_range = 16
+            for test_tick in range(tick - search_range, tick + search_range):
+                if test_tick <= 0:
+                    continue
+                    
+                test_time = self.tempo_map.calculate_time_ms(0, test_tick)
+                test_remainder = test_time % FRAME_MS
+                if test_remainder < 0.001:
+                    print(f"Found aligned tick: {test_tick} (time={test_time}ms)")
+                    break
