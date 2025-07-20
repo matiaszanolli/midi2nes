@@ -49,10 +49,7 @@ SEGMENTS {
     frame_counter:  .res 2  ; Current frame counter
 
 .exportzp ptr1, temp1, temp2, frame_counter
-
-; Import music functions (not zeropage)
-.import init_music
-.import update_music
+.import init_music, update_music  ; Import music functions as absolute addresses
 
 .segment "CODE"
 reset:

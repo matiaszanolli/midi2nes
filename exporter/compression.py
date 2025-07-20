@@ -205,3 +205,50 @@ class CompressionEngine:
         e1 = {k: v for k, v in event1.items() if k != '_type'}
         e2 = {k: v for k, v in event2.items() if k != '_type'}
         return e1 == e2
+    
+    def compress_song_bank(self, bank_data: Dict[str, Any]) -> bytes:
+        """Compress entire song bank data"""
+        compressed_songs = {}
+        
+        for song_name, song_data in bank_data.items():
+            if 'patterns' in song_data:
+                compressed_patterns = {}
+                for pattern_name, pattern in song_data['patterns'].items():
+                    compressed_data, metadata = self.compress_pattern(pattern)
+                    compressed_patterns[pattern_name] = {
+                        'data': compressed_data,
+                        'metadata': metadata
+                    }
+                
+                compressed_songs[song_name] = {
+                    **song_data,
+                    'patterns': compressed_patterns
+                }
+            else:
+                compressed_songs[song_name] = song_data
+        
+        return json.dumps(compressed_songs).encode('utf-8')
+    
+    def decompress_song_bank(self, compressed_data: bytes) -> Dict[str, Any]:
+        """Decompress song bank data"""
+        bank_data = json.loads(compressed_data.decode('utf-8'))
+        
+        for song_name, song_data in bank_data.items():
+            if 'patterns' in song_data:
+                decompressed_patterns = {}
+                for pattern_name, pattern_info in song_data['patterns'].items():
+                    if isinstance(pattern_info, dict) and 'data' in pattern_info:
+                        decompressed = self.decompress_pattern(
+                            pattern_info['data'], 
+                            pattern_info['metadata']
+                        )
+                        decompressed_patterns[pattern_name] = decompressed
+                    else:
+                        decompressed_patterns[pattern_name] = pattern_info
+                
+                bank_data[song_name] = {
+                    **song_data,
+                    'patterns': decompressed_patterns
+                }
+        
+        return bank_data

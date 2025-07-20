@@ -166,3 +166,11 @@ class SongBank:
         self.total_banks = data['bank_info']['total_banks']
         self.max_bank_size = data['bank_info']['bank_size']
         self.songs = data['songs']
+    
+    def get_bank_data(self) -> Dict:
+        """Get all bank data for compression"""
+        return self.songs
+    
+    def get_bank_size(self) -> int:
+        """Get total size of all songs in the bank"""
+        return sum(song_data['size'] for song_data in self.songs.values())

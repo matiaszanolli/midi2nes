@@ -97,6 +97,26 @@ class EnvelopeProcessor:
         envelope_bits = 0x30
         
         return duty_bits | envelope_bits | (volume & 0x0F)
+    
+    def apply_volume_envelope(self, frames, pattern, channel, start_frame):
+        """Apply volume envelope pattern to frames"""
+        for i, volume in enumerate(pattern):
+            frame_key = str(start_frame + i)
+            if frame_key not in frames:
+                frames[frame_key] = {}
+            if channel not in frames[frame_key]:
+                frames[frame_key][channel] = {}
+            frames[frame_key][channel]['volume'] = volume
+    
+    def apply_duty_envelope(self, frames, pattern, channel, start_frame):
+        """Apply duty cycle envelope pattern to frames"""
+        for i, duty in enumerate(pattern):
+            frame_key = str(start_frame + i)
+            if frame_key not in frames:
+                frames[frame_key] = {}
+            if channel not in frames[frame_key]:
+                frames[frame_key][channel] = {}
+            frames[frame_key][channel]['duty'] = duty * 64  # Convert to NES duty values
 
 
 class NESEmulatorCore:

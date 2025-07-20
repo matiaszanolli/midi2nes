@@ -125,3 +125,11 @@ class PitchProcessor:
         # Calculate new timer value (inverse relationship with frequency)
         new_timer = int(base_pitch / multiplier)
         return max(0, min(new_timer, 0x07FF))
+        
+    def note_to_timer(self, midi_note):
+        """Convert MIDI note to NES timer value."""
+        if midi_note < 0 or midi_note >= 128:
+            raise ValueError(f"MIDI note {midi_note} out of valid range (0-127)")
+        if midi_note < 24 or midi_note >= 96:
+            raise ValueError(f"MIDI note {midi_note} out of NES range (24-95)")
+        return self.note_table[midi_note]
