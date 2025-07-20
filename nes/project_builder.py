@@ -43,12 +43,12 @@ SEGMENTS {
     .byte $00, $00, $00, $00, $00, $00, $00, $00, $00  ; Padding
 
 .segment "ZEROPAGE"
-    .exportzp ptr1, source, temp1, temp2
-    ptr1: .res 2         ; General purpose pointer
-    source: .res 2       ; Source pointer for decompression
-    temp1: .res 1        ; Temporary variable
-    temp2: .res 1        ; Temporary variable
-    frame_counter: .res 2 ; Current frame counter
+    ptr1:           .res 2  ; General purpose pointer
+    temp1:          .res 1  ; Temporary variable 1
+    temp2:          .res 1  ; Temporary variable 2
+    frame_counter:  .res 2  ; Current frame counter
+
+.exportzp ptr1, temp1, temp2, frame_counter
 
 .segment "CODE"
     .include "music.asm"
@@ -58,6 +58,15 @@ reset:
     cld                   ; Clear decimal mode
     ldx #$FF
     txs                   ; Set up stack
+
+    ; Initialize variables
+    lda #0
+    sta frame_counter
+    sta frame_counter+1
+    sta temp1
+    sta temp2
+    sta ptr1
+    sta ptr1+1
 
     ; Initialize APU
     jsr init_music
