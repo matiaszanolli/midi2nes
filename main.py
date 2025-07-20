@@ -69,7 +69,7 @@ def run_export(args):
             patterns = pattern_data['patterns']
             references = pattern_data['references']
         else:
-            patterns = []
+            patterns = {}
             references = {}
             
         export_ca65_tables_with_patterns(

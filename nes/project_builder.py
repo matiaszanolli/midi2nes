@@ -43,7 +43,12 @@ SEGMENTS {
     .byte $00, $00, $00, $00, $00, $00, $00, $00, $00  ; Padding
 
 .segment "ZEROPAGE"
-    ; Zero page variables here
+    .exportzp ptr1, source, temp1, temp2
+    ptr1: .res 2         ; General purpose pointer
+    source: .res 2       ; Source pointer for decompression
+    temp1: .res 1        ; Temporary variable
+    temp2: .res 1        ; Temporary variable
+    frame_counter: .res 2 ; Current frame counter
 
 .segment "CODE"
     .include "music.asm"
