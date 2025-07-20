@@ -49,11 +49,19 @@ SEGMENTS {
     frame_counter:  .res 2  ; Current frame counter
 
 .exportzp ptr1, temp1, temp2, frame_counter
-.import init_music, update_music
 
-; Initialize variables in the CODE segment
+; Import music functions (not zeropage)
+.import init_music
+.import update_music
+
 .segment "CODE"
-init_vars:
+reset:
+    sei                   ; Disable interrupts
+    cld                   ; Clear decimal mode
+    ldx #$FF
+    txs                   ; Set up stack
+
+    ; Initialize variables
     lda #0
     sta frame_counter
     sta frame_counter+1
@@ -61,16 +69,9 @@ init_vars:
     sta temp2
     sta ptr1
     sta ptr1+1
-    rts
 
-reset:
-    sei                   ; Disable interrupts
-    cld                   ; Clear decimal mode
-    ldx #$FF
-    txs                   ; Set up stack
-
-    jsr init_vars        ; Initialize variables
-    jsr init_music       ; Initialize APU
+    ; Initialize APU
+    jsr init_music
 
 mainloop:
     jsr update_music
@@ -246,45 +247,7 @@ SEGMENTS {
     def add_song_bank(self, song_bank):
         """Add multi-song bank support to the project"""
         self.song_bank = song_bank
-        
-        # Update linker config to support multiple banks
-        self.LINKER_CONFIG = self._generate_multi_bank_config()
-        
         return True
-
-    def _generate_multi_bank_config(self):
-        """Generate linker config with support for multiple banks"""
-        if not self.song_bank:
-            return self.LINKER_CONFIG
-            
-        config = """MEMORY {
-    ZP:     start = $00,    size = $0100, type = rw, file = "";
-    RAM:    start = $0200,  size = $0600, type = rw, file = "";
-    HEADER: start = $0000,  size = $0010, type = ro, file = %O, fill = yes;
-"""
-        
-        # Add bank segments
-        for bank_num in self.song_bank.get_banks():
-            config += f"    BANK{bank_num}: start = ${8000 + bank_num * 0x4000}, " \
-                     f"size = $4000, type = ro, file = %O, fill = yes;\n"
-        
-        config += """    VECTORS: start = $FFFA, size = $0006, type = ro, file = %O, fill = yes;
-}
-
-SEGMENTS {
-    HEADER:   load = HEADER,  type = ro;
-    ZEROPAGE: load = ZP,      type = zp;
-    BSS:      load = RAM,     type = bss, define = yes;
-"""
-        
-        # Add bank segments
-        for bank_num in self.song_bank.get_banks():
-            config += f"    BANK{bank_num}:  load = BANK{bank_num}, type = ro;\n"
-            
-        config += """    VECTORS:  load = VECTORS, type = ro;
-}"""
-        
-        return config
 
     def prepare_project(self, music_asm_path: str):
         """Creates a complete NES project structure ready for CC65 compilation"""
