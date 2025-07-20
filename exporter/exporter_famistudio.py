@@ -162,15 +162,6 @@ def midi_note_to_famistudio(note):
     return f"{note_name}{octave}"
 
 def export_famistudio(frames_data, output_path, project_name="MIDI2NES", author="", copyright=""):
-    """
-    Export frame data to FamiStudio text format
-    
-    Args:
-        frames_data: Dictionary of frame data per channel
-        output_path: Path to output file
-        project_name: Name of the project
-        author: Author name
-        copyright: Copyright information
-    """
+    """Export frame data to FamiStudio text format"""
     output = generate_famistudio_txt(frames_data, project_name, author, copyright)
     Path(output_path).write_text(output)

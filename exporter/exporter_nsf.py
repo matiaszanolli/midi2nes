@@ -3,10 +3,15 @@
 import struct
 from pathlib import Path
 from typing import Dict, Any, List
+from exporter.base_exporter import BaseExporter
 
 class NSFHeader:
     """NSF File Format Header"""
     def __init__(self):
+        super().__init__()
+        self.header = NSFHeader()
+        self.data_segment = bytearray()
+        self.current_address = 0x8000
         self.magic = b'NESM\x1a'  # NSF Magic number
         self.version = 1
         self.total_songs = 1
@@ -91,43 +96,27 @@ class NSFExporter:
         self.data_segment.extend(play_routine)
 
     def _convert_frames_to_binary(self, frames_data: Dict[str, Any]) -> List[bytes]:
-        """Convert frame data to binary format"""
+        """Convert frame data to binary format with compression"""
         binary_data = []
         
-        # Process each channel
         for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
             if channel not in frames_data:
                 binary_data.append(bytes([0xFF]))  # End marker
                 continue
-                
-            channel_data = bytearray()
-            events = frames_data[channel]
             
-            current_frame = 0
-            for frame_str, event in sorted(events.items(), key=lambda x: int(x[0])):
-                frame = int(frame_str)
-                
-                # Add wait frames if needed
-                while current_frame < frame:
-                    channel_data.append(0x00)  # Wait command
-                    current_frame += 1
-                
-                # Add event data
-                if channel in ['pulse1', 'pulse2', 'triangle']:
-                    note = event['note']
-                    volume = min(15, event['volume'])
-                    channel_data.append((volume << 4) | (note & 0x0F))
-                    channel_data.append(note >> 4)
-                elif channel == 'noise':
-                    volume = min(15, event['volume'])
-                    channel_data.append(volume)
-                elif channel == 'dpcm':
-                    sample_id = event['sample_id']
-                    channel_data.append(sample_id)
-                
-                current_frame += 1
+            # Compress channel data
+            compressed, metadata = self.compress_channel_data(frames_data[channel])
             
-            channel_data.append(0xFF)  # End marker
+            # Add metadata header
+            channel_data = bytearray([
+                len(metadata['rle_blocks']),     # RLE block count
+                len(metadata['delta_blocks']),    # Delta block count
+                len(compressed) & 0xFF,           # Compressed size (low byte)
+                len(compressed) >> 8              # Compressed size (high byte)
+            ])
+            
+            # Add compressed data
+            channel_data.extend(compressed)
             binary_data.append(bytes(channel_data))
         
         return binary_data
