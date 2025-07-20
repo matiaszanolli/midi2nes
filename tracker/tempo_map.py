@@ -244,6 +244,11 @@ class EnhancedTempoMap(TempoMap):
         if (self.optimization_strategy == TempoOptimizationStrategy.FRAME_ALIGNED and
             change_type == TempoChangeType.IMMEDIATE):
             
+            # Calculate current frame alignment
+            time_ms = self.calculate_time_ms(0, tick)
+            remainder = time_ms % FRAME_MS
+            original_tick = tick  # Store original tick for warnings
+            
             if remainder > 1.0:  # Allow larger tolerance for frame alignment
                 # Try to find aligned tick
                 frame_number = round(time_ms / FRAME_MS)
@@ -288,13 +293,6 @@ class EnhancedTempoMap(TempoMap):
         # Handle gradual changes
         if change_type != TempoChangeType.IMMEDIATE:
             self._create_gradual_change_steps(change)
-        
-        # Clear caches
-        self._time_cache = {}
-        self._frame_cache = {}
-        
-        # Add to base tempo map
-        super().add_tempo_change(change.tick, tempo)
         
         # Clear caches
         self._time_cache = {}

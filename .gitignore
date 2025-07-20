@@ -3,6 +3,8 @@ __pycache__
 frames.json
 *.mid
 mapped*.json
+simple*.json
+invalid.json
 parsed.json
 test*.json
 test*.txt
