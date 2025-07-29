@@ -19,7 +19,7 @@ class NSFHeader:
         self.artist_name = ""         # Artist name
         self.copyright = ""           # Copyright info
         self.ntsc_speed = 16639      # ~60Hz for NTSC
-        self.bankswitch_init = [0] * 8  # Bank switching initialization values
+        self.bankswitch_init = [0, 1, 2, 3, 4, 5, 6, 7]  # Bank switching initialization values
         self.pal_speed = 19997       # ~50Hz for PAL
         self.pal_ntsc_bits = 0       # 0 = NTSC, 1 = PAL, 2 = Dual
         self.extra_sound_chips = 0   # No extra sound chips
@@ -169,11 +169,14 @@ class NSFExporter(BaseExporter):
         self.header.artist_name = artist
         self.header.copyright = copyright
         
+        # Update header addresses first
+        self.header.load_address = 0x8000  # Base load address
+        self.header.init_address = 0x8001  # Init routine starts after load address
+        
         # Add initialization routine
         self.add_init_routine()
         
-        # Update header addresses
-        self.header.init_address = 0x8000
+        # Set play address after init routine
         self.header.play_address = self.current_address
         
         # Add play routine and frame data

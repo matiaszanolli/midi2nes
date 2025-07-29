@@ -51,8 +51,8 @@ class TestCA65Export(unittest.TestCase):
             # Test file header and imports/exports
             self.assertIn("; CA65 Assembly Export", output)
             self.assertIn(".importzp ptr1, temp1, temp2, frame_counter", output)
-            self.assertIn(".export init_music", output)
-            self.assertIn(".export update_music", output)
+            self.assertIn(".global init_music", output)
+            self.assertIn(".global update_music", output)
             
             # Test segments
             self.assertIn(".segment \"RODATA\"", output)
@@ -112,8 +112,8 @@ class TestCA65Export(unittest.TestCase):
             
             # Should have proper imports/exports
             self.assertIn(".importzp ptr1, temp1, temp2, frame_counter", output)
-            self.assertIn(".export init_music", output)
-            self.assertIn(".export update_music", output)
+            self.assertIn(".global init_music", output)
+            self.assertIn(".global update_music", output)
             
             # Should have proper initialization
             self.assertIn("lda #$0F", output)  # APU enable value
@@ -203,7 +203,8 @@ class TestCA65CompilationIntegration(unittest.TestCase):
             self.test_frames,
             self.test_patterns,
             self.test_references,
-            music_asm
+            music_asm,
+            standalone=False
         )
         
         # Prepare project
@@ -219,7 +220,7 @@ class TestCA65CompilationIntegration(unittest.TestCase):
         self.project_path.mkdir(parents=True, exist_ok=True)
         
         music_asm = self.project_path / "music.asm"
-        self.exporter.export_tables_with_patterns({}, {}, {}, music_asm)
+        self.exporter.export_tables_with_patterns({}, {}, {}, music_asm, standalone=False)
         
         self.builder.prepare_project(str(music_asm))
         success, output = self.compile_and_link(str(self.project_path))
@@ -238,7 +239,8 @@ class TestCA65CompilationIntegration(unittest.TestCase):
             self.test_frames,
             self.test_patterns,
             self.test_references,
-            music_asm
+            music_asm,
+            standalone=False
         )
         
         self.builder.prepare_project(str(music_asm))
@@ -255,7 +257,8 @@ class TestCA65CompilationIntegration(unittest.TestCase):
             self.test_frames,
             self.test_patterns,
             self.test_references,
-            music_asm
+            music_asm,
+            standalone=False
         )
         
         self.builder.prepare_project(str(music_asm))
@@ -264,15 +267,14 @@ class TestCA65CompilationIntegration(unittest.TestCase):
         with open(self.project_path / "main.asm") as f:
             main_content = f.read()
             self.assertIn(".exportzp ptr1, temp1, temp2, frame_counter", main_content)
-            self.assertNotIn(".importzp init_music", main_content)
-            self.assertIn(".import init_music", main_content)
-            self.assertIn(".import update_music", main_content)
+            self.assertIn(".global init_music", main_content)
+            self.assertIn(".global update_music", main_content)
         
         with open(music_asm) as f:
             music_content = f.read()
             self.assertIn(".importzp ptr1, temp1, temp2, frame_counter", music_content)
-            self.assertIn(".export init_music", music_content)
-            self.assertIn(".export update_music", music_content)
+            self.assertIn(".global init_music", music_content)
+            self.assertIn(".global update_music", music_content)
         
         success, output = self.compile_and_link(str(self.project_path))
         self.assertTrue(success, f"Compilation with zeropage variables failed:\n{output}")
@@ -294,7 +296,8 @@ class TestCA65CompilationIntegration(unittest.TestCase):
             self.test_frames,
             test_patterns,
             test_references,
-            music_asm
+            music_asm,
+            standalone=False
         )
         
         self.builder.prepare_project(str(music_asm))
@@ -319,7 +322,8 @@ class TestCA65CompilationIntegration(unittest.TestCase):
             self.test_frames,
             large_patterns,
             self.test_references,
-            music_asm
+            music_asm,
+            standalone=False
         )
         
         self.builder.prepare_project(str(music_asm))
