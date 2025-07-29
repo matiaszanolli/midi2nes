@@ -46,23 +46,23 @@ class TestEnvelopeProcessor(unittest.TestCase):
         release_value = self.processor.get_envelope_value(envelope_type, 29, note_duration)
         self.assertLess(release_value, sustain_value)  # Should decrease during release
 
-def test_percussion_envelope(self):
-    """Test percussion envelope (immediate attack, quick decay)"""
-    envelope_type = "percussion"
-    note_duration = 10
-    
-    # Test immediate attack - should start at maximum volume
-    start_value = self.processor.get_envelope_value(envelope_type, 0, note_duration)
-    self.assertEqual(start_value, 15)  # Should start at max volume (15)
-    
-    # Test decay phase - should gradually decrease
-    next_value = self.processor.get_envelope_value(envelope_type, 1, note_duration)
-    self.assertLess(next_value, 15)  # Should be less than initial value
-    self.assertGreater(next_value, 0)  # But still greater than 0
-    
-    # Test end of decay
-    end_value = self.processor.get_envelope_value(envelope_type, note_duration - 1, note_duration)
-    self.assertEqual(end_value, 0)  # Should reach zero by the end
+    def test_percussion_envelope(self):
+        """Test percussion envelope (immediate attack, quick decay)"""
+        envelope_type = "percussion"
+        note_duration = 10
+        
+        # Test immediate attack - should start at maximum volume
+        start_value = self.processor.get_envelope_value(envelope_type, 0, note_duration)
+        self.assertEqual(start_value, 15)  # Should start at max volume (15)
+        
+        # Test decay phase - should gradually decrease
+        next_value = self.processor.get_envelope_value(envelope_type, 1, note_duration)
+        self.assertLess(next_value, 15)  # Should be less than initial value
+        self.assertGreater(next_value, 0)  # But still greater than 0
+        
+        # Test end of decay
+        end_value = self.processor.get_envelope_value(envelope_type, note_duration - 1, note_duration)
+        self.assertEqual(end_value, 0)  # Should reach zero by the end
 
 
     def test_control_byte_generation(self):

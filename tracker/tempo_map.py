@@ -548,6 +548,7 @@ class EnhancedTempoMap(TempoMap):
     def _align_to_frames(self):
         """Align tempo changes with frame boundaries using numpy"""
         aligned_changes = []
+        alignments_made = 0
         
         for tick, tempo in self.tempo_changes:
             time_ms = np.float64(self.calculate_time_ms(0, tick))
@@ -576,11 +577,16 @@ class EnhancedTempoMap(TempoMap):
                     left = mid + 1
                 else:
                     right = mid - 1
+            
+            # Track if alignment was made
+            if best_tick != tick:
+                alignments_made += 1
                     
             aligned_changes.append((int(best_tick), tempo))
             
         if aligned_changes:
             self.tempo_changes = sorted(aligned_changes)
+            self.optimization_stats['frame_alignments'] = alignments_made
 
     def optimize_tempo_changes(self):
         """Optimize tempo changes based on selected strategy"""
@@ -670,7 +676,7 @@ class EnhancedTempoMap(TempoMap):
         
         return max(0, approximate_tick)
 
-    def get_optimization_Stats(self) -> Dict:
+    def get_optimization_stats(self) -> Dict:
         """Get statistics about optimization operations"""
         return dict(self.optimization_stats)
         

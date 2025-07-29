@@ -418,37 +418,56 @@ class TestEnhancedTempoMap(unittest.TestCase):
                 break
         self.assertTrue(found_significant)
 
-def test_optimization_statistics(self):
-    """Test optimization statistics tracking"""
-    tempo_map = EnhancedTempoMap(
-        initial_tempo=500000,
-        validation_config=self.default_config
-    )
-    
-    # Calculate frame-aligned ticks
-    frame_time = 16.67  # One frame at 60fps
-    aligned_tick = tempo_map._find_tick_at_time(frame_time)
-    
-    # Add changes at frame-aligned ticks
-    tempo_map.add_tempo_change(aligned_tick, 500000)
-    tempo_map.add_tempo_change(aligned_tick * 2, 502000)
-    tempo_map.add_tempo_change(aligned_tick * 3, 550000)
-    
-    # Add pattern variations
-    pattern_id = "test_pattern"
-    tempo_map.add_pattern_tempo(
-        pattern_id, 500000,
-        [TempoChange(aligned_tick * 4, 450000, TempoChangeType.LINEAR, 240)]
-    )
-    
-    # Optimize
-    tempo_map.optimize_tempo_changes()
-    
-    # Check statistics
-    stats = tempo_map.get_optimization_stats()
-    self.assertIn('changes_combined', stats)
-    self.assertIn('frame_alignments', stats)
-    self.assertIn('pattern_tempo_optimizations', stats)
+    def test_optimization_statistics(self):
+        """Test optimization statistics tracking"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config
+        )
+        
+        # Test frame alignment statistics (default strategy)
+        tempo_map.add_tempo_change(480, 500000)
+        tempo_map.add_tempo_change(960, 502000)
+        tempo_map.add_tempo_change(1440, 550000)
+        
+        # Optimize with frame alignment (default)
+        tempo_map.optimize_tempo_changes()
+        
+        # Check frame alignment statistics
+        stats = tempo_map.get_optimization_stats()
+        self.assertIn('frame_alignments', stats)
+        
+        # Test pattern tempo optimization statistics
+        pattern_id = "test_pattern"
+        tempo_map.add_pattern_tempo(
+            pattern_id, 500000,
+            [TempoChange(480, 450000, TempoChangeType.LINEAR, 240)]  # significant difference
+        )
+        
+        # Optimize pattern tempos
+        tempo_map.optimize_pattern_tempos()
+        
+        # Check pattern optimization statistics
+        stats = tempo_map.get_optimization_stats()
+        self.assertIn('pattern_tempo_optimizations', stats)
+        
+        # Test minimize changes strategy
+        tempo_map2 = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config,
+            optimization_strategy=TempoOptimizationStrategy.MINIMIZE_CHANGES
+        )
+        
+        # Add similar tempo changes that should be combined
+        tempo_map2.add_tempo_change(480, 500000)
+        tempo_map2.add_tempo_change(960, 502000)  # Small difference - should be combined
+        tempo_map2.add_tempo_change(1440, 550000)  # Significant difference - preserved
+        
+        tempo_map2.optimize_tempo_changes()
+        
+        # Check combination statistics
+        stats2 = tempo_map2.get_optimization_stats()
+        self.assertIn('changes_combined', stats2)
 
 
 class TestTempoValidationConfig(unittest.TestCase):

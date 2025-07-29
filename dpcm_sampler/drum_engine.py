@@ -1,4 +1,5 @@
 import json
+from .dpcm_sample_manager import DPCMSampleManager
 
 # Default MIDI drum note mapping
 DEFAULT_MIDI_DRUM_MAPPING = {
@@ -33,80 +34,9 @@ ADVANCED_MIDI_DRUM_MAPPING = {
 
 
 def map_drums_to_dpcm(midi_events, dpcm_index_path, use_advanced=True):
-    """
-    Map MIDI drum events to DPCM samples
-    
-    Args:
-        midi_events: Dictionary of MIDI events
-        dpcm_index_path: Path to DPCM sample index
-        use_advanced: Whether to use advanced mapping features
-    
-    Returns:
-        tuple: (dpcm_events, noise_events)
-        
-    Raises:
-        FileNotFoundError: If dpcm_index_path doesn't exist
-        json.JSONDecodeError: If dpcm_index_path contains invalid JSON
-    """
-    try:
-        with open(dpcm_index_path, 'r') as f:
-            sample_index = json.load(f)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"DPCM index file not found: {dpcm_index_path}")
-    except json.JSONDecodeError as e:
-        raise json.JSONDecodeError(f"Invalid JSON in DPCM index: {dpcm_index_path}", e.doc, e.pos)
-
-    dpcm_events = []
-    noise_events = []
-    
-    mapping = ADVANCED_MIDI_DRUM_MAPPING if use_advanced else DEFAULT_MIDI_DRUM_MAPPING
-
-    for ch, events in midi_events.items():
-        for e in events:
-            if e.get('velocity', 0) == 0:
-                continue
-
-            midi_note = e['note']
-            velocity = e['velocity']
-            sample_name = None
-            
-            if use_advanced and midi_note in mapping:
-                drum_config = mapping[midi_note]
-                
-                # Handle velocity ranges
-                sample_name = drum_config["primary"]
-                for (v_min, v_max), v_sample in drum_config["velocity_ranges"].items():
-                    if v_min <= velocity <= v_max:
-                        sample_name = v_sample
-                        break
-                
-                # Handle layered samples
-                if "layers" in drum_config:
-                    for layer in drum_config["layers"]:
-                        if layer in sample_index:
-                            dpcm_events.append({
-                                "frame": e['frame'],
-                                "sample_id": sample_index[layer]['id'],
-                                "velocity": velocity
-                            })
-            else:
-                # Fallback to basic mapping
-                sample_name = DEFAULT_MIDI_DRUM_MAPPING.get(midi_note)
-            
-            # Add main sample if valid
-            if sample_name and sample_name in sample_index:
-                dpcm_events.append({
-                    "frame": e['frame'],
-                    "sample_id": sample_index[sample_name]['id'],
-                    "velocity": velocity
-                })
-            else:
-                noise_events.append({
-                    "frame": e['frame'],
-                    "velocity": velocity
-                })
-
-    return dpcm_events, noise_events
+    """Use the enhanced drum mapper for proper DPCM mapping."""
+    from .enhanced_drum_mapper import map_drums_to_dpcm as enhanced_map_drums
+    return enhanced_map_drums(midi_events, dpcm_index_path, use_advanced)
 
 
 def optimize_dpcm_samples(dpcm_events, max_samples=16):
@@ -144,6 +74,30 @@ def optimize_dpcm_samples(dpcm_events, max_samples=16):
             })
     
     return optimized_events, noise_fallback
+
+
+class DrumPatternAnalyzer:
+    def __init__(self):
+        self.pattern_cache = {}
+        self.groove_patterns = []
+        
+    def analyze_drum_track(self, midi_events):
+        """Analyzes drum patterns and returns optimized mapping suggestions"""
+        patterns = self.detect_patterns(midi_events)
+        groove = self.detect_groove(midi_events)
+        return self.optimize_mapping(patterns, groove)
+        
+    def detect_patterns(self, midi_events):
+        """Detects common drum patterns and fills"""
+        # Implementation here
+        
+    def detect_groove(self, midi_events):
+        """Analyzes groove patterns and timing variations"""
+        # Implementation here
+        
+    def optimize_mapping(self, patterns, groove):
+        """Returns optimized channel and sample assignments"""
+        # Implementation here
 
 
 if __name__ == "__main__":

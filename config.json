@@ -1,0 +1,28 @@
+example_config = {
+    "pattern_detection": {
+        "min_pattern_length": 2,
+        "max_pattern_length": 16,
+        "similarity_threshold": 0.85,
+        "variation_threshold": 0.7,
+        "timing_weight": 0.4,
+        "velocity_weight": 0.3,
+        "instrument_weight": 0.3,
+        "preferred_lengths": [4, 8, 16]
+    },
+    "sample_management": {
+        "max_samples": 16,
+        "memory_limit": 4096,
+        "similarity_threshold": 0.85,
+        "cache_size": 32,
+        "auto_optimize_threshold": 0.9,
+        "keep_minimum_samples": 4
+    },
+    "global_settings": {
+        "frame_rate": 60,
+        "use_advanced_mapping": true,
+        "enable_pattern_detection": true,
+        "enable_sample_optimization": true,
+        "max_layers": 3,
+        "layer_velocity_scaling": true
+    }
+}

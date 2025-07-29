@@ -234,51 +234,56 @@ class TestEnhancedLoopManager(unittest.TestCase):
         # No loops should be detected
         self.assertEqual(len(loops), 0, "Invalid loop should be ignored")
 
-def test_nested_loops(self):
-    """Test handling of nested loops"""
-    note_events = [
-        # Outer pattern start
-        {'frame': 0, 'note': 60, 'volume': 100, 'tick': 0},
-        {'frame': 1, 'note': 64, 'volume': 100, 'tick': 240},
+    def test_nested_loops(self):
+        """Test handling of nested loops"""
+        note_events = [
+            # First occurrence of pattern A (60-64-67)
+            {'frame': 0, 'note': 60, 'volume': 100, 'tick': 0},
+            {'frame': 1, 'note': 64, 'volume': 100, 'tick': 240},
+            {'frame': 2, 'note': 67, 'volume': 100, 'tick': 480},
+            
+            # First occurrence of pattern B (72-76-79)
+            {'frame': 3, 'note': 72, 'volume': 100, 'tick': 720},
+            {'frame': 4, 'note': 76, 'volume': 100, 'tick': 960},
+            {'frame': 5, 'note': 79, 'volume': 100, 'tick': 1200},
+            
+            # Second occurrence of pattern A
+            {'frame': 6, 'note': 60, 'volume': 100, 'tick': 1440},
+            {'frame': 7, 'note': 64, 'volume': 100, 'tick': 1680},
+            {'frame': 8, 'note': 67, 'volume': 100, 'tick': 1920},
+            
+            # Second occurrence of pattern B
+            {'frame': 9, 'note': 72, 'volume': 100, 'tick': 2160},
+            {'frame': 10, 'note': 76, 'volume': 100, 'tick': 2400},
+            {'frame': 11, 'note': 79, 'volume': 100, 'tick': 2640},
+            
+            # Third occurrence of pattern A
+            {'frame': 12, 'note': 60, 'volume': 100, 'tick': 2880},
+            {'frame': 13, 'note': 64, 'volume': 100, 'tick': 3120},
+            {'frame': 14, 'note': 67, 'volume': 100, 'tick': 3360},
+        ]
         
-        # Inner pattern
-        {'frame': 2, 'note': 67, 'volume': 100, 'tick': 480},
-        {'frame': 3, 'note': 72, 'volume': 100, 'tick': 720},
-        {'frame': 4, 'note': 67, 'volume': 100, 'tick': 960},
-        {'frame': 5, 'note': 72, 'volume': 100, 'tick': 1200},
+        # Detect patterns
+        pattern_result = self.pattern_detector.detect_patterns(note_events)
         
-        # Outer pattern continues
-        {'frame': 6, 'note': 60, 'volume': 100, 'tick': 1440},
-        {'frame': 7, 'note': 64, 'volume': 100, 'tick': 1680},
+        # Convert pattern format
+        pattern_info = {}
+        for pattern_id, pattern in pattern_result['patterns'].items():
+            pattern_info[pattern_id] = {
+                'positions': pattern_result['references'][pattern_id],
+                'length': len(pattern['events'])
+            }
         
-        # Patterns repeat
-        {'frame': 8, 'note': 67, 'volume': 100, 'tick': 1920},
-        {'frame': 9, 'note': 72, 'volume': 100, 'tick': 2160},
-        {'frame': 10, 'note': 67, 'volume': 100, 'tick': 2400},
-        {'frame': 11, 'note': 72, 'volume': 100, 'tick': 2640}
-    ]
-    
-    # Detect patterns
-    pattern_result = self.pattern_detector.detect_patterns(note_events)
-    
-    # Convert pattern format
-    pattern_info = {}
-    for pattern_id, pattern in pattern_result['patterns'].items():
-        pattern_info[pattern_id] = {
-            'positions': pattern_result['references'][pattern_id],
-            'length': len(pattern['events'])
-        }
-    
-    # Detect loops
-    loops = self.loop_manager.detect_loops(note_events, pattern_info)
-    
-    # Should optimize and choose the most efficient loop structure
-    self.assertTrue(len(loops) > 0, "Should detect at least one loop")
-    
-    # Verify no overlapping loops
-    used_frames = set()
-    for loop_info in loops.values():
-        loop_range = set(range(loop_info['start'], loop_info['end']))
-        self.assertFalse(loop_range.intersection(used_frames), 
-                        "Loops should not overlap")
-        used_frames.update(loop_range)
+        # Detect loops
+        loops = self.loop_manager.detect_loops(note_events, pattern_info)
+        
+        # Should optimize and choose the most efficient loop structure
+        self.assertTrue(len(loops) > 0, "Should detect at least one loop")
+        
+        # Verify no overlapping loops
+        used_frames = set()
+        for loop_info in loops.values():
+            loop_range = set(range(loop_info['start'], loop_info['end']))
+            self.assertFalse(loop_range.intersection(used_frames), 
+                            "Loops should not overlap")
+            used_frames.update(loop_range)

@@ -8,10 +8,12 @@ NES_CHANNELS = ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']
 
 
 def group_notes_by_frame(events):
-    """Group note-on events by frame, ignoring note-offs (velocity = 0)."""
+    """Group note-on events by frame, ignoring note-offs (volume/velocity = 0)."""
     grouped = defaultdict(list)
     for e in events:
-        if e.get('velocity', 0) > 0:
+        # Handle both 'volume' and 'velocity' field names for compatibility
+        vel = e.get('volume', e.get('velocity', 0))
+        if vel > 0:
             grouped[e['frame']].append(e['note'])
     return grouped
 
@@ -155,7 +157,8 @@ def assign_tracks_to_nes_channels(midi_events, dpcm_index_path):
 
     # Basic heuristic: choose based on pitch and density
     def average_pitch(events):
-        notes = [e['note'] for e in events if e.get('velocity', 0) > 0]
+        # Handle both 'volume' and 'velocity' field names for compatibility
+        notes = [e['note'] for e in events if e.get('volume', e.get('velocity', 0)) > 0]
         return sum(notes) / len(notes) if notes else 0
 
     channel_scores = [

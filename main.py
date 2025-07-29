@@ -1,6 +1,7 @@
 import argparse
 import sys
 import json
+from typing import Dict, Optional
 from pathlib import Path
 from tracker.parser import parse_midi_to_frames
 from tracker.track_mapper import assign_tracks_to_nes_channels
@@ -12,6 +13,7 @@ from exporter.exporter_ca65 import CA65Exporter
 from exporter.exporter import generate_famitracker_txt_with_patterns
 from tracker.pattern_detector import EnhancedPatternDetector
 from tracker.tempo_map import EnhancedTempoMap
+from dpcm_sampler.enhanced_drum_mapper import EnhancedDrumMapper, DrumMapperConfig
 
 def run_parse(args):
     midi_data = parse_midi_to_frames(args.input)
@@ -179,6 +181,37 @@ def run_song_remove(args):
     bank.export_bank(args.bank)
     print(f"Song '{args.name}' removed from bank")
 
+def load_config(config_path: Optional[str] = None) -> DrumMapperConfig:
+    """Load drum mapper configuration from file or use defaults"""
+    if config_path and Path(config_path).exists():
+        return DrumMapperConfig.from_file(config_path)
+    return DrumMapperConfig()
+
+def run_parse(args):
+    midi_data = parse_midi_to_frames(args.input)
+    Path(args.output).write_text(json.dumps(midi_data, indent=2))
+    print(f"[OK] Parsed MIDI -> {args.output}")
+
+def run_map(args):
+    input_data = json.loads(Path(args.input).read_text())
+    
+    # Initialize drum mapper with configuration
+    config = load_config(args.config)
+    drum_mapper = EnhancedDrumMapper(
+        dpcm_index_path=args.dpcm_index or 'samples/index.json',
+        config=config
+    )
+    
+    # Map tracks to NES channels with enhanced drum mapping
+    mapped_data = assign_tracks_to_nes_channels(
+        input_data,
+        drum_mapper=drum_mapper,
+        use_advanced_mapping=config.use_advanced_mapping
+    )
+    
+    Path(args.output).write_text(json.dumps(mapped_data, indent=2))
+    print(f"[OK] Mapped tracks -> {args.output}")
+
 def main():
     parser = argparse.ArgumentParser(description="MIDI to NES compiler")
     subparsers = parser.add_subparsers(dest='command')
@@ -189,19 +222,41 @@ def main():
     p_parse.add_argument('output')
     p_parse.set_defaults(func=run_parse)
 
+    # Update map command with new configuration options
     p_map = subparsers.add_parser('map', help='Map parsed MIDI to NES channels')
     p_map.add_argument('input')
     p_map.add_argument('output')
+    p_map.add_argument('--config', help='Path to drum mapper configuration file')
+    p_map.add_argument('--dpcm-index', help='Path to DPCM sample index')
     p_map.set_defaults(func=run_map)
 
+    # Add new configuration management commands
+    p_config = subparsers.add_parser('config', help='Configuration management')
+    config_subparsers = p_config.add_subparsers(dest='config_command')
+
+    # Generate default config
+    p_config_init = config_subparsers.add_parser('init', 
+                                                help='Generate default configuration')
+    p_config_init.add_argument('output', help='Output configuration file path')
+    p_config_init.set_defaults(func=run_config_init)
+
+    # Validate config
+    p_config_validate = config_subparsers.add_parser('validate', 
+                                                    help='Validate configuration file')
+    p_config_validate.add_argument('config', help='Configuration file to validate')
+    p_config_validate.set_defaults(func=run_config_validate)
+
+    # Keep existing commands
     p_frames = subparsers.add_parser('frames', help='Generate frame data from mapped tracks')
     p_frames.add_argument('input')
     p_frames.add_argument('output')
     p_frames.set_defaults(func=run_frames)
 
-    p_patterns = subparsers.add_parser('detect-patterns', help='Detect and compress patterns in frame data')
+    p_patterns = subparsers.add_parser('detect-patterns', 
+                                      help='Detect and compress patterns in frame data')
     p_patterns.add_argument('input')
     p_patterns.add_argument('output')
+    p_patterns.add_argument('--config', help='Path to pattern detection configuration')
     p_patterns.set_defaults(func=run_detect_patterns)
 
     p_export = subparsers.add_parser('export', help='Export NES-ready files (ca65/FamiTracker)')
@@ -211,16 +266,16 @@ def main():
     p_export.add_argument('--patterns', help='Path to pattern data JSON (optional)')
     p_export.set_defaults(func=run_export)
 
+    # Keep other existing commands...
     p_prepare = subparsers.add_parser('prepare', help='Prepare CA65 project for compilation')
     p_prepare.add_argument('input', help='Input music.asm file')
     p_prepare.add_argument('output', help='Output project directory')
     p_prepare.set_defaults(func=run_prepare)
 
-    # New song bank management subcommands
+    # Song bank management commands
     p_song = subparsers.add_parser('song', help='Song bank management')
     song_subparsers = p_song.add_subparsers(dest='song_command')
 
-    # Add song command
     p_song_add = song_subparsers.add_parser('add', help='Add song to bank')
     p_song_add.add_argument('input', help='Input MIDI file')
     p_song_add.add_argument('--bank', help='Song bank file (creates new if not exists)')
@@ -229,14 +284,13 @@ def main():
     p_song_add.add_argument('--loop-point', type=int, help='Loop point in frames')
     p_song_add.add_argument('--tags', help='Comma-separated tags')
     p_song_add.add_argument('--tempo', type=int, default=120, help='Base tempo (default: 120)')
+    p_song_add.add_argument('--config', help='Path to drum mapper configuration')
     p_song_add.set_defaults(func=run_song_add)
 
-    # List songs command
     p_song_list = song_subparsers.add_parser('list', help='List songs in bank')
     p_song_list.add_argument('bank', help='Song bank file')
     p_song_list.set_defaults(func=run_song_list)
 
-    # Remove song command
     p_song_remove = song_subparsers.add_parser('remove', help='Remove song from bank')
     p_song_remove.add_argument('bank', help='Song bank file')
     p_song_remove.add_argument('name', help='Song name to remove')
@@ -248,6 +302,22 @@ def main():
         args.func(args)
     else:
         parser.print_help()
+
+def run_config_init(args):
+    """Generate default configuration file"""
+    config = DrumMapperConfig()
+    config.to_file(args.output)
+    print(f"[OK] Generated default configuration -> {args.output}")
+
+def run_config_validate(args):
+    """Validate configuration file"""
+    try:
+        config = DrumMapperConfig.from_file(args.config)
+        config.validate()
+        print(f"[OK] Configuration file is valid: {args.config}")
+    except Exception as e:
+        print(f"[ERROR] Configuration validation failed: {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

@@ -36,7 +36,11 @@ class EnvelopeProcessor:
         
         # Calculate envelope phases in frames
         attack_end = attack
-        decay_end = attack_end + decay
+        # For percussion envelopes with no sustain, decay should end at note duration
+        if sustain == 0 and release == 0:
+            decay_end = note_duration
+        else:
+            decay_end = attack_end + decay
         sustain_end = note_duration - release
         
         # Calculate base volume from ADSR envelope
@@ -45,8 +49,17 @@ class EnvelopeProcessor:
             base_volume = int((frame_offset / attack) * 15)
         elif frame_offset < decay_end and decay > 0:
             # Decay phase: volume ramps down to sustain level
-            decay_progress = (frame_offset - attack_end) / decay
-            base_volume = int(15 - ((15 - sustain) * decay_progress))
+            if sustain == 0 and release == 0:
+                # For percussion envelopes, decay to zero over note duration
+                # Make sure we reach exactly zero at the last frame
+                if frame_offset >= note_duration - 1:
+                    base_volume = 0
+                else:
+                    decay_progress = (frame_offset - attack_end) / (note_duration - 1 - attack_end)
+                    base_volume = int(15 * (1 - decay_progress))
+            else:
+                decay_progress = (frame_offset - attack_end) / decay
+                base_volume = int(15 - ((15 - sustain) * decay_progress))
         elif frame_offset < sustain_end:
             # Sustain phase: volume stays constant
             base_volume = sustain

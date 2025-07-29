@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from exporter.base_exporter import BaseExporter
 
 def generate_famistudio_txt(frames_data, project_name="MIDI2NES", author="", copyright=""):
     """
@@ -160,6 +161,21 @@ def midi_note_to_famistudio(note):
     octave = (note // 12) - 1
     note_name = NOTE_NAMES[note % 12]
     return f"{note_name}{octave}"
+
+class FamiStudioExporter(BaseExporter):
+    """FamiStudio Text Format Exporter"""
+    
+    def __init__(self):
+        super().__init__()
+    
+    def generate_famistudio_txt(self, frames_data, project_name="MIDI2NES", author="", copyright=""):
+        """Generate FamiStudio text format export"""
+        return generate_famistudio_txt(frames_data, project_name, author, copyright)
+    
+    def export(self, frames_data, output_path, project_name="MIDI2NES", author="", copyright=""):
+        """Export frame data to FamiStudio text format"""
+        output = generate_famistudio_txt(frames_data, project_name, author, copyright)
+        Path(output_path).write_text(output)
 
 def export_famistudio(frames_data, output_path, project_name="MIDI2NES", author="", copyright=""):
     """Export frame data to FamiStudio text format"""

@@ -109,13 +109,16 @@ class PatternDetector:
             # Bonuses and penalties:
             exact_bonus = exact_count * 0.3  # Slight bonus for exact matches
             
-            # Length sweet spot: favor patterns of 3-8 notes (musical phrases)
-            if 3 <= length <= 8:
-                length_bonus = 2.0
-            elif length <= 16:
-                length_bonus = 1.0
+            # Length bonus: strongly favor longer patterns for better compression
+            # Exponential bonus for longer patterns
+            if length >= 6:
+                length_bonus = length * 3.0  # Strong bonus for 6+ note patterns
+            elif length >= 4:
+                length_bonus = length * 2.0  # Good bonus for 4-5 note patterns
+            elif length == 3:
+                length_bonus = 1.5  # Basic bonus for minimum patterns
             else:
-                length_bonus = -1.0  # Penalize very long patterns
+                length_bonus = 0.5  # Small bonus for 2-note patterns
             
             # Frequency bonus: heavily favor patterns that repeat often
             if total_count >= 4:
@@ -348,6 +351,263 @@ class EnhancedPatternDetector(PatternDetector):
             return (0, 0)
         volume_changes = [var['volume_change'] for var in variations]
         return (min(volume_changes), max(volume_changes))
+
+
+class DrumPatternDetector(PatternDetector):
+    def __init__(self, min_pattern_length=2, max_pattern_length=16):
+        super().__init__(min_pattern_length, max_pattern_length)
+        self.drum_patterns = {
+            'basic_beat': [(36, 100), (42, 80), (36, 100), (42, 80)],  # Basic kick-hihat
+            'basic_rock': [(36, 100), (42, 80), (38, 100), (42, 80)],  # Basic rock beat
+            'fill_pattern': [(38, 100), (38, 100), (38, 100), (38, 120)]  # Basic fill
+        }
+        self.detected_patterns = {}  # Store detected patterns for access by tests
+        
+    def _calculate_drum_similarity(self, pattern1: List[Tuple], pattern2: List[Tuple]) -> float:
+        """
+        Specialized similarity calculation for drum patterns considering:
+        - Exact note matches (same drum instrument)
+        - Velocity variations (dynamics)
+        - Timing relationships (relative positions)
+        """
+        if len(pattern1) != len(pattern2):
+            return 0.0
+            
+        similarity_score = 0.0
+        timing_weight = 0.4
+        velocity_weight = 0.3
+        instrument_weight = 0.3
+        
+        for i, ((note1, vel1), (note2, vel2)) in enumerate(zip(pattern1, pattern2)):
+            # Instrument match (exact drum type)
+            if note1 == note2:
+                similarity_score += instrument_weight
+            # Similar drum type (e.g., high tom vs mid tom)
+            elif abs(note1 - note2) <= 2 and note1 in range(41, 49):  # Toms range
+                similarity_score += instrument_weight * 0.5
+                
+            # Velocity similarity
+            vel_similarity = 1.0 - (abs(vel1 - vel2) / 127.0)
+            similarity_score += vel_similarity * velocity_weight
+            
+            # Timing pattern similarity (position in the pattern)
+            position_similarity = 1.0 if i % 2 == 0 else 0.8  # Emphasize strong beats
+            similarity_score += position_similarity * timing_weight
+            
+        return similarity_score / len(pattern1)
+        
+    def detect_drum_patterns(self, events: List[Dict]) -> Dict:
+        """
+        Enhanced pattern detection specifically for drum tracks
+        """
+        if not events:
+            return {}
+            
+        sequence = [(e['note'], e.get('volume', e.get('velocity', 100))) for e in events]
+        patterns = {}
+        
+        def score_drum_pattern(length: int, matches: List[int], 
+                             variations: List[Dict]) -> float:
+            """
+            Score drum patterns based on:
+            - Pattern length (favor common drum pattern lengths: 2, 4, 8, 16)
+            - Number of repetitions
+            - Consistency of variations
+            """
+            total_occurrences = len(matches) + len(variations)
+            
+            # Base score from pattern length
+            if length in [4, 8]:  # Common drum pattern lengths
+                length_score = 2.0
+            elif length in [2, 16]:  # Less common but valid
+                length_score = 1.5
+            else:
+                length_score = 1.0
+                
+            # Repetition score
+            repetition_score = total_occurrences * 0.5
+            
+            # Variation consistency score
+            if variations:
+                variation_similarities = [v['similarity'] for v in variations]
+                consistency_score = sum(variation_similarities) / len(variations)
+            else:
+                consistency_score = 1.0
+                
+            return (length_score + repetition_score) * consistency_score
+            
+        # Detect common drum patterns first
+        for name, template in self.drum_patterns.items():
+            for pos in range(len(sequence) - len(template) + 1):
+                current = sequence[pos:pos + len(template)]
+                similarity = self._calculate_drum_similarity(template, current)
+                
+                if similarity > 0.85:
+                    if name not in patterns:
+                        patterns[name] = {
+                            'template': template,
+                            'matches': [pos],
+                            'variations': []
+                        }
+                    else:
+                        patterns[name]['matches'].append(pos)
+                elif similarity > 0.7:
+                    if name not in patterns:
+                        patterns[name] = {
+                            'template': template,
+                            'matches': [],
+                            'variations': []
+                        }
+                    patterns[name]['variations'].append({
+                        'position': pos,
+                        'similarity': similarity,
+                        'pattern': current
+                    })
+                    
+        # Detect emergent patterns
+        for length in range(self.min_pattern_length, 
+                          min(self.max_pattern_length, len(sequence)) + 1):
+            for start in range(len(sequence) - length + 1):
+                pattern = sequence[start:start + length]
+                
+                # Skip if this segment is already part of a known pattern
+                if any(start in p['matches'] for p in patterns.values()):
+                    continue
+                    
+                matches = []
+                variations = []
+                
+                # Look for similar patterns
+                for pos in range(start + 1, len(sequence) - length + 1):
+                    current = sequence[pos:pos + length]
+                    similarity = self._calculate_drum_similarity(pattern, current)
+                    
+                    if similarity > 0.85:
+                        matches.append(pos)
+                    elif similarity > 0.7:
+                        variations.append({
+                            'position': pos,
+                            'similarity': similarity,
+                            'pattern': current
+                        })
+                
+                if matches or variations:
+                    pattern_score = score_drum_pattern(length, matches, variations)
+                    if pattern_score > 1.5:  # Threshold for accepting new patterns
+                        pattern_id = f"emergent_pattern_{len(patterns)}"
+                        patterns[pattern_id] = {
+                            'template': pattern,
+                            'matches': [start] + matches,
+                            'variations': variations,
+                            'score': pattern_score
+                        }
+        
+        # Post-process patterns
+        optimized_patterns = self._optimize_drum_patterns(patterns, events)
+        
+        # Store detected patterns for access by tests
+        self.detected_patterns = optimized_patterns
+        
+        return optimized_patterns
+        
+    def _optimize_drum_patterns(self, patterns: Dict, events: List[Dict]) -> Dict:
+        """
+        Optimize detected drum patterns by:
+        1. Removing overlapping patterns, keeping the highest scoring ones
+        2. Merging similar patterns
+        3. Adding musical context (strong/weak beats, fills, etc.)
+        """
+        optimized = {}
+        used_positions = set()
+        
+        # Sort patterns by score
+        sorted_patterns = sorted(
+            patterns.items(),
+            key=lambda x: len(x[1]['matches']) + len(x[1]['variations']),
+            reverse=True
+        )
+        
+        for pattern_id, pattern_info in sorted_patterns:
+            # Check for position overlap
+            pattern_positions = set()
+            for pos in pattern_info['matches']:
+                pattern_positions.update(
+                    range(pos, pos + len(pattern_info['template']))
+                )
+            
+            # Add variations positions
+            for var in pattern_info['variations']:
+                pattern_positions.update(
+                    range(var['position'], 
+                          var['position'] + len(pattern_info['template']))
+                )
+            
+            # If no significant overlap, add to optimized patterns
+            if len(pattern_positions.intersection(used_positions)) < \
+               len(pattern_positions) * 0.3:
+                optimized[pattern_id] = pattern_info
+                used_positions.update(pattern_positions)
+                
+                # Add musical context
+                pattern_info['musical_context'] = self._analyze_musical_context(
+                    pattern_info, events
+                )
+        
+        return optimized
+        
+    def _analyze_musical_context(self, pattern_info: Dict, 
+                               events: List[Dict]) -> Dict:
+        """
+        Analyze the musical context of a drum pattern
+        """
+        context = {
+            'is_fill': False,
+            'intensity': 0,
+            'common_variations': [],
+            'typical_position': 'any'
+        }
+        
+        template = pattern_info['template']
+        
+        # Check if it's a fill (increasing density or velocity)
+        velocities = [v for _, v in template]
+        if (len(set(n for n, _ in template)) >= 3 and  # Multiple drum types
+            sum(velocities[len(velocities)//2:]) > 
+            sum(velocities[:len(velocities)//2])):  # Increasing intensity
+            context['is_fill'] = True
+            
+        # Calculate intensity
+        context['intensity'] = sum(v for _, v in template) / len(template)
+        
+        # Analyze common variations
+        if pattern_info['variations']:
+            variation_types = defaultdict(int)
+            for var in pattern_info['variations']:
+                var_pattern = var['pattern']
+                if all(v2 > v1 for (_, v1), (_, v2) in 
+                      zip(template, var_pattern)):
+                    variation_types['crescendo'] += 1
+                elif all(n1 == n2 for (n1, _), (n2, _) in 
+                        zip(template, var_pattern)):
+                    variation_types['velocity_only'] += 1
+                    
+            context['common_variations'] = [
+                k for k, v in variation_types.items() 
+                if v >= len(pattern_info['variations']) * 0.3
+            ]
+            
+        # Determine typical position
+        positions = pattern_info['matches']
+        if positions:
+            avg_pos = sum(positions) / len(positions)
+            if avg_pos < len(events) * 0.3:
+                context['typical_position'] = 'early'
+            elif avg_pos > len(events) * 0.7:
+                context['typical_position'] = 'late'
+            else:
+                context['typical_position'] = 'middle'
+                
+        return context
 
 
 class PatternCompressor:
