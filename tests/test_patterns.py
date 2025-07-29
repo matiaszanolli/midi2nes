@@ -183,6 +183,105 @@ class TestPatternDetection(unittest.TestCase):
             self.assertTrue(isinstance(end_pos, int), "Jump table keys should be integers")
             self.assertTrue(isinstance(start_pos, int), "Jump table values should be integers")
 
+    def test_pattern_with_variations(self):
+        """Test pattern detection with variations"""
+        variation_events = [
+            # Original pattern
+            {'frame': 0, 'note': 60, 'volume': 100},
+            {'frame': 1, 'note': 64, 'volume': 100},
+            {'frame': 2, 'note': 67, 'volume': 100},
+            # Transposed variation
+            {'frame': 3, 'note': 62, 'volume': 100},
+            {'frame': 4, 'note': 66, 'volume': 100},
+            {'frame': 5, 'note': 69, 'volume': 100},
+            # Volume variation
+            {'frame': 6, 'note': 60, 'volume': 80},
+            {'frame': 7, 'note': 64, 'volume': 80},
+            {'frame': 8, 'note': 67, 'volume': 80},
+        ]
+        
+        patterns = self.pattern_detector.detect_patterns(variation_events)
+        self.assertTrue(len(patterns) > 0, "Should detect pattern with variations")
+        
+        first_pattern = list(patterns.values())[0]
+        self.assertIn('variations', first_pattern, "Pattern should include variations")
+        self.assertTrue(len(first_pattern['variations']) >= 2, 
+                    "Should detect both transposed and volume variations")
+
+    def test_pattern_optimization_with_variations(self):
+        """Test pattern optimization considering variations"""
+        events = [
+            # Pattern A
+            {'frame': 0, 'note': 60, 'volume': 100},
+            {'frame': 1, 'note': 64, 'volume': 100},
+            {'frame': 2, 'note': 67, 'volume': 100},
+            # Pattern B
+            {'frame': 3, 'note': 72, 'volume': 100},
+            {'frame': 4, 'note': 76, 'volume': 100},
+            {'frame': 5, 'note': 79, 'volume': 100},
+            # Pattern A variation
+            {'frame': 6, 'note': 62, 'volume': 100},
+            {'frame': 7, 'note': 66, 'volume': 100},
+            {'frame': 8, 'note': 69, 'volume': 100},
+        ]
+        
+        patterns = self.pattern_detector.detect_patterns(events)
+        optimized = self.pattern_detector._optimize_patterns(patterns)
+        
+        self.assertTrue(len(optimized) > 0, "Should keep patterns after optimization")
+        first_pattern = list(optimized.values())[0]
+        self.assertIn('variations', first_pattern, 
+                    "Optimized pattern should retain variations")
+
+
+class TestEnhancedPatternDetector(unittest.TestCase):
+    def setUp(self):
+        self.tempo_map = EnhancedTempoMap(initial_tempo=500000)  # 120 BPM
+        self.detector = EnhancedPatternDetector(self.tempo_map, min_pattern_length=3)
+        
+    def test_pattern_tempo_analysis(self):
+        """Test tempo analysis for patterns"""
+        events = [
+            {'frame': 0, 'note': 60, 'volume': 100, 'tick': 0},
+            {'frame': 1, 'note': 64, 'volume': 100, 'tick': 120},
+            {'frame': 2, 'note': 67, 'volume': 100, 'tick': 240},
+            # Pattern repeats
+            {'frame': 3, 'note': 60, 'volume': 100, 'tick': 360},
+            {'frame': 4, 'note': 64, 'volume': 100, 'tick': 480},
+            {'frame': 5, 'note': 67, 'volume': 100, 'tick': 600},
+        ]
+        
+        # Add a tempo change
+        self.tempo_map.add_tempo_change(480, 400000)  # 150 BPM at tick 480
+        
+        result = self.detector.detect_patterns(events)
+        
+        self.assertIn('patterns', result)
+        pattern = list(result['patterns'].values())[0]
+        self.assertIn('tempo_info', pattern, "Pattern should include tempo analysis")
+        
+    def test_variation_tempo_analysis(self):
+        """Test tempo analysis for pattern variations"""
+        events = [
+            # Original pattern
+            {'frame': 0, 'note': 60, 'volume': 100, 'tick': 0},
+            {'frame': 1, 'note': 64, 'volume': 100, 'tick': 120},
+            {'frame': 2, 'note': 67, 'volume': 100, 'tick': 240},
+            # Variation with different tempo
+            {'frame': 3, 'note': 62, 'volume': 100, 'tick': 480},
+            {'frame': 4, 'note': 66, 'volume': 100, 'tick': 600},
+            {'frame': 5, 'note': 69, 'volume': 100, 'tick': 720},
+        ]
+        
+        # Add tempo changes
+        self.tempo_map.add_tempo_change(480, 400000)  # 150 BPM at tick 480
+        
+        result = self.detector.detect_patterns(events)
+        
+        pattern = list(result['patterns'].values())[0]
+        self.assertTrue(any('tempo_info' in var for var in pattern['variations']),
+                       "Variations should include tempo analysis")
+
 
 class TestPatternEdgeCases(unittest.TestCase):
     """Additional tests for edge cases and complex scenarios"""
@@ -245,6 +344,34 @@ class TestPatternEdgeCases(unittest.TestCase):
         # Should detect multiple 4-note patterns
         pattern_lengths = [p['length'] for p in patterns.values()]
         self.assertIn(4, pattern_lengths, "Should detect 4-note patterns")
+    
+    def test_variation_edge_cases(self):
+        """Test edge cases in pattern variation detection"""
+        events = [
+            # Original pattern
+            {'frame': 0, 'note': 60, 'volume': 100},
+            {'frame': 1, 'note': 64, 'volume': 100},
+            {'frame': 2, 'note': 67, 'volume': 100},
+            # Extreme transposition
+            {'frame': 3, 'note': 72, 'volume': 100},
+            {'frame': 4, 'note': 76, 'volume': 100},
+            {'frame': 5, 'note': 79, 'volume': 100},
+            # Extreme volume variation
+            {'frame': 6, 'note': 60, 'volume': 20},
+            {'frame': 7, 'note': 64, 'volume': 20},
+            {'frame': 8, 'note': 67, 'volume': 20},
+        ]
+        
+        patterns = self.pattern_detector.detect_patterns(events)
+        
+        # Verify handling of extreme variations
+        first_pattern = list(patterns.values())[0]
+        variations = first_pattern['variations']
+        
+        self.assertTrue(any(var['transposition'] >= 12 for var in variations),
+                    "Should handle octave transpositions")
+        self.assertTrue(any(abs(var['volume_change']) >= 80 for var in variations),
+                    "Should handle large volume changes")
 
     def test_pattern_optimization(self):
         """Test that pattern optimization works correctly"""
@@ -448,6 +575,41 @@ def test_compression_integration(self):
     self.assertTrue(len(result['patterns']) > 0, "Should detect patterns")
     self.assertTrue(result['stats']['compression_ratio'] >= 0,
                    "Should achieve some compression")
+
+
+class TestPatternSimilarity(unittest.TestCase):
+    def setUp(self):
+        self.pattern_detector = PatternDetector(min_pattern_length=3)
+        
+    def test_pattern_similarity_calculation(self):
+        """Test the new pattern similarity calculation"""
+        pattern1 = [(60, 100), (64, 100), (67, 100)]  # C major triad
+        pattern2 = [(60, 100), (64, 100), (67, 100)]  # Exact same pattern
+        pattern3 = [(61, 100), (65, 100), (68, 100)]  # Same pattern transposed up
+        pattern4 = [(60, 80), (64, 80), (67, 80)]     # Same pattern different volume
+        
+        similarity1 = self.pattern_detector._calculate_pattern_similarity(pattern1, pattern2)
+        similarity2 = self.pattern_detector._calculate_pattern_similarity(pattern1, pattern3)
+        similarity3 = self.pattern_detector._calculate_pattern_similarity(pattern1, pattern4)
+        
+        self.assertEqual(similarity1, 1.0, "Identical patterns should have similarity 1.0")
+        self.assertGreater(similarity2, 0.8, "Transposed pattern should have high similarity")
+        self.assertGreater(similarity3, 0.8, "Volume variation should have high similarity")
+
+    def test_pattern_variation_detection(self):
+        """Test detection of pattern variations"""
+        sequence = [
+            (60, 100), (64, 100), (67, 100),  # Original pattern
+            (61, 100), (65, 100), (68, 100),  # Transposed up 1
+            (60, 80), (64, 80), (67, 80),     # Volume variation
+        ]
+        base_pattern = tuple(sequence[:3])
+        
+        variations = self.pattern_detector._detect_pattern_variations(sequence, base_pattern)
+        
+        self.assertEqual(len(variations), 2, "Should detect both variations")
+        self.assertEqual(variations[0]['transposition'], 1, "Should detect transposition")
+        self.assertEqual(variations[1]['volume_change'], -20, "Should detect volume change")
 
 
 if __name__ == '__main__':
