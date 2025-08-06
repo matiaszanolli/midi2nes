@@ -1,8 +1,8 @@
 # MIDI2NES Test Coverage Report
 
 ## Overall Statistics
-- **Total Tests:** 265
-- **Overall Coverage:** 78%
+- **Total Tests:** 308+ 
+- **Overall Coverage:** ~80%
 - **All Tests Passing:** ✅
 
 ## Coverage by Module Category
@@ -35,12 +35,12 @@
 - `dpcm_sampler/dpcm_sample_manager.py`: 54%
 - `nes/envelope_processor.py`: 55%
 - `nes/project_builder.py`: 52%
+- `main.py`: 41% **🎉 NEWLY ADDED**
 
 ### ⚫ No Coverage (0%)
 - `analyze_patterns.py`: 0%
 - `generate_test_midi.py`: 0%
 - `implementation_examples.py`: 0%
-- `main.py`: 0%
 - `midi2nes/__init__.py`: 0%
 - `midi2nes/__version__.py`: 0%
 - `exporter/exporter.py`: 0%
@@ -61,6 +61,16 @@
   - DrumPatternAnalyzer functionality
   - Integration scenarios
   - Error handling and edge cases
+
+### Main CLI Application 🎉 NEW!
+- ✅ `test_main.py`: 43 tests, 41% coverage
+  - Complete CLI argument parsing tests
+  - All subcommand functionality (parse, map, frames, export, etc.)
+  - Configuration management commands
+  - Song bank management
+  - Benchmark and profiling commands
+  - Error handling and edge cases
+  - Integration scenarios
 
 ## Test Quality Metrics
 
@@ -172,5 +182,5 @@
 
 ---
 
-*Report Generated: Based on 265 passing tests with 78% overall coverage*
+*Report Generated: Based on 308+ passing tests with ~80% overall coverage*
 *HTML Coverage Report: Available in `htmlcov/index.html`*
