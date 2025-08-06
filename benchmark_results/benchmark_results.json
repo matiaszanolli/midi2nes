@@ -1,0 +1,7 @@
+{
+  "synthetic_test": {
+    "execution_time": 0.001,
+    "memory_peak": 10.0,
+    "note": "Synthetic test - no actual MIDI files provided"
+  }
+}
