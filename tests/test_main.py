@@ -947,45 +947,36 @@ class TestLoadConfig:
 class TestMainIntegration:
     """Integration tests for main function."""
     
-    @patch('sys.argv')
     @patch('main.run_parse')
-    def test_main_parse_command(self, mock_run_parse, mock_argv):
+    def test_main_parse_command(self, mock_run_parse):
         """Test main function with parse command."""
-        mock_argv.__getitem__.side_effect = ['main.py', 'parse', 'input.mid', 'output.json']
+        test_args = ['main.py', 'parse', 'input.mid', 'output.json']
         
-        with patch('argparse.ArgumentParser.parse_args') as mock_parse_args:
-            mock_args = Namespace(
-                command='parse',
-                input='input.mid',
-                output='output.json',
-                func=run_parse
-            )
-            mock_parse_args.return_value = mock_args
-            
+        with patch('sys.argv', test_args):
             main()
             
-            mock_run_parse.assert_called_once_with(mock_args)
+            # Should have called run_parse with appropriate args
+            mock_run_parse.assert_called_once()
+            called_args = mock_run_parse.call_args[0][0]
+            assert called_args.command == 'parse'
+            assert called_args.input == 'input.mid'
+            assert called_args.output == 'output.json'
     
-    @patch('sys.argv')
     @patch('main.run_export')
-    def test_main_export_command(self, mock_run_export, mock_argv):
+    def test_main_export_command(self, mock_run_export):
         """Test main function with export command."""
-        mock_argv.__getitem__.side_effect = ['main.py', 'export', 'frames.json', 'output.asm', '--format', 'ca65']
+        test_args = ['main.py', 'export', 'frames.json', 'output.asm', '--format', 'ca65']
         
-        with patch('argparse.ArgumentParser.parse_args') as mock_parse_args:
-            mock_args = Namespace(
-                command='export',
-                input='frames.json',
-                output='output.asm',
-                format='ca65',
-                patterns=None,
-                func=run_export
-            )
-            mock_parse_args.return_value = mock_args
-            
+        with patch('sys.argv', test_args):
             main()
             
-            mock_run_export.assert_called_once_with(mock_args)
+            # Should have called run_export with appropriate args
+            mock_run_export.assert_called_once()
+            called_args = mock_run_export.call_args[0][0]
+            assert called_args.command == 'export'
+            assert called_args.input == 'frames.json'
+            assert called_args.output == 'output.asm'
+            assert called_args.format == 'ca65'
     
     @patch('sys.argv', ['main.py', 'invalid'])
     def test_main_invalid_command(self):
