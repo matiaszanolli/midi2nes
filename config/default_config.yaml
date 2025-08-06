@@ -1,0 +1,87 @@
+# MIDI2NES Default Configuration File
+# This file contains default settings for the MIDI to NES conversion process
+# Copy and modify this file to customize behavior for your projects
+
+# Processing Settings
+processing:
+  # Pattern Detection Settings
+  pattern_detection:
+    min_length: 3                    # Minimum pattern length in frames
+    max_variations: 5                # Maximum variations to consider for pattern matching
+    similarity_threshold: 0.8        # Similarity threshold for pattern matching (0.0-1.0)
+    enable_transposition: true       # Enable transposed pattern detection
+    enable_volume_variations: true   # Consider volume variations as valid patterns
+    
+  # Channel Mapping Settings  
+  channel_mapping:
+    priority_order: ["pulse1", "pulse2", "triangle", "noise", "dpcm"]
+    allow_channel_sharing: false     # Allow multiple MIDI tracks on one NES channel
+    prefer_melody_on_pulse1: true    # Prefer melody instruments on pulse1
+    
+  # Tempo and Timing
+  tempo:
+    frame_alignment: true            # Align tempo changes to frame boundaries
+    max_tempo_change_ratio: 2.0      # Maximum tempo change ratio per frame
+    enable_tempo_smoothing: true     # Smooth gradual tempo changes
+    
+# Export Format Settings
+export:
+  # CA65 Assembly Export
+  ca65:
+    standalone_mode: true            # Generate standalone assembly file
+    include_debug_info: false        # Include debug symbols
+    optimize_size: true              # Optimize for size over speed
+    generate_linker_config: true     # Generate linker configuration
+    
+  # NSF Export  
+  nsf:
+    ntsc_mode: true                  # NTSC (60Hz) vs PAL (50Hz) timing
+    load_address: 0x8000            # Memory load address
+    init_address: 0x8000            # Init routine address
+    enable_bankswitching: true       # Enable bank switching support
+    
+  # FamiStudio Export
+  famistudio:
+    include_tempo_track: true        # Include tempo changes
+    include_volume_track: true       # Include volume envelopes
+    optimize_patterns: true          # Optimize pattern references
+    
+# Performance Settings
+performance:
+  max_memory_mb: 512                 # Maximum memory usage in MB
+  enable_caching: true               # Enable result caching
+  parallel_processing: false        # Enable parallel processing (experimental)
+  progress_reporting: true           # Show progress indicators
+  
+# Quality Settings
+quality:
+  # Audio Quality
+  envelope_resolution: 16            # Envelope resolution (frames per step)
+  pitch_bend_resolution: 64          # Pitch bend resolution
+  volume_curve: "linear"             # Volume curve: linear, exponential, logarithmic
+  
+  # Compression Quality
+  pattern_compression_level: "balanced"  # none, fast, balanced, maximum
+  enable_delta_compression: true     # Enable delta compression for patterns
+  enable_rle_compression: true       # Enable RLE compression
+  
+# Drum Mapping Settings  
+drum_mapping:
+  use_advanced_mapping: true         # Use enhanced drum mapping
+  prefer_dpcm_samples: true         # Prefer DPCM over noise channel
+  sample_quality: "high"            # low, medium, high
+  max_samples: 64                   # Maximum number of DPCM samples
+  
+# Validation Settings
+validation:
+  strict_nes_compliance: true       # Enforce strict NES hardware limits
+  warn_on_channel_overflow: true    # Warn when channels exceed capacity
+  validate_timing: true             # Validate frame timing accuracy
+  check_memory_limits: true         # Check NES memory constraints
+  
+# Development Settings (for debugging)
+development:
+  debug_mode: false                 # Enable debug output
+  save_intermediate_files: false    # Save intermediate processing files
+  enable_profiling: false           # Enable performance profiling
+  log_level: "info"                # Logging level: debug, info, warning, error

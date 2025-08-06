@@ -3,6 +3,14 @@ import sys
 import json
 from typing import Dict, Optional
 from pathlib import Path
+
+# Import version information
+try:
+    from midi2nes import __version__
+except ImportError:
+    # Fallback for development mode
+    __version__ = "0.4.0-dev"
+
 from tracker.parser import parse_midi_to_frames
 from tracker.track_mapper import assign_tracks_to_nes_channels
 from nes.emulator_core import NESEmulatorCore
@@ -14,6 +22,7 @@ from exporter.exporter import generate_famitracker_txt_with_patterns
 from tracker.pattern_detector import EnhancedPatternDetector
 from tracker.tempo_map import EnhancedTempoMap
 from dpcm_sampler.enhanced_drum_mapper import EnhancedDrumMapper, DrumMapperConfig
+from config.config_manager import ConfigManager
 
 def run_parse(args):
     midi_data = parse_midi_to_frames(args.input)
@@ -187,34 +196,15 @@ def load_config(config_path: Optional[str] = None) -> DrumMapperConfig:
         return DrumMapperConfig.from_file(config_path)
     return DrumMapperConfig()
 
-def run_parse(args):
-    midi_data = parse_midi_to_frames(args.input)
-    Path(args.output).write_text(json.dumps(midi_data, indent=2))
-    print(f"[OK] Parsed MIDI -> {args.output}")
-
-def run_map(args):
-    input_data = json.loads(Path(args.input).read_text())
-    
-    # Initialize drum mapper with configuration
-    config = load_config(args.config)
-    drum_mapper = EnhancedDrumMapper(
-        dpcm_index_path=args.dpcm_index or 'samples/index.json',
-        config=config
-    )
-    
-    # Map tracks to NES channels with enhanced drum mapping
-    mapped_data = assign_tracks_to_nes_channels(
-        input_data,
-        drum_mapper=drum_mapper,
-        use_advanced_mapping=config.use_advanced_mapping
-    )
-    
-    Path(args.output).write_text(json.dumps(mapped_data, indent=2))
-    print(f"[OK] Mapped tracks -> {args.output}")
-
 def main():
-    parser = argparse.ArgumentParser(description="MIDI to NES compiler")
-    subparsers = parser.add_subparsers(dest='command')
+    parser = argparse.ArgumentParser(
+        description=f"MIDI to NES compiler v{__version__}",
+        epilog="For more information, visit: https://github.com/matiaszanolli/midi2nes"
+    )
+    parser.add_argument('--version', action='version', version=f'MIDI2NES {__version__}')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
+    
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
     # Existing subcommands
     p_parse = subparsers.add_parser('parse', help='Parse MIDI to intermediate JSON')
@@ -305,16 +295,29 @@ def main():
 
 def run_config_init(args):
     """Generate default configuration file"""
-    config = DrumMapperConfig()
-    config.to_file(args.output)
-    print(f"[OK] Generated default configuration -> {args.output}")
+    try:
+        config_manager = ConfigManager()
+        config_manager.copy_default_config_to(args.output)
+        print(f"[OK] Generated default configuration -> {args.output}")
+        print(f"     Edit this file to customize MIDI2NES behavior")
+    except Exception as e:
+        print(f"[ERROR] Failed to generate configuration: {str(e)}")
+        sys.exit(1)
 
 def run_config_validate(args):
     """Validate configuration file"""
     try:
-        config = DrumMapperConfig.from_file(args.config)
-        config.validate()
+        config_manager = ConfigManager(args.config)
+        config_manager.validate()
         print(f"[OK] Configuration file is valid: {args.config}")
+        
+        # Show some key settings
+        if hasattr(args, 'verbose') and args.verbose:
+            print("\nConfiguration summary:")
+            print(f"  Pattern detection min length: {config_manager.get('processing.pattern_detection.min_length')}")
+            print(f"  Memory limit: {config_manager.get('performance.max_memory_mb')} MB")
+            print(f"  NSF load address: 0x{config_manager.get('export.nsf.load_address'):04X}")
+            
     except Exception as e:
         print(f"[ERROR] Configuration validation failed: {str(e)}")
         sys.exit(1)
