@@ -82,9 +82,16 @@ class PatternDetector:
     def detect_patterns(self, events: List[Dict]) -> Dict:
         """Enhanced pattern detection with variation support optimized for NES"""
         if not events:
-            return {}
+            return {'patterns': {}, 'references': {}, 'stats': {'compression_ratio': 1.0}}
 
         sequence = [(e['note'], e['volume']) for e in events]
+        
+        # Add safeguard: limit processing to reasonable size
+        MAX_EVENTS = 1000  # Limit to prevent excessive processing time
+        if len(sequence) > MAX_EVENTS:
+            print(f"Warning: Large sequence ({len(sequence)} events), limiting to {MAX_EVENTS} for performance")
+            sequence = sequence[:MAX_EVENTS]
+            events = events[:MAX_EVENTS]
         
         # Function to score the benefit of a pattern for NES
         def score_pattern(length, exact_count, variation_count):
@@ -176,7 +183,15 @@ class PatternDetector:
                 }
                 used_positions.update(pattern_positions)
         
-        return patterns
+        # Return the expected format with stats
+        return {
+            'patterns': patterns,
+            'references': {pid: p['positions'] for pid, p in patterns.items()},
+            'stats': {
+                'compression_ratio': 1.0 if not patterns else len(patterns) / len(events),
+                'total_patterns': len(patterns)
+            }
+        }
 
     def _find_pattern_matches(self, sequence: List, pattern: Tuple, start_pos: int) -> List[int]:
         """Find all occurrences of a pattern in the sequence."""
@@ -244,7 +259,8 @@ class EnhancedPatternDetector(PatternDetector):
         
     def detect_patterns(self, events: List[Dict]) -> Dict:
         # Detect patterns with variations using parent class
-        patterns = super().detect_patterns(events)
+        pattern_data = super().detect_patterns(events)
+        patterns = pattern_data['patterns']
         
         # Enhance patterns with tempo information
         for pattern_id, pattern_info in patterns.items():

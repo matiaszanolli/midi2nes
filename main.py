@@ -370,10 +370,6 @@ def main():
     parser.add_argument('--version', action='version', version=f'MIDI2NES {__version__}')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     
-    # Add positional arguments for default MIDI-to-ROM behavior
-    parser.add_argument('input', nargs='?', help='Input MIDI file (.mid/.midi)')
-    parser.add_argument('output', nargs='?', help='Output NES ROM file (.nes) - defaults to input name with .nes extension')
-    
     subparsers = parser.add_subparsers(dest='command', help='Advanced commands (optional - default is MIDI to ROM conversion)')
 
     # Existing subcommands
@@ -471,11 +467,58 @@ def main():
     p_benchmark_memory = benchmark_subparsers.add_parser('memory', help='Show current memory usage')
     p_benchmark_memory.set_defaults(func=run_benchmark_memory)
 
-    args = parser.parse_args()
-
-    # Handle default MIDI-to-ROM behavior when no subcommand is provided
-    if not args.command:
-        if not args.input:
+    # Custom argument parsing to handle default behavior
+    import sys
+    
+    # Check if first argument (if any) is a subcommand
+    subcommands = ['parse', 'map', 'config', 'frames', 'detect-patterns', 'export', 'prepare', 'song', 'benchmark']
+    
+    # Handle special cases first
+    if len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1] in ['--help', '-h']):
+        parser.print_help()
+        return
+    
+    if len(sys.argv) == 2 and sys.argv[1] in ['--version']:
+        parser.parse_args(sys.argv[1:])
+        return
+    
+    # Check if first non-option argument is a subcommand
+    first_arg = None
+    for arg in sys.argv[1:]:
+        if not arg.startswith('-'):
+            first_arg = arg
+            break
+    
+    if first_arg in subcommands:
+        # It's a subcommand, parse normally
+        args = parser.parse_args()
+        if hasattr(args, 'func'):
+            args.func(args)
+        else:
+            parser.print_help()
+    else:
+        # It's the default MIDI-to-ROM behavior
+        # Parse global options first
+        global_args = []
+        remaining_args = []
+        
+        i = 1
+        while i < len(sys.argv):
+            arg = sys.argv[i]
+            if arg in ['--verbose', '-v']:
+                global_args.extend([arg])
+                i += 1
+            elif arg == '--version':
+                global_args.extend([arg])
+                i += 1
+            elif arg.startswith('-'):
+                # Skip unknown options for now
+                i += 1
+            else:
+                remaining_args.append(arg)
+                i += 1
+        
+        if not remaining_args:
             print("Error: Please provide an input MIDI file")
             print("\nUsage examples:")
             print("  midi2nes song.mid                  # Creates song.nes")
@@ -483,12 +526,16 @@ def main():
             print("  midi2nes --help                    # Show full help")
             sys.exit(1)
         
-        # Run the full pipeline with the provided arguments
+        # Create a simple args object for the default pipeline
+        class SimpleArgs:
+            def __init__(self):
+                self.input = remaining_args[0] if remaining_args else None
+                self.output = remaining_args[1] if len(remaining_args) > 1 else None
+                self.verbose = '--verbose' in global_args or '-v' in global_args
+                self.command = None
+        
+        args = SimpleArgs()
         run_full_pipeline(args)
-    elif hasattr(args, 'func'):
-        args.func(args)
-    else:
-        parser.print_help()
 
 def run_config_init(args):
     """Generate default configuration file"""
