@@ -84,7 +84,36 @@ class PatternDetector:
         if not events:
             return {}
 
-        sequence = [(e['note'], e['volume']) for e in events]
+        # Validate and clean input events
+        valid_events = []
+        for i, e in enumerate(events):
+            # Check if event has required keys
+            if not isinstance(e, dict):
+                continue
+            if 'note' not in e or 'volume' not in e:
+                continue
+            
+            # Validate data types and ranges
+            try:
+                note = int(e['note'])
+                volume = int(e['volume'])
+                # Allow negative frames, but ensure note and volume are reasonable
+                if note < 0 or note > 127 or volume < 0 or volume > 127:
+                    continue
+                valid_events.append({
+                    'frame': e.get('frame', i),  # Use index if frame missing
+                    'note': note,
+                    'volume': volume
+                })
+            except (ValueError, TypeError):
+                continue
+        
+        # Return empty if no valid events
+        if not valid_events:
+            return {}
+
+        sequence = [(e['note'], e['volume']) for e in valid_events]
+        events = valid_events  # Use cleaned events for the rest of the method
         
         # Add safeguard: limit processing to reasonable size
         MAX_EVENTS = 1000  # Limit to prevent excessive processing time
@@ -251,6 +280,15 @@ class EnhancedPatternDetector(PatternDetector):
         self.compressor = PatternCompressor()
         
     def detect_patterns(self, events: List[Dict]) -> Dict:
+        # Return empty structure if no events
+        if not events:
+            return {
+                'patterns': {},
+                'references': {},
+                'stats': {'compression_ratio': 0, 'original_size': 0, 'compressed_size': 0, 'unique_patterns': 0},
+                'variations': {}
+            }
+        
         # Detect patterns with variations using parent class  
         patterns = super().detect_patterns(events)
         
