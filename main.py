@@ -1,6 +1,9 @@
 import argparse
 import sys
 import json
+import tempfile
+import subprocess
+import shutil
 from typing import Dict, Optional
 from pathlib import Path
 
@@ -198,15 +201,180 @@ def load_config(config_path: Optional[str] = None) -> DrumMapperConfig:
         return DrumMapperConfig.from_file(config_path)
     return DrumMapperConfig()
 
+def compile_rom(project_dir: Path, rom_output: Path) -> bool:
+    """Compile the NES project to ROM using CA65/LD65"""
+    try:
+        # Check if CA65 and LD65 are available
+        result = subprocess.run(['ca65', '--version'], capture_output=True, text=True)
+        if result.returncode != 0:
+            print("[ERROR] CA65 assembler not found. Please install cc65 tools.")
+            return False
+        
+        result = subprocess.run(['ld65', '--version'], capture_output=True, text=True)
+        if result.returncode != 0:
+            print("[ERROR] LD65 linker not found. Please install cc65 tools.")
+            return False
+        
+        # Compile main.asm
+        print("  Compiling main.asm...")
+        result = subprocess.run(
+            ['ca65', 'main.asm', '-o', 'main.o'],
+            cwd=project_dir,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            print(f"[ERROR] Failed to compile main.asm:\n{result.stderr}")
+            return False
+        
+        # Compile music.asm
+        print("  Compiling music.asm...")
+        result = subprocess.run(
+            ['ca65', 'music.asm', '-o', 'music.o'],
+            cwd=project_dir,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            print(f"[ERROR] Failed to compile music.asm:\n{result.stderr}")
+            return False
+        
+        # Link the ROM
+        print("  Linking ROM...")
+        result = subprocess.run(
+            ['ld65', '-C', 'nes.cfg', 'main.o', 'music.o', '-o', 'game.nes'],
+            cwd=project_dir,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            print(f"[ERROR] Failed to link ROM:\n{result.stderr}")
+            return False
+        
+        # Copy the ROM to the desired output location
+        shutil.copy(project_dir / 'game.nes', rom_output)
+        
+        return True
+    except FileNotFoundError as e:
+        print(f"[ERROR] Compilation tool not found: {str(e)}")
+        print("Please install the cc65 toolchain: https://cc65.github.io/")
+        return False
+    except Exception as e:
+        print(f"[ERROR] Compilation failed: {str(e)}")
+        return False
+
+def run_full_pipeline(args):
+    """Run the complete MIDI to NES ROM pipeline"""
+    input_midi = Path(args.input)
+    if not input_midi.exists():
+        print(f"[ERROR] Input MIDI file not found: {input_midi}")
+        sys.exit(1)
+    
+    # Determine output ROM path
+    if hasattr(args, 'output') and args.output:
+        output_rom = Path(args.output)
+    else:
+        output_rom = input_midi.with_suffix('.nes')
+    
+    print(f"🎵 MIDI2NES Pipeline: {input_midi.name} → {output_rom.name}")
+    print("=" * 60)
+    
+    # Create temporary directory for intermediate files
+    with tempfile.TemporaryDirectory(prefix="midi2nes_") as temp_dir:
+        temp_path = Path(temp_dir)
+        
+        try:
+            # Step 1: Parse MIDI to frames
+            print("[1/7] Parsing MIDI file...")
+            midi_data = parse_midi_to_frames(str(input_midi))
+            
+            # Step 2: Map tracks to NES channels
+            print("[2/7] Mapping tracks to NES channels...")
+            dpcm_index_path = 'dpcm_index.json' 
+            mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
+            
+            # Step 3: Generate frame data
+            print("[3/7] Generating NES frame data...")
+            emulator = NESEmulatorCore()
+            frames = emulator.process_all_tracks(mapped)
+            
+            # Step 4: Detect patterns (optional compression)
+            print("[4/7] Detecting patterns for compression...")
+            tempo_map = EnhancedTempoMap(initial_tempo=500000)
+            detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3)
+            
+            # Convert frames to events for pattern detection
+            events = []
+            for channel_name, channel_frames in frames.items():
+                for frame_num, frame_data in channel_frames.items():
+                    events.append({
+                        'frame': int(frame_num),
+                        'note': frame_data.get('note', 0),
+                        'volume': frame_data.get('volume', 0)
+                    })
+            events.sort(key=lambda x: x['frame'])
+            
+            pattern_result = detector.detect_patterns(events)
+            
+            # Step 5: Export to CA65 assembly
+            print("[5/7] Exporting to CA65 assembly...")
+            music_asm = temp_path / "music.asm"
+            
+            exporter = CA65Exporter()
+            exporter.export_tables_with_patterns(
+                frames,
+                pattern_result['patterns'],
+                pattern_result['references'],
+                str(music_asm),
+                standalone=False  # We'll create our own project structure
+            )
+            
+            # Step 6: Prepare NES project
+            print("[6/7] Preparing NES project...")
+            project_path = temp_path / "nes_project"
+            builder = NESProjectBuilder(str(project_path))
+            
+            if not builder.prepare_project(str(music_asm)):
+                print("[ERROR] Failed to prepare NES project")
+                sys.exit(1)
+            
+            # Step 7: Compile ROM
+            print("[7/7] Compiling NES ROM...")
+            if not compile_rom(project_path, output_rom):
+                print("[ERROR] ROM compilation failed")
+                sys.exit(1)
+            
+            # Success!
+            rom_size = output_rom.stat().st_size
+            print("\n" + "=" * 60)
+            print(f"✅ SUCCESS! ROM created: {output_rom.name}")
+            print(f"   ROM size: {rom_size:,} bytes ({rom_size / 1024:.1f} KB)")
+            print(f"   Compression ratio: {pattern_result['stats']['compression_ratio']:.2f}x")
+            print(f"   Total patterns detected: {len(pattern_result['patterns'])}")
+            print("\n🎮 Your NES ROM is ready to run on emulators or flash carts!")
+            
+        except Exception as e:
+            print(f"\n[ERROR] Pipeline failed: {str(e)}")
+            if args.verbose:
+                import traceback
+                print("\nFull traceback:")
+                traceback.print_exc()
+            sys.exit(1)
+
 def main():
     parser = argparse.ArgumentParser(
-        description=f"MIDI to NES compiler v{__version__}",
-        epilog="For more information, visit: https://github.com/matiaszanolli/midi2nes"
+        description=f"MIDI to NES ROM compiler v{__version__}\n\nDefault usage: midi2nes song.mid [output.nes]",
+        epilog="For more information, visit: https://github.com/matiaszanolli/midi2nes",
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument('--version', action='version', version=f'MIDI2NES {__version__}')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    # Add positional arguments for default MIDI-to-ROM behavior
+    parser.add_argument('input', nargs='?', help='Input MIDI file (.mid/.midi)')
+    parser.add_argument('output', nargs='?', help='Output NES ROM file (.nes) - defaults to input name with .nes extension')
+    
+    subparsers = parser.add_subparsers(dest='command', help='Advanced commands (optional - default is MIDI to ROM conversion)')
 
     # Existing subcommands
     p_parse = subparsers.add_parser('parse', help='Parse MIDI to intermediate JSON')
@@ -305,7 +473,19 @@ def main():
 
     args = parser.parse_args()
 
-    if hasattr(args, 'func'):
+    # Handle default MIDI-to-ROM behavior when no subcommand is provided
+    if not args.command:
+        if not args.input:
+            print("Error: Please provide an input MIDI file")
+            print("\nUsage examples:")
+            print("  midi2nes song.mid                  # Creates song.nes")
+            print("  midi2nes song.mid output.nes       # Creates output.nes")
+            print("  midi2nes --help                    # Show full help")
+            sys.exit(1)
+        
+        # Run the full pipeline with the provided arguments
+        run_full_pipeline(args)
+    elif hasattr(args, 'func'):
         args.func(args)
     else:
         parser.print_help()
