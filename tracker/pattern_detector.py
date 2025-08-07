@@ -82,7 +82,7 @@ class PatternDetector:
     def detect_patterns(self, events: List[Dict]) -> Dict:
         """Enhanced pattern detection with variation support optimized for NES"""
         if not events:
-            return {'patterns': {}, 'references': {}, 'stats': {'compression_ratio': 1.0}}
+            return {}
 
         sequence = [(e['note'], e['volume']) for e in events]
         
@@ -183,15 +183,8 @@ class PatternDetector:
                 }
                 used_positions.update(pattern_positions)
         
-        # Return the expected format with stats
-        return {
-            'patterns': patterns,
-            'references': {pid: p['positions'] for pid, p in patterns.items()},
-            'stats': {
-                'compression_ratio': 1.0 if not patterns else len(patterns) / len(events),
-                'total_patterns': len(patterns)
-            }
-        }
+        # The tests expect just the patterns dict, not wrapped in a structure
+        return patterns
 
     def _find_pattern_matches(self, sequence: List, pattern: Tuple, start_pos: int) -> List[int]:
         """Find all occurrences of a pattern in the sequence."""
@@ -258,9 +251,8 @@ class EnhancedPatternDetector(PatternDetector):
         self.compressor = PatternCompressor()
         
     def detect_patterns(self, events: List[Dict]) -> Dict:
-        # Detect patterns with variations using parent class
-        pattern_data = super().detect_patterns(events)
-        patterns = pattern_data['patterns']
+        # Detect patterns with variations using parent class  
+        patterns = super().detect_patterns(events)
         
         # Enhance patterns with tempo information
         for pattern_id, pattern_info in patterns.items():

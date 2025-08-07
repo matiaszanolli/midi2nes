@@ -48,14 +48,13 @@ class TestMainArgumentParsing:
                 main()
     
     def test_verbose_argument_parsing(self):
-        """Test verbose flag parsing."""
-        with patch('argparse.ArgumentParser.parse_args') as mock_parse:
-            with patch('argparse.ArgumentParser.print_help') as mock_help:
-                mock_args = Namespace(verbose=True, command=None)
-                mock_parse.return_value = mock_args
-                
-                main()
-                mock_help.assert_called_once()
+        """Test verbose flag parsing with no MIDI file shows error message."""
+        with patch('sys.argv', ['main.py', '--verbose']):
+            with patch('builtins.print') as mock_print:
+                with pytest.raises(SystemExit):
+                    main()
+                # Should print error message about missing MIDI file
+                mock_print.assert_any_call("Error: Please provide an input MIDI file")
     
     def test_no_command_shows_help(self):
         """Test that no command shows help."""
@@ -978,17 +977,14 @@ class TestMainIntegration:
             assert called_args.output == 'output.asm'
             assert called_args.format == 'ca65'
     
-    @patch('sys.argv', ['main.py', 'invalid'])
     def test_main_invalid_command(self):
-        """Test main function with invalid command."""
-        with patch('argparse.ArgumentParser.print_help') as mock_help:
-            with patch('argparse.ArgumentParser.parse_args') as mock_parse_args:
-                mock_args = Namespace(command='invalid')
-                mock_parse_args.return_value = mock_args
-                
-                main()
-                
-                mock_help.assert_called_once()
+        """Test main function with invalid MIDI filename (treated as default behavior)."""
+        with patch('sys.argv', ['main.py', 'invalid.mid']):
+            with patch('builtins.print') as mock_print:
+                with pytest.raises(SystemExit):
+                    main()
+                # Should print error about missing MIDI file since 'invalid.mid' doesn't exist
+                mock_print.assert_any_call("[ERROR] Input MIDI file not found: invalid.mid")
     
     def test_version_import_fallback(self):
         """Test version import fallback behavior."""

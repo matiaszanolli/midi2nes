@@ -474,9 +474,13 @@ def main():
     subcommands = ['parse', 'map', 'config', 'frames', 'detect-patterns', 'export', 'prepare', 'song', 'benchmark']
     
     # Handle special cases first
-    if len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1] in ['--help', '-h']):
+    if len(sys.argv) == 1:
         parser.print_help()
         return
+    
+    if len(sys.argv) == 2 and sys.argv[1] in ['--help', '-h']:
+        parser.print_help()
+        sys.exit(0)
     
     if len(sys.argv) == 2 and sys.argv[1] in ['--version']:
         parser.parse_args(sys.argv[1:])

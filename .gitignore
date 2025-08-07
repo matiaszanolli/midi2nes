@@ -10,6 +10,7 @@ test*.json
 test*.txt
 output*
 *.asm
+*.nes
 
 # Standard VSCode files
 .vscode/
