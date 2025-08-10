@@ -78,10 +78,12 @@ class TestRunParse:
         import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
     
-    @patch('main.parse_midi_to_frames')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
     @patch('builtins.print')
     def test_run_parse_success(self, mock_print, mock_parse):
         """Test successful MIDI parsing."""
+        # Create a test MIDI file to avoid FileNotFoundError
+        self.test_input.touch()
         mock_parse.return_value = {"events": {"0": [{"frame": 0, "note": 60}]}}
         args = Namespace(input=str(self.test_input), output=str(self.test_output))
         
@@ -96,7 +98,7 @@ class TestRunParse:
         
         mock_print.assert_called_once_with(f"[OK] Parsed MIDI -> {args.output}")
     
-    @patch('main.parse_midi_to_frames')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
     def test_run_parse_error_handling(self, mock_parse):
         """Test parse error handling."""
         mock_parse.side_effect = Exception("Parse error")

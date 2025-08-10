@@ -30,7 +30,9 @@ from benchmarks.performance_suite import PerformanceBenchmark
 from utils.profiling import get_memory_usage, log_memory_usage
 
 def run_parse(args):
-    midi_data = parse_midi_to_frames(args.input)
+    # Use fast parser by default for better performance
+    from tracker.parser_fast import parse_midi_to_frames as parse_fast
+    midi_data = parse_fast(args.input)
     Path(args.output).write_text(json.dumps(midi_data, indent=2))
     print(f"[OK] Parsed MIDI -> {args.output}")
 
@@ -285,9 +287,10 @@ def run_full_pipeline(args):
         temp_path = Path(temp_dir)
         
         try:
-            # Step 1: Parse MIDI to frames
+            # Step 1: Parse MIDI to frames (using fast parser)
             print("[1/7] Parsing MIDI file...")
-            midi_data = parse_midi_to_frames(str(input_midi))
+            from tracker.parser_fast import parse_midi_to_frames as parse_fast
+            midi_data = parse_fast(str(input_midi))
             
             # Step 2: Map tracks to NES channels
             print("[2/7] Mapping tracks to NES channels...")
@@ -299,10 +302,9 @@ def run_full_pipeline(args):
             emulator = NESEmulatorCore()
             frames = emulator.process_all_tracks(mapped)
             
-            # Step 4: Detect patterns (optional compression)
+            # Step 4: Detect patterns using parallel processing
             print("[4/7] Detecting patterns for compression...")
             tempo_map = EnhancedTempoMap(initial_tempo=500000)
-            detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3)
             
             # Convert frames to events for pattern detection
             events = []
@@ -315,7 +317,21 @@ def run_full_pipeline(args):
                     })
             events.sort(key=lambda x: x['frame'])
             
-            pattern_result = detector.detect_patterns(events)
+            # Use parallel pattern detection for better performance
+            try:
+                from tracker.pattern_detector_parallel import ParallelPatternDetector
+                detector = ParallelPatternDetector(tempo_map, min_pattern_length=3)
+                print(f"  Using parallel pattern detection with {len(events):,} events")
+                pattern_result = detector.detect_patterns(events)
+            except Exception as e:
+                print(f"  Parallel detection failed, using fallback: {e}")
+                from tracker.pattern_detector import EnhancedPatternDetector
+                detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3)
+                # Limit events for fallback to avoid hanging
+                if len(events) > 1000:
+                    print(f"  Limiting to 1000 events for fallback performance")
+                    events = events[:1000]
+                pattern_result = detector.detect_patterns(events)
             
             # Step 5: Export to CA65 assembly
             print("[5/7] Exporting to CA65 assembly...")

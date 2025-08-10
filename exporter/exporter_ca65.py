@@ -104,10 +104,12 @@ class CA65Exporter(BaseExporter):
         max_frame = 0
         
         if references:
-            for pattern_id, positions in references.items():
-                for position in positions:
-                    frame_to_pattern[position] = (pattern_id, 0)  # offset 0 for now
-                    max_frame = max(max_frame, position)
+            for frame_str, pattern_info in references.items():
+                # Convert string frame to integer
+                frame_num = int(frame_str)
+                pattern_id, offset = pattern_info
+                frame_to_pattern[frame_num] = (pattern_id, offset)
+                max_frame = max(max_frame, frame_num)
         
         # Export pattern reference table
         lines.append("; Pattern Reference Table")
