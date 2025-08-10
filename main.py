@@ -337,11 +337,19 @@ def run_full_pipeline(args):
             print("[5/7] Exporting to CA65 assembly...")
             music_asm = temp_path / "music.asm"
             
+            # Convert pattern references format for CA65 exporter
+            # From: {'pattern_id': [positions]} 
+            # To: {'frame_str': ('pattern_id', offset)}
+            ca65_references = {}
+            for pattern_id, positions in pattern_result['references'].items():
+                for i, position in enumerate(positions):
+                    ca65_references[str(position)] = (pattern_id, i)
+            
             exporter = CA65Exporter()
             exporter.export_tables_with_patterns(
                 frames,
                 pattern_result['patterns'],
-                pattern_result['references'],
+                ca65_references,
                 str(music_asm),
                 standalone=False  # We'll create our own project structure
             )
