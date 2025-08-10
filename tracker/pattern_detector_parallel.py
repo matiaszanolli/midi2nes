@@ -5,6 +5,7 @@ from typing import List, Dict, Tuple, Any, Optional
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import numpy as np
+from tqdm import tqdm
 from tracker.tempo_map import EnhancedTempoMap
 from tracker.pattern_detector import PatternCompressor
 
@@ -120,18 +121,18 @@ class ParallelPatternDetector:
                     for chunk in work_chunks
                 }
                 
-                # Collect results as they complete
-                completed = 0
-                for future in as_completed(future_to_chunk):
-                    try:
-                        chunk_patterns = future.result(timeout=30)  # 30s timeout per chunk
-                        all_candidate_patterns.extend(chunk_patterns)
-                        completed += 1
-                        if completed % 5 == 0 or completed == len(work_chunks):
-                            print(f"  📊 Completed {completed}/{len(work_chunks)} chunks")
-                    except Exception as e:
-                        print(f"  ⚠️  Chunk failed: {e}")
-                        continue
+                # Collect results as they complete with progress bar
+                with tqdm(total=len(work_chunks), desc="Processing pattern chunks", unit="chunk") as pbar:
+                    for future in as_completed(future_to_chunk):
+                        try:
+                            chunk_patterns = future.result(timeout=30)  # 30s timeout per chunk
+                            all_candidate_patterns.extend(chunk_patterns)
+                            pbar.update(1)
+                            pbar.set_postfix(patterns=len(all_candidate_patterns))
+                        except Exception as e:
+                            pbar.write(f"  ⚠️  Chunk failed: {e}")
+                            pbar.update(1)
+                            continue
         
         except Exception as e:
             print(f"  ❌ Parallel processing failed, falling back to serial: {e}")

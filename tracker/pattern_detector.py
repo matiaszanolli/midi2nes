@@ -1,6 +1,7 @@
 # tracker/pattern_detector.py
 from collections import defaultdict
 from typing import List, Dict, Tuple
+from tqdm import tqdm
 from tracker.tempo_map import TempoChangeType, TempoChange, EnhancedTempoMap
 
 class PatternDetector:
@@ -167,27 +168,62 @@ class PatternDetector:
         # First pass: collect all possible patterns with their scores
         candidate_patterns = []
         
-        for length in range(self.min_pattern_length, 
-                          min(self.max_pattern_length, len(sequence)) + 1):
-            for start in range(len(sequence) - length + 1):
-                pattern = tuple(sequence[start:start + length])
-                variations = self._detect_pattern_variations(sequence, pattern)
-                exact_matches = self._find_pattern_matches(sequence, pattern, start)
-                
-                pattern_score = score_pattern(length, len(exact_matches), len(variations))
-                
-                if pattern_score > 0:
-                    all_positions = exact_matches + [var['position'] for var in variations]
-                    candidate_patterns.append({
-                        'start': start,
-                        'length': length,
-                        'pattern': pattern,
-                        'exact_matches': exact_matches,
-                        'variations': variations,
-                        'positions': sorted(set(all_positions)),
-                        'score': pattern_score,
-                        'events': [events[i] for i in range(start, start + length)]
-                    })
+        # Calculate total iterations for progress tracking
+        total_iterations = sum(
+            len(sequence) - length + 1 
+            for length in range(self.min_pattern_length, 
+                              min(self.max_pattern_length, len(sequence)) + 1)
+        )
+        
+        if total_iterations > 1000:  # Only show progress bar for large tasks
+            with tqdm(total=total_iterations, desc="Finding patterns", unit="pos") as pbar:
+                for length in range(self.min_pattern_length, 
+                                  min(self.max_pattern_length, len(sequence)) + 1):
+                    for start in range(len(sequence) - length + 1):
+                        pattern = tuple(sequence[start:start + length])
+                        variations = self._detect_pattern_variations(sequence, pattern)
+                        exact_matches = self._find_pattern_matches(sequence, pattern, start)
+                        
+                        pattern_score = score_pattern(length, len(exact_matches), len(variations))
+                        
+                        if pattern_score > 0:
+                            all_positions = exact_matches + [var['position'] for var in variations]
+                            candidate_patterns.append({
+                                'start': start,
+                                'length': length,
+                                'pattern': pattern,
+                                'exact_matches': exact_matches,
+                                'variations': variations,
+                                'positions': sorted(set(all_positions)),
+                                'score': pattern_score,
+                                'events': [events[i] for i in range(start, start + length)]
+                            })
+                        
+                        pbar.update(1)
+                        pbar.set_postfix(candidates=len(candidate_patterns))
+        else:
+            # No progress bar for small tasks
+            for length in range(self.min_pattern_length, 
+                              min(self.max_pattern_length, len(sequence)) + 1):
+                for start in range(len(sequence) - length + 1):
+                    pattern = tuple(sequence[start:start + length])
+                    variations = self._detect_pattern_variations(sequence, pattern)
+                    exact_matches = self._find_pattern_matches(sequence, pattern, start)
+                    
+                    pattern_score = score_pattern(length, len(exact_matches), len(variations))
+                    
+                    if pattern_score > 0:
+                        all_positions = exact_matches + [var['position'] for var in variations]
+                        candidate_patterns.append({
+                            'start': start,
+                            'length': length,
+                            'pattern': pattern,
+                            'exact_matches': exact_matches,
+                            'variations': variations,
+                            'positions': sorted(set(all_positions)),
+                            'score': pattern_score,
+                            'events': [events[i] for i in range(start, start + length)]
+                        })
         
         # Second pass: select non-overlapping patterns with highest scores
         candidate_patterns.sort(key=lambda x: x['score'], reverse=True)

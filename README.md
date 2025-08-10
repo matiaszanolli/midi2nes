@@ -55,7 +55,7 @@ python main.py input.mid output.nes
 - **⏱️ Enhanced tempo handling** with accurate timing
 - **🔁 Pattern and loop point support**
 - **🥁 Drum mapping and DPCM support**
-- **📈 Real-time progress reporting**
+- **📈 Visual progress bars** with real-time speed and completion tracking
 - **🛡️ Graceful fallback** for compatibility
 
 ## 🎮 Usage Examples
@@ -132,9 +132,8 @@ The MIDI2NES compiler automatically detects your system's CPU cores and distribu
 ```
 🚀 Starting parallel pattern detection with 7 workers
 🔧 Created 236 work chunks for parallel processing
-  📊 Completed 50/236 chunks
-  📊 Completed 100/236 chunks
-  ...
+Processing pattern chunks: 100%|████████████| 236/236 [00:12<00:00, 19.2chunk/s, patterns=5505]
+📈 Found 5505 candidate patterns
 ✅ Parallel pattern detection completed in 12.49s
 ```
 
