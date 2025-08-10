@@ -37,10 +37,10 @@ SEGMENTS {
 
     MAIN_ASM = """.segment "HEADER"
     .byte "NES", $1A      ; NES header identifier
-    .byte $01             ; 1 x 16KB PRG ROM
+    .byte $02             ; 2 x 16KB PRG ROM (32KB total)
     .byte $00             ; 0 x 8KB CHR ROM
     .byte $00             ; Mapper 0, horizontal mirroring
-    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00  ; Padding
+    .byte $00, $00, $00, $00, $00, $00, $00, $00  ; Padding (8 bytes)
 
 .segment "ZEROPAGE"
     ptr1:           .res 2  ; General purpose pointer
@@ -103,7 +103,7 @@ noise_frames:   .byte $00, $00
     .byte $02             ; 2 x 16KB PRG ROM (32KB total)
     .byte $00             ; 0 x 8KB CHR ROM
     .byte $00             ; Mapper 0, horizontal mirroring
-    .byte $00, $00, $00, $00, $00, $00, $00, $00, $00  ; Padding
+    .byte $00, $00, $00, $00, $00, $00, $00, $00  ; Padding (8 bytes)
 
 .segment "ZEROPAGE"
     current_song:     .res 1  ; Current song index

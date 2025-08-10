@@ -99,16 +99,22 @@ class CA65Exporter(BaseExporter):
                     lines.append(f"    .byte ${volume:02X}, ${timer_val & 0xFF:02X}, ${(timer_val >> 8) & 0x07:02X}")
             lines.append("")
         
-        # Calculate max frame from references
-        max_frame = max(int(frame) for frame in references.keys()) if references else 0
+        # Build frame-to-pattern mapping from pattern references
+        frame_to_pattern = {}
+        max_frame = 0
+        
+        if references:
+            for pattern_id, positions in references.items():
+                for position in positions:
+                    frame_to_pattern[position] = (pattern_id, 0)  # offset 0 for now
+                    max_frame = max(max_frame, position)
         
         # Export pattern reference table
         lines.append("; Pattern Reference Table")
         lines.append("pattern_refs:")
         for frame in range(max_frame + 1):
-            frame_str = str(frame)
-            if frame_str in references:
-                pattern_id, offset = references[frame_str]
+            if frame in frame_to_pattern:
+                pattern_id, offset = frame_to_pattern[frame]
                 lines.append(f"    .word {pattern_id}")
                 lines.append(f"    .byte {offset}")
             else:

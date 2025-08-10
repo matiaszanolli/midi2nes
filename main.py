@@ -93,7 +93,8 @@ def run_export(args):
             frames,
             patterns,
             references,
-            args.output
+            args.output,
+            standalone=False  # Don't include header and vectors for project builder
         )
         print(f" Exported CA65 ASM -> {args.output}")
 
