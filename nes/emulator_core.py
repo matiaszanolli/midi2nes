@@ -23,7 +23,9 @@ class NESEmulatorCore:
         num_events = len(events)
 
         for i, event in enumerate(events):
-            if event.get('velocity', 0) == 0:
+            # Handle both 'velocity' and 'volume' fields for compatibility
+            velocity = event.get('velocity', event.get('volume', 0))
+            if velocity == 0:
                 continue  # We simulate note-off via time
 
             start_frame = event['frame']
@@ -32,7 +34,8 @@ class NESEmulatorCore:
             # Stop early if another note starts before sustain ends
             for j in range(i + 1, num_events):
                 next_event = events[j]
-                if next_event.get('velocity', 0) > 0 and next_event['frame'] > start_frame:
+                next_velocity = next_event.get('velocity', next_event.get('volume', 0))
+                if next_velocity > 0 and next_event['frame'] > start_frame:
                     end_frame = min(end_frame, next_event['frame'])
                     break
 
@@ -55,7 +58,7 @@ class NESEmulatorCore:
                     }
                 else:
                     # For non-pulse channels, use simple volume calculation
-                    volume = min(15, event.get('velocity', 0) // 8)
+                    volume = min(15, velocity // 8)
                     frames[f] = {
                         "pitch": pitch,
                         "volume": volume,
@@ -80,7 +83,7 @@ class NESEmulatorCore:
                 noise_frames = {
                     e['frame']: {
                         "noise_mode": 0,  # white noise
-                        "volume": 15 if e.get('velocity', 0) > 0 else 0
+                        "volume": 15 if e.get('velocity', e.get('volume', 0)) > 0 else 0
                     } for e in events
                 }
                 processed[channel_name] = noise_frames
@@ -88,7 +91,7 @@ class NESEmulatorCore:
                 dpcm_frames = {
                     e['frame']: {
                         "sample_id": e.get('sample_id', 0),
-                        "volume": 15 if e.get('velocity', 0) > 0 else 0
+                        "volume": 15 if e.get('velocity', e.get('volume', 0)) > 0 else 0
                     } for e in events
                 }
                 processed[channel_name] = dpcm_frames

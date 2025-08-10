@@ -95,16 +95,21 @@ class ROMValidator:
         """Basic validation of 6502 code section"""
         try:
             with open(rom_path, 'rb') as f:
-                f.seek(16)  # Skip header
-                prg_data = f.read(16384)  # Read first 16KB PRG bank
+                data = f.read()
             
-            # Check for reset vector at end
-            reset_vector_addr = int.from_bytes(prg_data[-6:-4], byteorder='little')
-            if reset_vector_addr < 0x8000 or reset_vector_addr > 0xFFFF:
-                self.errors.append(f"Invalid reset vector: 0x{reset_vector_addr:04X}")
+            # For MMC1/larger ROMs, vectors are at the very end of the file
+            if len(data) >= 6:
+                # Read NES vectors from the last 6 bytes
+                reset_vector_addr = int.from_bytes(data[-4:-2], byteorder='little')
+                if reset_vector_addr < 0x8000 or reset_vector_addr > 0xFFFF:
+                    self.errors.append(f"Invalid reset vector: 0x{reset_vector_addr:04X}")
+                    return False
+                
+                print(f"  Reset Vector: 0x{reset_vector_addr:04X}")
+            else:
+                self.errors.append("ROM too small to contain vectors")
                 return False
             
-            print(f"  Reset Vector: 0x{reset_vector_addr:04X}")
             return True
             
         except Exception as e:

@@ -11,6 +11,7 @@ test*.txt
 output*
 *.asm
 *.nes
+test_*/
 
 # Standard VSCode files
 .vscode/
@@ -25,6 +26,9 @@ __pycache__/
 # Jupyter Notebooks
 .ipynb_checkpoints
 
+*.app/
+*.dmg
+*.zip
 .DS_Store
 *.log
 *.out

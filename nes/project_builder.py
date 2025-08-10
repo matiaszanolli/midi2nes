@@ -157,7 +157,7 @@ irq:
     def __init__(self, project_path: str):
         self.project_path = Path(project_path)
         self.song_segments = None
-        self.use_mmc1 = False  # Will be set based on music data size
+        self.use_mmc1 = True  # Always use MMC1 with 128KB PRG-ROM
 
     def prepare_multi_song_project(self, music_asm_path: str, segments_data: dict):
         """Creates a complete NES project structure with multi-song support"""
@@ -269,17 +269,8 @@ SEGMENTS {
         # Read music.asm content
         music_content = Path(music_asm_path).read_text()
         
-        # Estimate music data size and determine if we need MMC1
-        music_size = self._estimate_music_data_size(music_content)
-        print(f"  Estimated music data size: {music_size:,} bytes")
-        
-        self.use_mmc1 = music_size > 15000  # Use MMC1 if estimated size > 15KB
-        
-        if self.use_mmc1:
-            print(f"  Large music data detected - switching to MMC1 mapper")
-            print(f"  Using MMC1 with 128KB PRG-ROM (8 banks)")
-        else:
-            print(f"  Using standard Mapper 0 with 32KB PRG-ROM")
+        # Always use MMC1 with 128KB PRG-ROM for simplicity and large capacity
+        print(f"  Using MMC1 with 128KB PRG-ROM (8 banks)")
         
         # Check if each channel's data exists, if not, add empty data
         required_symbols = ['pulse1_frames', 'pulse2_frames', 'triangle_frames', 'noise_frames']
@@ -328,37 +319,6 @@ SEGMENTS {
             # Make the script executable on Unix-like systems
             script_path.chmod(script_path.stat().st_mode | 0o755)
     
-    def _estimate_music_data_size(self, music_content: str) -> int:
-        """Estimate the size of music data in bytes"""
-        # Count the number of data bytes in the assembly content
-        # This is a rough estimate based on .byte directives and pattern data
-        
-        byte_count = 0
-        
-        # Count .byte directives
-        lines = music_content.split('\n')
-        for line in lines:
-            stripped_line = line.strip()
-            if stripped_line.startswith('.byte'):
-                # Count comma-separated values
-                byte_values = stripped_line[5:].split(',')
-                byte_count += len([v for v in byte_values if v.strip()])
-            elif stripped_line.startswith('.word'):
-                # Each .word takes 2 bytes
-                word_values = stripped_line[5:].split(',')
-                byte_count += len([v for v in word_values if v.strip()]) * 2
-        
-        # Add estimates for pattern data structures
-        if 'pattern_' in music_content:
-            # Rough estimate: each pattern averages 10 bytes
-            pattern_count = music_content.count('pattern_')
-            byte_count += pattern_count * 10
-        
-        # Add estimates for note tables and other data structures
-        if 'note_table' in music_content:
-            byte_count += 96  # Note table is ~96 bytes
-        
-        return byte_count
     
     def _generate_main_asm(self) -> str:
         """Generate main.asm with appropriate mapper header"""
@@ -459,25 +419,29 @@ _mmc1_write_prg_bank:
         """Generate linker configuration based on mapper choice"""
         if self.use_mmc1:
             # MMC1 linker config with 128KB PRG-ROM
+            # Fixed vector placement for MMC1
             return """MEMORY {
     # NES has 2KB of RAM
     ZP:     start = $00,    size = $0100, type = rw, file = "";
     RAM:    start = $0200,  size = $0600, type = rw, file = "";
     
-    # NES ROM layout - MMC1 with 128KB PRG-ROM
-    HEADER: start = $0000,  size = $0010, type = ro, file = %O, fill = yes;
-    PRG:    start = $8000,  size = $20000, type = ro, file = %O, fill = yes; # 128KB total
+    # NES ROM layout - MMC1 with 128KB PRG-ROM total
+    HEADER:  start = $0000,  size = $0010, type = ro, file = %O, fill = yes;
+    # All PRG-ROM banks as one contiguous area minus vectors
+    PRG:     start = $8000,  size = $1FFFA, type = ro, file = %O, fill = yes;
     
-    # 6502 vectors at end of ROM
-    VECTORS: start = $FFFA, size = $0006, type = ro, file = %O, fill = yes;
+    # 6502 vectors at end of PRG-ROM (physical address including header offset)
+    VECTORS: start = $2000A, size = $0006, type = ro, file = %O, fill = yes;
 }
 
 SEGMENTS {
     HEADER:   load = HEADER,  type = ro;
     ZEROPAGE: load = ZP,      type = zp;
     BSS:      load = RAM,     type = bss, define = yes;
-    RODATA:   load = PRG,     type = ro;    # Music data (let linker place it)
-    CODE:     load = PRG,     type = ro;    # Main code (let linker place it)
+    # Put music data first
+    RODATA:   load = PRG,     type = ro;
+    # Put main code after music data
+    CODE:     load = PRG,     type = ro;
     VECTORS:  load = VECTORS, type = ro;
 }"""
         else:
