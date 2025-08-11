@@ -1,17 +1,53 @@
+# Python environment
 /venv
-__pycache__
-frames.json
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# MIDI2NES temporary files
+# Generated ROM files (except examples/docs)
+*.nes
+!examples/*.nes
+!docs/*.nes
+
+# Assembly and object files
+*.asm
+*.o
+*.cfg
+!examples/*.asm
+!examples/*.cfg
+
+# MIDI files (except examples)
 *.mid
+!examples/*.mid
+!test_data/*.mid
+
+# Generated JSON data files
+frames.json
 mapped*.json
 simple*.json
 invalid.json
 parsed.json
 test*.json
-test*.txt
+dpcm_index.json
+
+# Debug and test files
+debug_*
+test_*
+working_*
+proper_*
+corrected_*
+fixed_*
+temp_*
+cleanup_*
 output*
-*.asm
-*.nes
+
+# Temporary directories
 test_*/
+debug_*/
+temp_*/
+build_*/
 
 # Standard VSCode files
 .vscode/

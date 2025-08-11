@@ -293,46 +293,6 @@ class CA65Exporter(BaseExporter):
             '.endproc'
         ])
         
-        # Add project builder compatible functions if not standalone
-        if not standalone:
-            lines.extend([
-                '',
-                '; Project builder compatible functions',
-                '.global init_music',
-                'init_music:',
-                '    ; Initialize APU for music playback',
-                '    lda #$0F',
-                '    sta $4015  ; Enable all channels',
-                '    lda #$00',
-                '    sta frame_counter',
-                '    sta frame_counter+1',
-                '    rts',
-                '',
-                '.global update_music', 
-                'update_music:',
-                '    ; Update music frame (called from main loop)',
-                '    jsr play_music_frame',
-                '    ',
-                '    ; Increment frame counter',
-                '    inc frame_counter',
-                '    bne @no_carry',
-                '    inc frame_counter+1',
-                '@no_carry:',
-                '    ',
-                '    ; Check for song end and loop',
-                f'    lda frame_counter+1',
-                f'    bne @loop_song',
-                f'    lda frame_counter',
-                f'    cmp #{max_frame + 10}',
-                f'    bcc @done',
-                '@loop_song:',
-                '    lda #$00',
-                '    sta frame_counter',
-                '    sta frame_counter+1',
-                '@done:',
-                '    rts'
-            ])
-        
         # Add vectors if standalone
         if standalone:
             lines.append('')
