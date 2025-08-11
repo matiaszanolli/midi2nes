@@ -99,8 +99,9 @@ class TestEnvelopeIntegration(unittest.TestCase):
         self.assertIn('control', frames[0])
         control_byte = frames[0]['control']
         
-        # Default envelope with duty cycle 2
-        expected_control = (2 << 6) | 0x30 | 15  # duty(2) << 6 | envelope_bits(0x30) | volume(15)
+        # Default envelope with duty cycle 2, velocity 100 → volume 12
+        expected_volume = min(15, 100 // 8)  # 100 // 8 = 12
+        expected_control = (2 << 6) | 0x10 | expected_volume  # duty(2) << 6 | constant_vol(0x10) | volume(12)
         self.assertEqual(control_byte, expected_control)
 
     def test_envelope_types(self):
@@ -133,10 +134,11 @@ class TestEnvelopeIntegration(unittest.TestCase):
                 self.assertGreaterEqual(volume, 0)
                 self.assertLessEqual(volume, 15)
                 
-                # Verify envelope characteristics
+                # Verify envelope characteristics  
                 if env_type == 'default':
-                    # Default envelope should maintain full volume
-                    self.assertEqual(volume, 15)
+                    # Default envelope should maintain scaled velocity volume (100 // 8 = 12)
+                    expected_volume = min(15, 100 // 8)  # 12
+                    self.assertEqual(volume, expected_volume)
                 elif env_type == 'pluck':
                     # Pluck should decrease over time
                     if frame > 0:
@@ -184,7 +186,9 @@ class TestEnvelopeIntegration(unittest.TestCase):
         
         # Test sustain phase (frames 4-18)
         sustain_volume = frames[10]['control'] & 0x0F
-        self.assertEqual(sustain_volume, 10)  # Piano envelope sustain level
+        # Piano envelope sustain level (10) scaled by MIDI velocity (100//8=12): (10*12)//15 = 8
+        expected_sustain_volume = (10 * min(15, 100 // 8)) // 15  # (10 * 12) // 15 = 8
+        self.assertEqual(sustain_volume, expected_sustain_volume)
         
         # Test release phase (frames 18-20)
         release_start_volume = frames[18]['control'] & 0x0F

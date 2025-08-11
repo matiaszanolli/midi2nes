@@ -111,17 +111,26 @@ class CA65Exporter(BaseExporter):
                 frame_to_pattern[frame_num] = (pattern_id, offset)
                 max_frame = max(max_frame, frame_num)
         
-        # Export pattern reference table
+        # Export pattern reference table as dense array indexed by frame number
         lines.append("; Pattern Reference Table")
         lines.append("pattern_refs:")
-        for frame in range(max_frame + 1):
-            if frame in frame_to_pattern:
-                pattern_id, offset = frame_to_pattern[frame]
-                lines.append(f"    .word {pattern_id}")
-                lines.append(f"    .byte {offset}")
-            else:
-                lines.append("    .word 0")
-                lines.append("    .byte 0")
+        
+        # Create dense array: frames 0, 1, 2, ... max_frame
+        # Each entry is 3 bytes: .word pattern_id, .byte offset
+        if not frame_to_pattern:
+            lines.append("    .word 0")
+            lines.append("    .byte 0")
+        else:
+            # Export entry for each frame from 0 to max_frame
+            for frame in range(max_frame + 1):
+                if frame in frame_to_pattern:
+                    pattern_id, offset = frame_to_pattern[frame]
+                    lines.append(f"    .word {pattern_id}")
+                    lines.append(f"    .byte {offset}")
+                else:
+                    # No pattern for this frame - use null entry
+                    lines.append("    .word 0")
+                    lines.append("    .byte 0")
         lines.append("")
         
         # Add the music engine code

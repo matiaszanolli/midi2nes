@@ -40,6 +40,8 @@ class TestEnvelopeProcessor(unittest.TestCase):
         
         # Test decay and sustain
         sustain_value = self.processor.get_envelope_value(envelope_type, 5, note_duration)
+        # Note: This test gets the base envelope value (without velocity scaling)
+        # The piano envelope sustain level is 10 when called directly
         self.assertEqual(sustain_value, 10)  # Piano sustain level
         
         # Test release
@@ -71,7 +73,7 @@ class TestEnvelopeProcessor(unittest.TestCase):
         frame_offset = 0
         note_duration = 10
         
-        # Test with different duty cycles
+        # Test with different duty cycles (without base velocity)
         for duty in range(4):
             control_byte = self.processor.get_envelope_control_byte(
                 envelope_type, frame_offset, note_duration, duty_cycle=duty
@@ -81,12 +83,23 @@ class TestEnvelopeProcessor(unittest.TestCase):
             expected_duty_bits = (duty & 0x03) << 6
             self.assertEqual(control_byte & 0xC0, expected_duty_bits)
             
-            # Check envelope bits (bits 4-5 should be 0x30)
-            self.assertEqual(control_byte & 0x30, 0x30)
+            # Check envelope bits (bit 4 should be 0x10 for constant volume)
+            self.assertEqual(control_byte & 0x10, 0x10)
             
             # Check volume bits (bits 0-3)
             volume = control_byte & 0x0F
-            self.assertEqual(volume, 15)  # Default envelope has full volume
+            self.assertEqual(volume, 15)  # Default envelope has full volume without base_velocity
+        
+        # Test with base velocity
+        base_velocity = 100  # MIDI velocity
+        control_byte = self.processor.get_envelope_control_byte(
+            envelope_type, frame_offset, note_duration, duty_cycle=2, base_velocity=base_velocity
+        )
+        
+        # Check that MIDI velocity is properly scaled (100 // 8 = 12)
+        volume = control_byte & 0x0F
+        expected_volume = min(15, base_velocity // 8)  # 100 // 8 = 12
+        self.assertEqual(volume, expected_volume)
 
     def test_invalid_envelope_type(self):
         """Test handling of invalid envelope types"""
