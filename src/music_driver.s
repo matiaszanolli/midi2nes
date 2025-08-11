@@ -9,6 +9,31 @@
 ; =============================================================================
 ; INIT: called once at startup
 music_init:
+    ; Initialize APU
+    lda #$0F
+    sta $4015       ; Enable Pulse1, Pulse2, Triangle, Noise
+    
+    ; Set up Pulse 1 (50% duty, constant volume, volume=15)
+    lda #$BF
+    sta $4000       ; 50% duty, constant vol 15
+    lda #$00
+    sta $4001       ; No sweep
+    
+    ; Set up Pulse 2 (50% duty, constant volume, volume=15)
+    lda #$BF
+    sta $4004       ; 50% duty, constant vol 15
+    lda #$00
+    sta $4005       ; No sweep
+    
+    ; Set up Triangle (enabled, max length)
+    lda #$80
+    sta $4008       ; Linear counter control = 0, counter = 0
+    
+    ; Set up Noise (constant volume=8)
+    lda #$38
+    sta $400C       ; Constant volume, vol=8
+    
+    ; Initialize playback state
     lda #$00
     sta current_row
     sta current_tick
@@ -73,32 +98,62 @@ play_row:
 ; Actual APU register logic
 play_note_pulse1:
     tax
+    ; Check for silence (index = 4)
+    cpx #4
+    beq .silence1
+    ; Play note
     lda pulse_duty_table, x
     sta $4000
     lda pulse_timer_low_table, x
     sta $4002
     lda pulse_timer_high_table, x
+    ora #$08        ; Reset length counter
     sta $4003
+    rts
+.silence1:
+    ; Silence the channel by setting volume to 0
+    lda #$30        ; Same duty, but volume=0
+    sta $4000
     rts
 
 play_note_pulse2:
     tax
+    ; Check for silence (index = 4)
+    cpx #4
+    beq .silence2
+    ; Play note
     lda pulse_duty_table, x
     sta $4004
     lda pulse_timer_low_table, x
     sta $4006
     lda pulse_timer_high_table, x
+    ora #$08        ; Reset length counter
     sta $4007
+    rts
+.silence2:
+    ; Silence the channel by setting volume to 0
+    lda #$30        ; Same duty, but volume=0
+    sta $4004
     rts
 
 play_note_triangle:
     tax
+    ; Check for silence (index = 4)
+    cpx #4
+    beq .silence_tri
+    ; Play note
     lda triangle_linear_table, x
     sta $4008
     lda triangle_timer_low_table, x
     sta $400A
     lda triangle_timer_high_table, x
+    ora #$08        ; Reset length counter
     sta $400B
+    rts
+.silence_tri:
+    ; Silence triangle by disabling linear counter
+    lda #$00
+    sta $4008
     rts
 
 play_note_noise:
@@ -139,18 +194,18 @@ notes_dpcm:
     .byte $00, $01, $02, $03, $00
 
 pulse_duty_table:
-    .byte $80, $80, $80, $80, $10
+    .byte $BF, $BF, $BF, $BF, $30  ; 50% duty, vol=15, then vol=0 for silence
 pulse_timer_low_table:
-    .byte $FF, $EE, $DD, $CC, $00
+    .byte $AB, $FE, $6B, $FE, $00  ; C4(261Hz), C5(523Hz), G4(392Hz), C5 again, silence
 pulse_timer_high_table:
-    .byte $07, $06, $05, $04, $00
+    .byte $01, $00, $01, $00, $00  ; High bytes for above frequencies
 
 triangle_linear_table:
-    .byte $7F, $7F, $7F, $7F, $00
+    .byte $81, $81, $81, $81, $00  ; Triangle enabled, linear counter=1
 triangle_timer_low_table:
-    .byte $FF, $EE, $DD, $CC, $00
+    .byte $AB, $FE, $6B, $FE, $00  ; Same frequencies as pulse: C4, C5, G4, C5, silence
 triangle_timer_high_table:
-    .byte $07, $06, $05, $04, $00
+    .byte $09, $08, $09, $08, $00  ; High bytes with length counter reset bit
 
 noise_volume_table:
     .byte $0F, $0E, $0C, $0A, $00
