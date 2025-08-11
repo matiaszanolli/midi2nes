@@ -62,25 +62,31 @@ class TestMIDIParserIntegration(unittest.TestCase):
         self.assertTrue(any(b != 0 for b in banks), "No banks specified")
 
     def verify_ca65_assembly(self, file_path):
-        """Verify CA65 assembly structure and syntax"""
+        """Verify that the CA65 assembly file has the expected structure"""
         with open(file_path, 'r') as f:
             content = f.read()
         
-        # Check for required sections
-        required_sections = [
+        # Check for basic required sections
+        basic_sections = [
             '.segment "HEADER"',
             '.segment "CODE"',
-            '.segment "VECTORS"',
-            'note_table:',
-            'frame_data:'
+            '.segment "VECTORS"'
         ]
         
-        for section in required_sections:
+        for section in basic_sections:
             self.assertIn(section, content, f"Missing required section: {section}")
         
-        # Verify label definitions
-        self.assertIn('init:', content, "Missing init routine")
-        self.assertIn('play:', content, "Missing play routine")
+        # Different verification based on export mode
+        if "Pattern Compressed" in content:
+            # Pattern mode - check for pattern-specific content
+            pattern_sections = ['note_table:', 'pattern_refs:']
+            for section in pattern_sections:
+                self.assertIn(section, content, f"Missing pattern section: {section}")
+        else:
+            # Direct frame mode - check for frame-specific content  
+            frame_sections = ['play_music_frame', '.proc reset', '.proc nmi']
+            for section in frame_sections:
+                self.assertIn(section, content, f"Missing frame section: {section}")
         
         # Check for valid addressing modes
         self.assertNotIn('undefined', content.lower(), "Contains undefined references")

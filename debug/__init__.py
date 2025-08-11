@@ -1,33 +1,55 @@
 """
-Debug tools and utilities for MIDI2NES development and troubleshooting.
+MIDI2NES Debug Tools
+==================
 
-This module contains various debugging, analysis, and diagnostic tools used
-during development and for troubleshooting issues in the MIDI2NES pipeline.
+Comprehensive ROM diagnostics and validation tools for MIDI2NES generated ROMs.
+
+This module provides:
+- ROM health checking and corruption detection
+- Header validation and size checking
+- APU code pattern analysis
+- Assembly code analysis
+- Reset vector validation
+- Actionable recommendations for fixes
+
+Main Tools:
+- rom_diagnostics.py: Comprehensive ROM analysis
+- check_rom.py: Quick health checking
+
+Usage:
+    from debug.rom_diagnostics import ROMDiagnostics
+    
+    diagnostics = ROMDiagnostics(verbose=True)
+    result = diagnostics.diagnose_rom("example.nes")
+    diagnostics.print_report(result)
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
+__author__ = "MIDI2NES Team"
 
-# Import commonly used debug utilities
+# Make key classes available at package level
 try:
-    from .pattern_analysis import analyze_patterns
-    from .ca65_inspector import inspect_ca65_output
-    from .frame_analyzer import analyze_frames
-    from .music_structure_analyzer import analyze_music_structure
-    from .pattern_reference_debugger import debug_pattern_references
-    from .performance_analyzer import analyze_performance
-    from .audio_checker import check_audio_simple
-    from .rom_tester import test_rom_generation
+    from .rom_diagnostics import ROMDiagnostics, ROMDiagnosticResult
+    __all__ = ['ROMDiagnostics', 'ROMDiagnosticResult']
 except ImportError:
-    # Graceful fallback if some dependencies are missing
-    pass
+    # Handle case where dependencies might not be available
+    __all__ = []
 
-__all__ = [
-    'analyze_patterns',
-    'inspect_ca65_output', 
-    'analyze_frames',
-    'analyze_music_structure',
-    'debug_pattern_references',
-    'analyze_performance',
-    'check_audio_simple',
-    'test_rom_generation'
-]
+# Convenience function for quick checking
+def quick_check_rom(rom_path: str, verbose: bool = False) -> bool:
+    """
+    Quick ROM health check that returns True if ROM is healthy/good.
+    
+    Args:
+        rom_path: Path to ROM file
+        verbose: Enable verbose output
+        
+    Returns:
+        bool: True if ROM is healthy/good, False otherwise
+    """
+    try:
+        diagnostics = ROMDiagnostics(verbose=verbose)
+        result = diagnostics.diagnose_rom(rom_path)
+        return result.overall_health in ['HEALTHY', 'GOOD']
+    except Exception:
+        return False

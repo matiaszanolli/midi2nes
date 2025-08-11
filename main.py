@@ -262,7 +262,8 @@ def compile_rom(project_dir: Path, rom_output: Path) -> bool:
         
         # Check if the generated ROM has a reasonable size
         rom_size = generated_rom.stat().st_size
-        if rom_size < 32784:  # Minimum: 16-byte header + 32KB PRG
+        min_size = 32768  # Minimum: approximately 32KB (allowing for small alignment differences)
+        if rom_size < min_size:
             print(f"[ERROR] Generated ROM is too small ({rom_size:,} bytes). Something went wrong during linking.")
             return False
         

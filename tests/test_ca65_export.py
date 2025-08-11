@@ -48,9 +48,8 @@ class TestCA65Export(unittest.TestCase):
             with open(test_output, 'r') as f:
                 output = f.read()
                 
-            # Test file header and imports/exports
+            # Test file header and exports (no imports in standalone mode)
             self.assertIn("; CA65 Assembly Export", output)
-            self.assertIn(".importzp ptr1, temp1, temp2, frame_counter", output)
             self.assertIn(".global init_music", output)
             self.assertIn(".global update_music", output)
             
@@ -105,19 +104,20 @@ class TestCA65Export(unittest.TestCase):
             with open(test_output, 'r') as f:
                 output = f.read()
             
-            # Basic structure should still be present
-            self.assertIn(".segment \"RODATA\"", output)
+            # Empty patterns triggers direct frame export mode
+            self.assertIn("; CA65 Assembly Export (Direct Frame Data)", output)
             self.assertIn(".segment \"CODE\"", output)
-            self.assertIn("pattern_refs:", output)
+            self.assertIn(".segment \"ZEROPAGE\"", output)  # Direct frame mode has zeropage
+            self.assertIn("frame_counter: .res 2", output)
             
-            # Should have proper imports/exports
-            self.assertIn(".importzp ptr1, temp1, temp2, frame_counter", output)
-            self.assertIn(".global init_music", output)
-            self.assertIn(".global update_music", output)
+            # Should have NES initialization structure
+            self.assertIn(".proc reset", output)
+            self.assertIn(".proc nmi", output)
+            self.assertIn("play_music_frame", output)
             
-            # Should have proper initialization
+            # Should have proper APU initialization
             self.assertIn("lda #$0F", output)  # APU enable value
-            self.assertIn("lda #$30", output)  # APU channel setup
+            self.assertIn("sta $4015", output)  # APU status register
             
         finally:
             if test_output.exists():

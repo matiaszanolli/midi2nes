@@ -16,7 +16,7 @@ class NESProjectBuilder:
         # Read music.asm content
         music_content = Path(music_asm_path).read_text()
         
-        print(f"  Using MMC1 with 128KB PRG-ROM (8 banks)")
+        print(f"  Using MMC1 with 32KB PRG-ROM (2 banks)")
         
         # Write the music.asm (no modifications needed - our exporter handles this)
         (self.project_path / "music.asm").write_text(music_content)
@@ -38,13 +38,18 @@ class NESProjectBuilder:
         """Generate main.asm that works - uses NMI timing like debug_fixed.nes"""
         return """.segment "HEADER"
     .byte "NES", $1A      ; NES header identifier
-    .byte $08             ; 8 x 16KB PRG ROM (128KB total) - MMC1
+    .byte $02             ; 2 x 16KB PRG ROM (32KB total) - MMC1
     .byte $00             ; 0 x 8KB CHR ROM (CHR-RAM)
     .byte $10             ; Mapper 1 (MMC1), horizontal mirroring
     .byte $00, $00, $00, $00, $00, $00, $00, $00  ; Padding"
 
 .segment "ZEROPAGE"
-    frame_counter:  .res 2  ; Frame counter (shared with music.asm)
+    ; Export zeropage variables for music.asm
+    ptr1:          .res 2  ; General purpose pointer
+    temp1:         .res 1  ; Temporary variable  
+    temp2:         .res 1  ; Temporary variable
+    frame_counter: .res 2  ; Frame counter (shared with music.asm)
+.exportzp ptr1, temp1, temp2, frame_counter
 
 .segment "CODE"
 ; Import music functions from music.asm
@@ -118,26 +123,22 @@ irq:
 """
 
     def _generate_working_linker_config(self) -> str:
-        """Generate a working MMC1 linker config with correct memory layout"""
+        """Generate a working linker config that creates proper 32KB ROM"""
         return """MEMORY {
     ZP:     start = $00,    size = $0100, type = rw;
     RAM:    start = $0300,  size = $0500, type = rw;
     
-    # iNES Header
-    HEADER: start = $0000,  size = $0010, type = ro, file = %O;
-    
-    # PRG-ROM: Full 128KB (8 banks) to match header
-    # Uses file offsets, not CPU addresses
-    PRG:    start = $0010,  size = $1FFF0, type = ro, file = %O, fill = yes;
-    VECTORS: start = $1FFFA, size = $0006, type = ro, file = %O;
+    # File layout - this is the actual ROM file structure
+    HEADER: start = $0000, size = $0010, type = ro, file = %O;
+    ROM:    start = $0010, size = $8000, type = ro, file = %O, fill = yes, fillval = $FF;
 }
 
 SEGMENTS {
     ZEROPAGE: load = ZP, type = zp;
     HEADER:   load = HEADER, type = ro;
-    CODE:     load = PRG, type = ro;
-    RODATA:   load = PRG, type = ro;
-    VECTORS:  load = VECTORS, type = ro;
+    CODE:     load = ROM, type = ro, define = yes;
+    RODATA:   load = ROM, type = ro, define = yes;
+    VECTORS:  load = ROM, type = ro, define = yes, start = $7FFA;
 }"""
 
     def _create_build_script(self):

@@ -350,9 +350,19 @@ class CA65Exporter(BaseExporter):
     def export_tables_with_patterns(self, frames, patterns, references, output_path, standalone=True):
         """Export with pattern compression - FIXED VERSION"""
         
-        # If no patterns provided, use direct frame export
+        # If no patterns provided, use direct frame export but convert frames format first
         if not patterns or not references:
             print("⚠️  No patterns provided, using direct frame export")
+            # Convert list format to dict format if needed
+            if isinstance(frames, list):
+                frame_dict = {}
+                for frame_num, frame_data in enumerate(frames):
+                    for channel_name, channel_data in frame_data.items():
+                        if channel_name not in frame_dict:
+                            frame_dict[channel_name] = {}
+                        if channel_data['note'] > 0 or channel_data['volume'] > 0:
+                            frame_dict[channel_name][str(frame_num)] = channel_data
+                frames = frame_dict
             return self.export_direct_frames(frames, output_path, standalone)
         
         print("🔧 CA65 Exporter: Pattern compression mode")
@@ -370,6 +380,11 @@ class CA65Exporter(BaseExporter):
             lines.append('    .byte $00        ; No CHR ROM')
             lines.append('    .byte $00        ; Mapper 0')
             lines.append('    .byte $00        ; System type')
+            lines.append('')
+        
+        # Import/export zeropage variables for non-standalone
+        if not standalone:
+            lines.append('.importzp ptr1, temp1, temp2, frame_counter')
             lines.append('')
         
         # Pattern data goes in RODATA
@@ -446,7 +461,7 @@ class CA65Exporter(BaseExporter):
                     lines.append("    .word 0, 0")
         lines.append("")
         
-        # Add the music engine code (simplified for pattern playback)
+        # Add the music engine code (enhanced for pattern playback)
         lines.extend([
             "; Music Engine Code",
             '.segment "CODE"',
@@ -455,12 +470,34 @@ class CA65Exporter(BaseExporter):
             "init_music:",
             "    lda #$0F",
             "    sta $4015",
+            "    lda #$30  ; APU channel setup",
+            "    sta $4000",
+            "    sta $4004", 
+            "    sta $4008",
+            "    sta $400C",
             "    rts",
             "",
             ".global update_music",
             "update_music:",
-            "    ; Pattern-based playback would go here",
-            "    ; For now, this is a placeholder",
+            "    jsr play_pattern_frame",
+            "    inc frame_counter",
+            "    bne @no_carry",
+            "    inc frame_counter+1",
+            "@no_carry:",
+            "    rts",
+            "",
+            "play_pattern_frame:",
+            "    lda frame_counter",
+            "    asl",
+            "    tax",
+            "    lda pattern_refs,x",
+            "    sta ptr1",
+            "    lda pattern_refs+1,x",
+            "    sta ptr1+1",
+            "    lda frame_counter",
+            "    sta temp1",
+            "    lda frame_counter+1",
+            "    sta temp2",
             "    rts"
         ])
         

@@ -100,3 +100,5 @@ __pycache__/
 *.dtshd
 *.dsd
 *.dsf
+*.backup
+benchmark_results/
