@@ -279,7 +279,12 @@ def run_full_pipeline(args):
     else:
         output_rom = input_midi.with_suffix('.nes')
     
+    # Check for no-patterns flag
+    use_patterns = not (hasattr(args, 'no_patterns') and args.no_patterns)
+    
     print(f"🎵 MIDI2NES Pipeline: {input_midi.name} → {output_rom.name}")
+    if not use_patterns:
+        print("   🔄 Direct export mode (no pattern compression)")
     print("=" * 60)
     
     # Create temporary directory for intermediate files
@@ -302,36 +307,59 @@ def run_full_pipeline(args):
             emulator = NESEmulatorCore()
             frames = emulator.process_all_tracks(mapped)
             
-            # Step 4: Detect patterns using parallel processing
-            print("[4/7] Detecting patterns for compression...")
-            tempo_map = EnhancedTempoMap(initial_tempo=500000)
-            
-            # Convert frames to events for pattern detection
-            events = []
-            for channel_name, channel_frames in frames.items():
-                for frame_num, frame_data in channel_frames.items():
-                    events.append({
-                        'frame': int(frame_num),
-                        'note': frame_data.get('note', 0),
-                        'volume': frame_data.get('volume', 0)
-                    })
-            events.sort(key=lambda x: x['frame'])
-            
-            # Use parallel pattern detection with position mapping fix
-            try:
-                from tracker.pattern_detector_parallel import ParallelPatternDetector
-                detector = ParallelPatternDetector(tempo_map, min_pattern_length=3, max_pattern_length=12)
-                print(f"  Using parallel pattern detection with {len(events):,} events")
-                pattern_result = detector.detect_patterns(events)
-            except Exception as e:
-                print(f"  Parallel detection failed, using fallback: {e}")
-                from tracker.pattern_detector import EnhancedPatternDetector
-                detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3, max_pattern_length=12)
-                # Limit events for fallback to avoid hanging
-                if len(events) > 1000:
-                    print(f"  Limiting to 1000 events for fallback performance")
-                    events = events[:1000]
-                pattern_result = detector.detect_patterns(events)
+            # Step 4: Pattern detection or direct export
+            if use_patterns:
+                print("[4/7] Detecting patterns for compression...")
+                tempo_map = EnhancedTempoMap(initial_tempo=500000)
+                
+                # Convert frames to events for pattern detection
+                events = []
+                for channel_name, channel_frames in frames.items():
+                    for frame_num, frame_data in channel_frames.items():
+                        events.append({
+                            'frame': int(frame_num),
+                            'note': frame_data.get('note', 0),
+                            'volume': frame_data.get('volume', 0)
+                        })
+                events.sort(key=lambda x: x['frame'])
+                
+                # Check if we should skip pattern detection for very large files
+                LARGE_FILE_THRESHOLD = 10000
+                if len(events) > LARGE_FILE_THRESHOLD:
+                    print(f"  ⚠️  Large MIDI file ({len(events):,} events) detected")
+                    print(f"  💡 For best results with large files, consider using --no-patterns flag")
+                    print(f"  🚀 Proceeding with improved pattern detection...")
+                
+                # Use parallel pattern detection with position mapping fix
+                try:
+                    from tracker.pattern_detector_parallel import ParallelPatternDetector
+                    detector = ParallelPatternDetector(tempo_map, min_pattern_length=3, max_pattern_length=12)
+                    print(f"  Using parallel pattern detection with {len(events):,} events")
+                    pattern_result = detector.detect_patterns(events)
+                except Exception as e:
+                    print(f"  Parallel detection failed, using fallback: {e}")
+                    from tracker.pattern_detector import EnhancedPatternDetector
+                    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3, max_pattern_length=12)
+                    # For fallback, limit events more conservatively
+                    if len(events) > 2000:
+                        print(f"  Limiting to 2000 events for fallback performance")
+                        events = events[:2000]
+                    pattern_result = detector.detect_patterns(events)
+            else:
+                print("[4/7] Skipping pattern detection (direct export mode)...")
+                print(f"  📊 Processing direct frame export for complete data preservation")
+                # Create dummy pattern result for direct export
+                pattern_result = {
+                    'patterns': {},
+                    'references': {},
+                    'stats': {
+                        'compression_ratio': 1.0,
+                        'original_events': sum(len(ch) for ch in frames.values()),
+                        'compressed_size': sum(len(ch) for ch in frames.values()),
+                        'patterns_found': 0
+                    }
+                }
+                events = []  # Not needed for direct export
             
             # Step 5: Export to CA65 assembly
             print("[5/7] Exporting to CA65 assembly...")
@@ -556,6 +584,9 @@ def main():
             elif arg == '--version':
                 global_args.extend([arg])
                 i += 1
+            elif arg == '--no-patterns':
+                global_args.extend([arg])
+                i += 1
             elif arg.startswith('-'):
                 # Skip unknown options for now
                 i += 1
@@ -568,6 +599,7 @@ def main():
             print("\nUsage examples:")
             print("  midi2nes song.mid                  # Creates song.nes")
             print("  midi2nes song.mid output.nes       # Creates output.nes")
+            print("  midi2nes --no-patterns song.mid    # Direct export (no compression)")
             print("  midi2nes --help                    # Show full help")
             sys.exit(1)
         
@@ -577,6 +609,7 @@ def main():
                 self.input = remaining_args[0] if remaining_args else None
                 self.output = remaining_args[1] if len(remaining_args) > 1 else None
                 self.verbose = '--verbose' in global_args or '-v' in global_args
+                self.no_patterns = '--no-patterns' in global_args
                 self.command = None
         
         args = SimpleArgs()

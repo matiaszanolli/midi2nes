@@ -47,14 +47,16 @@ class ParallelPatternDetector:
         # Convert to sequence for processing
         sequence = [(e['note'], e['volume']) for e in valid_events]
         
-        # Limit sequence size for performance
-        MAX_EVENTS = 5000  # Increased from 1000 for better results
+        # Handle large sequences - increase limit and provide better sampling
+        MAX_EVENTS = 15000  # Increased significantly for better music preservation
         if len(sequence) > MAX_EVENTS:
-            print(f"⚠️  Large sequence ({len(sequence)} events), sampling {MAX_EVENTS} for performance")
-            # Sample events across the whole sequence for better representation
-            step = len(sequence) // MAX_EVENTS
-            sequence = sequence[::step][:MAX_EVENTS]
-            valid_events = valid_events[::step][:MAX_EVENTS]
+            print(f"⚠️  Large sequence ({len(sequence)} events), using optimized sampling for {MAX_EVENTS} events")
+            print(f"   Original events: {len(sequence)}, Will sample: {MAX_EVENTS} ({MAX_EVENTS/len(sequence)*100:.1f}%)")
+            # Smart sampling: take events from throughout the sequence to preserve structure
+            indices = np.linspace(0, len(sequence)-1, MAX_EVENTS, dtype=int)
+            sequence = [sequence[i] for i in indices]
+            valid_events = [valid_events[i] for i in indices]
+            print(f"   ✅ Sampled {len(sequence)} events preserving temporal distribution")
         
         # Split work into chunks for parallel processing
         patterns = self._detect_patterns_parallel(sequence, valid_events)
