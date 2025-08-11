@@ -254,8 +254,21 @@ def compile_rom(project_dir: Path, rom_output: Path) -> bool:
             print(f"[ERROR] Failed to link ROM:\n{result.stderr}")
             return False
         
-        # Copy the ROM to the desired output location
-        shutil.copy(project_dir / 'game.nes', rom_output)
+        # Verify the generated ROM before copying
+        generated_rom = project_dir / 'game.nes'
+        if not generated_rom.exists():
+            print("[ERROR] Generated ROM file not found")
+            return False
+        
+        # Check if the generated ROM has a reasonable size
+        rom_size = generated_rom.stat().st_size
+        if rom_size < 32784:  # Minimum: 16-byte header + 32KB PRG
+            print(f"[ERROR] Generated ROM is too small ({rom_size:,} bytes). Something went wrong during linking.")
+            return False
+        
+        # Only overwrite if we have a valid ROM
+        print(f"  Generated ROM size: {rom_size:,} bytes ({rom_size / 1024:.1f} KB)")
+        shutil.copy(generated_rom, rom_output)
         
         return True
     except FileNotFoundError as e:
@@ -278,6 +291,13 @@ def run_full_pipeline(args):
         output_rom = Path(args.output)
     else:
         output_rom = input_midi.with_suffix('.nes')
+    
+    # Create backup if output ROM already exists
+    backup_path = None
+    if output_rom.exists():
+        backup_path = output_rom.with_suffix('.nes.backup')
+        print(f"  💾 Creating backup of existing ROM: {backup_path.name}")
+        shutil.copy2(output_rom, backup_path)
     
     # Check for no-patterns flag
     use_patterns = not (hasattr(args, 'no_patterns') and args.no_patterns)
@@ -411,6 +431,13 @@ def run_full_pipeline(args):
             print("[7/7] Compiling NES ROM...")
             if not compile_rom(project_path, output_rom):
                 print("[ERROR] ROM compilation failed")
+                
+                # Restore backup if compilation failed
+                if backup_path and backup_path.exists():
+                    print(f"  💊 Restoring backup ROM: {backup_path.name} → {output_rom.name}")
+                    shutil.copy2(backup_path, output_rom)
+                    print(f"  ✅ Original ROM restored from backup")
+                
                 sys.exit(1)
             
             # Success!
