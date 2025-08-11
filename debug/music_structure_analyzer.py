@@ -91,26 +91,136 @@ def analyze_music_structure(rom_path):
         # Look for pattern reference table
         print("\n🔗 Searching for pattern reference table...")
         
-        # In the NES ROM, look for the specific pattern reference structure
-        # Based on the hexdump, it should be around offset 0x78
-        pattern_refs_start = None
+        pattern_refs_candidates = []
         
-        # Look for the characteristic pattern reference structure
-        for i in range(0x70, min(0x200, len(rom_data))):
-            if i + 8 < len(rom_data):
-                # Check if we see the pattern: 08 d6 00 08 d6 00 (repeating pattern refs)
-                # Pattern: low_byte, high_byte, offset
-                if (rom_data[i] == 0x08 and rom_data[i + 1] == 0xd6 and rom_data[i + 2] == 0x00 and
-                    rom_data[i + 3] == 0x08 and rom_data[i + 4] == 0xd6 and rom_data[i + 5] == 0x00):
-                    pattern_refs_start = i
-                    print(f"📍 Found pattern reference table at offset 0x{i:04X}")
+        # Strategy 1: Look for tables with repeating 16-bit word + byte structure
+        # Scan the first 2KB of the ROM for potential reference tables
+        for start_offset in range(0x10, min(0x800, len(rom_data) - 100), 1):
+            if start_offset + 30 >= len(rom_data):
+                break
+                
+            # Look for a sequence of 3-byte entries that could be pattern references
+            consecutive_valid = 0
+            non_null_count = 0
+            entries = []
+            
+            for i in range(start_offset, min(start_offset + 300, len(rom_data) - 2), 3):
+                if i + 2 >= len(rom_data):
                     break
+                    
+                low_byte = rom_data[i]
+                high_byte = rom_data[i + 1]
+                offset_byte = rom_data[i + 2]
+                
+                word_val = low_byte | (high_byte << 8)
+                
+                # Check if this looks like a valid pattern reference
+                valid_entry = False
+                
+                if word_val == 0 and offset_byte == 0:
+                    # Null entry - common for silent frames
+                    valid_entry = True
+                elif (0x1000 <= word_val <= 0xFFFF and  # Reasonable address range
+                      offset_byte <= 0xFF):  # Reasonable offset
+                    valid_entry = True
+                    non_null_count += 1
+                    
+                if valid_entry:
+                    consecutive_valid += 1
+                    entries.append({
+                        'offset': i,
+                        'word': word_val,
+                        'byte': offset_byte,
+                        'frame': len(entries)
+                    })
+                else:
+                    # Reset if we hit invalid data
+                    if consecutive_valid >= 10:  # Found a reasonable table
+                        break
+                    consecutive_valid = 0
+                    non_null_count = 0
+                    entries = []
+                    
+                # Stop if we have enough entries
+                if len(entries) >= 200:
+                    break
+            
+            # If we found a promising table, add it as a candidate
+            if (len(entries) >= 10 and non_null_count >= 3 and 
+                consecutive_valid >= len(entries) * 0.7):  # At least 70% valid
+                
+                pattern_refs_candidates.append({
+                    'start_offset': start_offset,
+                    'entries': entries,
+                    'non_null_count': non_null_count,
+                    'score': len(entries) * 2 + non_null_count  # Scoring function
+                })
         
+        # Find the best candidate (highest score)
+        pattern_refs_start = None
         ref_candidates = []
-        if pattern_refs_start is not None:
+        
+        if pattern_refs_candidates:
+            best_candidate = max(pattern_refs_candidates, key=lambda x: x['score'])
+            pattern_refs_start = best_candidate['start_offset']
+            ref_candidates = best_candidate['entries']
+            
+            print(f"📍 Found pattern reference table at offset 0x{pattern_refs_start:04X}")
+            print(f"   Found {len(pattern_refs_candidates)} potential tables, selected best one")
+            print(f"   Selected table: {len(ref_candidates)} entries, {best_candidate['non_null_count']} non-null")
+        
+        # Strategy 2: If no good table found, look for CA65 assembly style patterns
+        if not ref_candidates:
+            print("🔍 Trying alternative detection for CA65-style pattern tables...")
+            
+            # Look for .word/.byte patterns in the binary
+            for i in range(0x10, min(0x1000, len(rom_data) - 50)):
+                if i + 20 >= len(rom_data):
+                    break
+                    
+                # Look for alternating word/byte pattern typical of CA65 output
+                potential_entries = []
+                for j in range(0, 60, 3):  # Check up to 20 entries
+                    if i + j + 2 >= len(rom_data):
+                        break
+                        
+                    word_low = rom_data[i + j]
+                    word_high = rom_data[i + j + 1] 
+                    byte_val = rom_data[i + j + 2]
+                    
+                    word_addr = word_low | (word_high << 8)
+                    
+                    # CA65 tends to generate addresses in specific ranges
+                    if (word_addr == 0 or 
+                        (0x2000 <= word_addr <= 0x9FFF) or  # Common NES address ranges
+                        (0xC000 <= word_addr <= 0xFFFF)):
+                        
+                        potential_entries.append({
+                            'offset': i + j,
+                            'word': word_addr,
+                            'byte': byte_val,
+                            'frame': len(potential_entries)
+                        })
+                    else:
+                        break  # Stop at first invalid entry
+                        
+                if len(potential_entries) >= 15:  # Found substantial table
+                    non_null = len([e for e in potential_entries if e['word'] != 0])
+                    if non_null >= 3:  # At least some real entries
+                        ref_candidates = potential_entries
+                        pattern_refs_start = i
+                        print(f"📍 Found CA65-style pattern table at 0x{i:04X} with {len(potential_entries)} entries")
+                        break
+        
+        # If we don't already have ref_candidates from the improved detection,
+        # try the legacy parsing approach for backward compatibility
+        if not ref_candidates and pattern_refs_start is not None:
+            print("🔄 Using legacy parsing approach...")
+            
             # Parse the reference table until we hit the end marker
             i = pattern_refs_start
             frame_num = 0
+            temp_candidates = []
             
             while i + 2 < len(rom_data):
                 # Read 3 bytes: pattern_id_low, pattern_id_high, offset
@@ -126,7 +236,7 @@ def analyze_music_structure(rom_path):
                 
                 pattern_addr = pattern_low | (pattern_high << 8)
                 
-                ref_candidates.append({
+                temp_candidates.append({
                     'frame': frame_num,
                     'word': pattern_addr,
                     'offset': offset_byte,
@@ -140,6 +250,9 @@ def analyze_music_structure(rom_path):
                 if frame_num > 1000:
                     print("⚠️  Hit safety limit of 1000 frames")
                     break
+                    
+            if temp_candidates:
+                ref_candidates = temp_candidates
         
         if ref_candidates:
             # Find the most promising reference table (longest consecutive sequence)

@@ -96,15 +96,38 @@ class ROMValidator:
             with open(rom_path, 'rb') as f:
                 data = f.read()
             
-            # For MMC1/larger ROMs, vectors are at the very end of the file
+            # Get mapper info from header
+            header = data[:16]
+            mapper_lo = (header[6] & 0xF0) >> 4
+            mapper_hi = (header[7] & 0xF0) >> 4
+            mapper = mapper_hi << 4 | mapper_lo
+            
+            # For NES ROMs, vectors are at the very end of the file
             if len(data) >= 6:
                 # Read NES vectors from the last 6 bytes
+                nmi_vector = int.from_bytes(data[-6:-4], byteorder='little')
                 reset_vector_addr = int.from_bytes(data[-4:-2], byteorder='little')
-                if reset_vector_addr < 0x8000 or reset_vector_addr > 0xFFFF:
-                    self.errors.append(f"Invalid reset vector: 0x{reset_vector_addr:04X}")
+                irq_vector = int.from_bytes(data[-2:], byteorder='little')
+                
+                # MMC1 and other mappers can have vectors anywhere in the valid 6502 address space
+                # but they should be non-zero for a functional ROM
+                if reset_vector_addr == 0:
+                    self.errors.append("Reset vector is 0 (ROM may not boot)")
                     return False
                 
-                print(f"  Reset Vector: 0x{reset_vector_addr:04X}")
+                # For MMC1 (mapper 1), vectors are typically in the 0x2000-0xBFFF range
+                # For NROM (mapper 0), vectors should be in 0x8000-0xFFFF range
+                if mapper == 0:  # NROM
+                    if reset_vector_addr < 0x8000:
+                        self.errors.append(f"NROM reset vector too low: 0x{reset_vector_addr:04X} (should be >= 0x8000)")
+                        return False
+                else:  # MMC1 and other mappers
+                    if reset_vector_addr > 0xFFFF:
+                        self.errors.append(f"Invalid reset vector: 0x{reset_vector_addr:04X} (exceeds 6502 address space)")
+                        return False
+                
+                print(f"  Reset Vector: 0x{reset_vector_addr:04X} (Mapper {mapper})")
+                print(f"  NMI Vector: 0x{nmi_vector:04X}, IRQ Vector: 0x{irq_vector:04X}")
             else:
                 self.errors.append("ROM too small to contain vectors")
                 return False
