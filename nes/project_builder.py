@@ -16,7 +16,7 @@ class NESProjectBuilder:
         # Read music.asm content
         music_content = Path(music_asm_path).read_text()
         
-        print(f"  Using MMC1 with 32KB PRG-ROM (2 banks)")
+        print(f"  Using MMC1 with 128KB PRG-ROM")
         
         # Write the music.asm (no modifications needed - our exporter handles this)
         (self.project_path / "music.asm").write_text(music_content)
@@ -38,7 +38,7 @@ class NESProjectBuilder:
         """Generate main.asm that works - uses NMI timing like debug_fixed.nes"""
         return """.segment "HEADER"
     .byte "NES", $1A      ; NES header identifier
-    .byte $02             ; 2 x 16KB PRG ROM (32KB total) - MMC1
+    .byte $08             ; 8 x 16KB PRG ROM (128KB total) - MMC1
     .byte $00             ; 0 x 8KB CHR ROM (CHR-RAM)
     .byte $10             ; Mapper 1 (MMC1), horizontal mirroring
     .byte $00, $00, $00, $00, $00, $00, $00, $00  ; Padding"
@@ -62,21 +62,11 @@ reset:
     ldx #$FF
     txs                   ; Set up stack
 
-    ; Simple MMC1 initialization - just reset it
+    ; MMC1 initialization - proper method
     lda #$80
     sta $8000             ; Reset MMC1
-    
-    ; Use 32KB mode for simplicity (like NROM but with more space)
-    lda #$0E              ; 32KB PRG mode, CHR-RAM, horizontal mirroring
-    sta $8000             ; Write bit 0
-    lsr
-    sta $8000             ; Write bit 1
-    lsr
-    sta $8000             ; Write bit 2
-    lsr
-    sta $8000             ; Write bit 3
-    lsr
-    sta $8000             ; Write bit 4
+    lda #$0C              ; 16KB PRG banking, fixed high bank
+    sta $8000             ; Control register
 
     ; Initialize frame counter
     lda #$00
@@ -123,7 +113,7 @@ irq:
 """
 
     def _generate_working_linker_config(self) -> str:
-        """Generate a working linker config that creates proper 32KB ROM"""
+        """Generate a working linker config that creates proper 128KB MMC1 ROM"""
         return """MEMORY {
     ZP:       start = $0000, size = $0100, type = rw, define = yes;
     RAM:      start = $0300, size = $0500, type = rw, define = yes;
@@ -131,19 +121,17 @@ irq:
     # iNES header (16 bytes at file start)
     HEADER:   start = $0000, size = $0010, file = %O, fill = yes;
     
-    # PRG ROM - 32KB (2x16KB) maps to CPU address $8000-$FFFF
-    PRG:      start = $8000, size = $7FFA, file = %O, fill = yes, define = yes, fillval = $FF;
-    VECTORS:  start = $FFFA, size = $0006, file = %O, fill = yes, define = yes;
-    
-    # No CHR ROM needed for this music ROM
+    # Full 128KB PRG ROM (131072 bytes) mapped to file positions after header
+    # This creates one continuous 128KB ROM area starting right after the header
+    PRG:      start = $0010, size = $20000, file = %O, fill = yes, define = yes, fillval = $FF;
 }
 
 SEGMENTS {
     ZEROPAGE: load = ZP, type = zp;
     HEADER:   load = HEADER, type = ro;
-    CODE:     load = PRG, type = ro;
+    CODE:     load = PRG, type = ro, start = $8000;
     RODATA:   load = PRG, type = ro;
-    VECTORS:  load = VECTORS, type = ro;
+    VECTORS:  load = PRG, type = ro, start = $FFFA;
 }"""
 
     def _create_build_script(self):
