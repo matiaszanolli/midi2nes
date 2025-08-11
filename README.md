@@ -194,6 +194,55 @@ The parallel pattern detection system identifies and compresses repeating musica
 - **Complex orchestral**: 15-30 seconds with high compression
 - **Game soundtracks**: Optimal pattern detection and ROM generation
 
+## 🐛 Debug Tools
+
+MIDI2NES includes a comprehensive suite of debugging and analysis tools to help troubleshoot conversion issues and analyze output quality.
+
+### Quick Debug Commands
+```bash
+# Check audio patterns in generated ROM
+python -m debug.audio_checker output.nes
+
+# Analyze pattern compression effectiveness
+python -m debug.pattern_analysis output/patterns
+
+# Examine music structure in ROM
+python -m debug.music_structure_analyzer output.nes
+
+# Test ROM generation pipeline
+python -m debug.rom_tester
+
+# Performance analysis of MIDI parsing
+python -m debug.performance_analyzer
+```
+
+### Available Debug Tools
+- **`audio_checker`**: APU pattern validation in NES ROMs
+- **`pattern_analysis`**: Pattern detection result analysis
+- **`ca65_inspector`**: Assembly output inspection
+- **`frame_analyzer`**: Frame generation debugging
+- **`music_structure_analyzer`**: Comprehensive ROM music analysis
+- **`pattern_reference_debugger`**: Pattern reference table analysis
+- **`performance_analyzer`**: MIDI parser performance testing
+- **`rom_tester`**: Complete pipeline validation
+
+### Programmatic Usage
+```python
+from debug import (
+    check_audio_simple,
+    analyze_patterns,
+    test_rom_generation
+)
+
+# Validate ROM audio patterns
+check_audio_simple("output.nes")
+
+# Run full test suite
+success = test_rom_generation()
+```
+
+For detailed debug tool documentation, see [debug/README.md](debug/README.md).
+
 ## 🛠️ Development
 
 ### Architecture
@@ -206,6 +255,11 @@ The parallel pattern detection system identifies and compresses repeating musica
 ├── 🎮 nes/              # NES-specific components
 ├── 📤 exporter/         # Output format generators
 ├── 🔧 config/           # Configuration management
+├── 🐛 debug/            # Debugging and analysis tools
+│   ├── audio_checker.py      # ROM audio validation
+│   ├── pattern_analysis.py   # Pattern compression analysis
+│   ├── performance_analyzer.py # MIDI parser benchmarking
+│   └── rom_tester.py         # Complete pipeline testing
 └── 📊 benchmarks/       # Performance testing
 ```
 
