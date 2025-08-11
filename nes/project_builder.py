@@ -118,13 +118,13 @@ irq:
 """
 
     def _generate_working_linker_config(self) -> str:
-        """Generate a working MMC1 linker config based on debug_fixed pattern"""
+        """Generate a working MMC1 linker config with correct file layout"""
         return """MEMORY {
     ZP:     start = $00,    size = $0100, type = rw, define = yes;
     RAM:    start = $0300,  size = $0500, type = rw, define = yes;
-    # MMC1 ROM layout - like debug_fixed but bigger
-    HEADER: start = $7FF0,  size = $0010, file = %O, fill = yes;
-    PRG:    start = $8000,  size = $18000, file = %O, fill = yes, define = yes;
+    # Correct NES file layout: Header at start, PRG-ROM follows
+    HEADER: start = $0000,  size = $0010, file = %O, fill = yes;
+    PRG:    start = $0010,  size = $7FF0, file = %O, fill = yes, define = yes;
 }
 
 SEGMENTS {
@@ -132,7 +132,7 @@ SEGMENTS {
     HEADER:   load = HEADER, type = ro;
     CODE:     load = PRG, type = ro;
     RODATA:   load = PRG, type = ro;
-    VECTORS:  load = PRG, type = ro, start = $FFFA;
+    VECTORS:  load = PRG, type = ro, start = $7FFA;
 }"""
 
     def _create_build_script(self):
