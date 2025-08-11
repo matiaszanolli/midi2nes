@@ -95,9 +95,19 @@ class EnvelopeProcessor:
                 return duty
         return 2
 
-    def get_envelope_control_byte(self, envelope_type, frame_offset, note_duration, duty_cycle=2, effects=None):
+    def get_envelope_control_byte(self, envelope_type, frame_offset, note_duration, duty_cycle=2, effects=None, base_velocity=None):
         """Generate NES control byte for pulse channels."""
-        volume = self.get_envelope_value(envelope_type, frame_offset, note_duration, effects)
+        # Get envelope-modified volume
+        envelope_volume = self.get_envelope_value(envelope_type, frame_offset, note_duration, effects)
+        
+        # Apply base velocity if provided (scale from MIDI 0-127 to NES 0-15)
+        if base_velocity is not None:
+            # Convert MIDI velocity (0-127) to NES volume scale (0-15)
+            midi_volume = min(15, max(0, base_velocity // 8))
+            # Use MIDI volume as the base, then apply envelope scaling
+            volume = min(15, (envelope_volume * midi_volume) // 15)
+        else:
+            volume = envelope_volume
         
         # Get dynamic duty cycle if sequence is specified
         if effects and "duty_sequence" in effects:
@@ -106,8 +116,8 @@ class EnvelopeProcessor:
         # Duty cycle bits (bits 6-7)
         duty_bits = (duty_cycle & 0x03) << 6
         
-        # Envelope bits (constant)
-        envelope_bits = 0x30
+        # Envelope bits (constant volume)
+        envelope_bits = 0x10  # Set bit 4 for constant volume
         
         return duty_bits | envelope_bits | (volume & 0x0F)
     

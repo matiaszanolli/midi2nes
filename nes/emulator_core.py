@@ -48,13 +48,14 @@ class NESEmulatorCore:
                 frame_offset = f - start_frame
                 if channel_type.startswith('pulse'):
                     control_byte = self.envelope_processor.get_envelope_control_byte(
-                        envelope_type, frame_offset, end_frame - start_frame, default_duty
+                        envelope_type, frame_offset, end_frame - start_frame, default_duty, None, velocity
                     )
                     frames[f] = {
                         "pitch": pitch,
                         "control": control_byte,
                         "arpeggio": arpeggio,
-                        "note": event['note']
+                        "note": event['note'],
+                        "volume": min(15, velocity // 8)  # Also store raw volume for debugging
                     }
                 else:
                     # For non-pulse channels, use simple volume calculation
