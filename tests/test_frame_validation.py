@@ -30,7 +30,7 @@ def generate_frames(mapped_data):
                 for event in events:
                     if event.get('frame') == frame_num:
                         frame[channel]['note'] = event.get('note', 0)
-                        frame[channel]['volume'] = event.get('velocity', 0) // 8  # Convert to NES volume
+                        frame[channel]['volume'] = event.get('volume', 0) // 8  # Convert to NES volume
         
         frames.append(frame)
     
