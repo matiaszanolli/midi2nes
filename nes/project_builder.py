@@ -125,20 +125,25 @@ irq:
     def _generate_working_linker_config(self) -> str:
         """Generate a working linker config that creates proper 32KB ROM"""
         return """MEMORY {
-    ZP:     start = $00,    size = $0100, type = rw;
-    RAM:    start = $0300,  size = $0500, type = rw;
+    ZP:       start = $0000, size = $0100, type = rw, define = yes;
+    RAM:      start = $0300, size = $0500, type = rw, define = yes;
     
-    # File layout - this is the actual ROM file structure
-    HEADER: start = $0000, size = $0010, type = ro, file = %O;
-    ROM:    start = $0010, size = $8000, type = ro, file = %O, fill = yes, fillval = $FF;
+    # iNES header (16 bytes at file start)
+    HEADER:   start = $0000, size = $0010, file = %O, fill = yes;
+    
+    # PRG ROM - 32KB (2x16KB) maps to CPU address $8000-$FFFF
+    PRG:      start = $8000, size = $7FFA, file = %O, fill = yes, define = yes, fillval = $FF;
+    VECTORS:  start = $FFFA, size = $0006, file = %O, fill = yes, define = yes;
+    
+    # No CHR ROM needed for this music ROM
 }
 
 SEGMENTS {
     ZEROPAGE: load = ZP, type = zp;
     HEADER:   load = HEADER, type = ro;
-    CODE:     load = ROM, type = ro, define = yes;
-    RODATA:   load = ROM, type = ro, define = yes;
-    VECTORS:  load = ROM, type = ro, define = yes, start = $7FFA;
+    CODE:     load = PRG, type = ro;
+    RODATA:   load = PRG, type = ro;
+    VECTORS:  load = VECTORS, type = ro;
 }"""
 
     def _create_build_script(self):

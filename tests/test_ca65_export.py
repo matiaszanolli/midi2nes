@@ -330,5 +330,43 @@ class TestCA65CompilationIntegration(unittest.TestCase):
         success, output = self.compile_and_link(str(self.project_path))
         self.assertTrue(success, f"Compilation with bank switching failed:\n{output}")
 
+    def test_rom_size_validation(self):
+        """Test that compiled ROMs have correct iNES format size"""
+        # Create project directory first
+        self.project_path.mkdir(parents=True, exist_ok=True)
+        
+        music_asm = self.project_path / "music.asm"
+        self.exporter.export_tables_with_patterns(
+            self.test_frames,
+            self.test_patterns,
+            self.test_references,
+            music_asm,
+            standalone=False
+        )
+        
+        self.builder.prepare_project(str(music_asm))
+        success, output = self.compile_and_link(str(self.project_path))
+        self.assertTrue(success, f"Compilation failed:\n{output}")
+        
+        # Check that the generated ROM has correct size
+        rom_path = self.project_path / "game.nes"
+        self.assertTrue(rom_path.exists(), "ROM file not generated")
+        
+        # Read and validate ROM
+        rom_size = rom_path.stat().st_size
+        
+        # Expected: 16 bytes header + 2 PRG banks * 16KB = 16 + 32768 = 32784 bytes
+        expected_size = 16 + 2 * 16384
+        self.assertEqual(rom_size, expected_size, 
+            f"ROM size mismatch: got {rom_size} bytes, expected {expected_size} bytes")
+        
+        # Verify iNES header
+        with open(rom_path, 'rb') as f:
+            header = f.read(16)
+        
+        self.assertEqual(header[0:4], b'NES\x1a', "Invalid iNES header")
+        self.assertEqual(header[4], 2, "PRG bank count should be 2")
+        self.assertEqual(header[5], 0, "CHR bank count should be 0")
+
 if __name__ == '__main__':
     unittest.main()
