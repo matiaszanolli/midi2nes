@@ -140,12 +140,30 @@ class EnvelopeProcessor:
             if channel not in frames[frame_key]:
                 frames[frame_key][channel] = {}
             frames[frame_key][channel]['duty'] = duty * 64  # Convert to NES duty values
+    
+    def get_pitch_modification(self, frame_offset, effects):
+        """Get pitch modification based on effects like vibrato"""
+        pitch_mod = 0
+        
+        if effects and "vibrato" in effects:
+            vibrato = effects["vibrato"]
+            speed = vibrato.get("speed", 4)
+            depth = vibrato.get("depth", 2)
+            # Simple sine wave vibrato
+            pitch_mod += int(math.sin(frame_offset / speed * 2 * math.pi) * depth)
+            
+        return pitch_mod
 
 
 class NESEmulatorCore:
     def __init__(self):
         self.pitch_processor = PitchProcessor()
         self.envelope_processor = EnvelopeProcessor()
+    
+    def midi_to_nes_pitch(self, midi_note, channel_type):
+        """Convert MIDI note to NES pitch value using the pitch processor"""
+        # Delegate to the pitch processor
+        return self.pitch_processor.get_channel_pitch(midi_note, channel_type)
 
     def compile_channel_to_frames(self, events, channel_type='pulse', default_duty=2, sustain_frames=4):
         frames = defaultdict(dict)

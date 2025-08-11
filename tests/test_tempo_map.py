@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 import sys
 import os
+import numpy as np
 
 # Add the parent directory to the path so we can import our modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -398,6 +399,282 @@ class TestEnhancedTempoMap(unittest.TestCase):
         # Add several similar tempo changes
         tempo_map.add_tempo_change(480, 500000)
         tempo_map.add_tempo_change(720, 502000)  # Small difference
+        tempo_map.add_tempo_change(960, 498000)  # Small difference
+        
+        # Test optimization reduces similar changes
+        original_count = len(tempo_map.tempo_changes)
+        tempo_map.optimize_tempo_changes()
+        optimized_count = len(tempo_map.tempo_changes)
+        
+        # May reduce number of changes if they're too similar
+        self.assertLessEqual(optimized_count, original_count)
+        
+    def test_gradual_tempo_changes(self):
+        """Test gradual tempo changes (linear, curve, pattern sync)"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config
+        )
+        
+        # Test linear gradual change
+        tempo_map.add_tempo_change(
+            480, 400000, 
+            change_type=TempoChangeType.LINEAR,
+            duration_ticks=240
+        )
+        
+        # Verify intermediate tempos were created
+        initial_count = len(tempo_map.tempo_changes)
+        self.assertGreater(initial_count, 2)  # Should have intermediate steps
+        
+        # Test curve gradual change
+        tempo_map.add_tempo_change(
+            960, 450000,
+            change_type=TempoChangeType.CURVE,
+            duration_ticks=240
+        )
+        
+        # Test that curved tempo calculation works
+        curved_tempo = tempo_map._calculate_curved_tempo(500000, 400000, 0.5, 2.0)
+        self.assertTrue(400000 <= curved_tempo <= 500000)
+        self.assertEqual(curved_tempo % 16, 0)  # Should be quantized to 16μs steps
+        
+        # Test pattern sync calculation
+        pattern_tempo = tempo_map._calculate_pattern_sync_tempo(500000, 400000, 0.5)
+        self.assertTrue(400000 <= pattern_tempo <= 500000)
+        
+    def test_pattern_tempo_management(self):
+        """Test pattern-specific tempo management"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config
+        )
+        
+        pattern_id = "test_pattern"
+        base_tempo = 500000
+        
+        # Create pattern variations with different change types
+        variations = [
+            TempoChange(100, 450000, TempoChangeType.IMMEDIATE),
+            TempoChange(200, 480000, TempoChangeType.LINEAR, 120),
+            TempoChange(400, 520000, TempoChangeType.CURVE, 120, 1.5)
+        ]
+        
+        # Add pattern tempo
+        tempo_map.add_pattern_tempo(pattern_id, base_tempo, variations)
+        
+        # Verify pattern was added
+        self.assertIn(pattern_id, tempo_map.pattern_tempos)
+        pattern_info = tempo_map.pattern_tempos[pattern_id]
+        self.assertEqual(pattern_info.base_tempo, base_tempo)
+        self.assertEqual(len(pattern_info.variations), 3)
+        
+        # Test enhanced tempo lookup with pattern context
+        tempo = tempo_map.get_enhanced_tempo_at_tick(150, pattern_id)
+        self.assertIsInstance(tempo, int)
+        
+        # Test pattern analysis
+        analysis = tempo_map.analyze_pattern_tempo_characteristics(pattern_id)
+        self.assertIn('base_tempo_bpm', analysis)
+        self.assertIn('variation_count', analysis)
+        self.assertIn('tempo_range', analysis)
+        self.assertIn('timing_stability', analysis)
+        self.assertIn('complexity_score', analysis)
+        
+        # Check that we can analyze non-existent pattern
+        empty_analysis = tempo_map.analyze_pattern_tempo_characteristics("nonexistent")
+        self.assertEqual(empty_analysis, {})
+        
+    def test_loop_point_management(self):
+        """Test loop point registration and management"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config
+        )
+        
+        # Add some tempo changes
+        tempo_map.add_tempo_change(480, 400000)
+        tempo_map.add_tempo_change(960, 450000)
+        
+        # Register loop points
+        loop_id = "main_loop"
+        tempo_map.register_loop_point(loop_id, 240, 1200)
+        
+        # Verify loop point was registered
+        self.assertIn(loop_id, tempo_map.loop_points)
+        loop_info = tempo_map.loop_points[loop_id]
+        self.assertEqual(loop_info['start']['tick'], 240)
+        self.assertEqual(loop_info['end']['tick'], 1200)
+        self.assertIsInstance(loop_info['start']['tempo'], int)
+        self.assertIsInstance(loop_info['end']['tempo'], int)
+        
+    def test_optimization_strategies(self):
+        """Test different optimization strategies"""
+        # Test MINIMIZE_CHANGES strategy
+        tempo_map1 = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config,
+            optimization_strategy=TempoOptimizationStrategy.MINIMIZE_CHANGES
+        )
+        
+        tempo_map1.add_tempo_change(480, 501000)  # Very similar to initial
+        tempo_map1.add_tempo_change(960, 499000)  # Very similar to initial
+        tempo_map1.optimize_tempo_changes()
+        
+        # Test SMOOTH_TRANSITIONS strategy
+        tempo_map2 = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config,
+            optimization_strategy=TempoOptimizationStrategy.SMOOTH_TRANSITIONS
+        )
+        
+        tempo_map2.add_tempo_change(480, 300000)  # Large change
+        tempo_map2.optimize_tempo_changes()
+        
+        # Should have added intermediate steps
+        self.assertGreater(len(tempo_map2.tempo_changes), 2)
+        
+        # Test PATTERN_ALIGNED strategy
+        tempo_map3 = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config,
+            optimization_strategy=TempoOptimizationStrategy.PATTERN_ALIGNED
+        )
+        
+        tempo_map3.add_tempo_change(480, 400000)
+        tempo_map3.optimize_tempo_changes()
+        
+    def test_frame_alignment_utilities(self):
+        """Test frame alignment utility functions"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config,
+            optimization_strategy=TempoOptimizationStrategy.FRAME_ALIGNED
+        )
+        
+        # Test frame alignment check
+        result = tempo_map.is_frame_aligned(0)
+        self.assertTrue(isinstance(result, (bool, np.bool_)))
+        
+        # Test find nearest frame aligned tick
+        aligned_tick = tempo_map.find_nearest_frame_aligned_tick(100)
+        self.assertIsInstance(aligned_tick, int)
+        self.assertGreaterEqual(aligned_tick, 0)
+        
+        # Test find tick at specific time
+        tick_at_time = tempo_map._find_tick_at_time(50.0)  # 50ms
+        self.assertIsInstance(tick_at_time, int)
+        self.assertGreaterEqual(tick_at_time, 0)
+        
+        # Test frame aligned tick finding
+        frame_aligned_tick = tempo_map._find_frame_aligned_tick(50.0)
+        self.assertIsInstance(frame_aligned_tick, int)
+        self.assertGreaterEqual(frame_aligned_tick, 0)
+        
+    def test_validation_edge_cases(self):
+        """Test validation edge cases and error conditions"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config
+        )
+        
+        # Test validation of basic tempo properties
+        valid_change = TempoChange(480, 400000)
+        tempo_map._validate_basic_tempo(valid_change)  # Should not raise
+        
+        # Test invalid tempo range
+        invalid_change = TempoChange(480, 100000)  # Too fast
+        with self.assertRaises(TempoValidationError):
+            tempo_map._validate_basic_tempo(invalid_change)
+            
+        # Test frame boundary validation
+        with self.assertRaises(TempoValidationError):
+            tempo_map._validate_frame_boundaries(123, 400000)  # Not aligned
+            
+        # Test check frame alignment method
+        frame_change = TempoChange(100, 400000)
+        with self.assertRaises(TempoValidationError):
+            tempo_map._check_frame_alignment(frame_change)
+            
+    def test_optimization_stats_and_debug(self):
+        """Test optimization statistics and debug information"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config,
+            optimization_strategy=TempoOptimizationStrategy.FRAME_ALIGNED
+        )
+        
+        # Add some changes and optimize
+        tempo_map.add_tempo_change(480, 400000)
+        tempo_map.add_tempo_change(960, 450000)
+        tempo_map.optimize_tempo_changes()
+        
+        # Get optimization stats
+        stats = tempo_map.get_optimization_stats()
+        self.assertIsInstance(stats, dict)
+        
+        # Get enhanced debug info
+        debug_info = tempo_map.get_debug_info()
+        self.assertIn('validation_config', debug_info)
+        self.assertIn('optimization_strategy', debug_info)
+        self.assertIn('optimization_stats', debug_info)
+        self.assertIn('pattern_count', debug_info)
+        self.assertIn('loop_points_count', debug_info)
+        
+        # Check validation config in debug info
+        val_config = debug_info['validation_config']
+        self.assertEqual(val_config['min_tempo_bpm'], self.default_config.min_tempo_bpm)
+        self.assertEqual(val_config['max_tempo_bpm'], self.default_config.max_tempo_bpm)
+        
+    def test_error_handling_and_edge_cases(self):
+        """Test error handling and various edge cases"""
+        # Test with no optimization strategy
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config,
+            optimization_strategy=None
+        )
+        
+        tempo_map.add_tempo_change(480, 400000)
+        tempo_map.optimize_tempo_changes()  # Should not crash
+        
+        # Test caching behavior
+        time1 = tempo_map.calculate_time_ms(0, 480)
+        time2 = tempo_map.calculate_time_ms(0, 480)  # Should use cache
+        self.assertEqual(time1, time2)
+        
+        # Test with same start and end tick
+        zero_time = tempo_map.calculate_time_ms(100, 100)
+        self.assertEqual(zero_time, 0.0)
+        
+        # Test _ticks_to_ms helper
+        ms = tempo_map._ticks_to_ms(480, 500000)
+        self.assertAlmostEqual(ms, 500.0, places=1)
+        
+        # Test get_frame_for_tick
+        frame = tempo_map.get_frame_for_tick(480)
+        self.assertIsInstance(frame, int)
+        self.assertGreaterEqual(frame, 0)
+        
+    def test_numpy_precision_calculations(self):
+        """Test numpy-based precision calculations"""
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            validation_config=self.default_config
+        )
+        
+        # Add tempo changes to test complex calculations
+        tempo_map.add_tempo_change(240, 450000)
+        tempo_map.add_tempo_change(480, 400000)
+        tempo_map.add_tempo_change(720, 550000)
+        
+        # Test time calculation with multiple tempo changes
+        total_time = tempo_map.calculate_time_ms(0, 1000)
+        self.assertGreater(total_time, 0)
+        
+        # Test frame alignment calculations
+        frame_aligned_tick = tempo_map.find_nearest_frame_aligned_tick(500)
+        self.assertIsInstance(frame_aligned_tick, int)
         tempo_map.add_tempo_change(960, 550000)  # Significant difference
         
         initial_count = len(tempo_map.tempo_changes)
