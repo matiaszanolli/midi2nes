@@ -418,19 +418,27 @@ _mmc1_write_prg_bank:
     def _generate_linker_config(self) -> str:
         """Generate linker configuration based on mapper choice"""
         if self.use_mmc1:
-            # MMC1 linker config with 128KB PRG-ROM
-            # Fixed vector placement for MMC1
+            # MMC1 linker config with 128KB PRG-ROM (8 x 16KB banks)
+            # Uses proven multi-bank approach
             return """MEMORY {
     # NES has 2KB of RAM
     ZP:     start = $00,    size = $0100, type = rw, file = "";
     RAM:    start = $0200,  size = $0600, type = rw, file = "";
     
-    # NES ROM layout - MMC1 with 128KB PRG-ROM total
+    # NES ROM layout - MMC1 with 128KB PRG-ROM (8 x 16KB banks)
     HEADER:  start = $0000,  size = $0010, type = ro, file = %O, fill = yes;
-    # All PRG-ROM banks as one contiguous area minus vectors
-    PRG:     start = $8000,  size = $1FFFA, type = ro, file = %O, fill = yes;
+    # Bank 0-6: Switchable banks (for music data)
+    BANK0:   start = $0010,  size = $4000, type = ro, file = %O, fill = yes;
+    BANK1:   start = $4010,  size = $4000, type = ro, file = %O, fill = yes;
+    BANK2:   start = $8010,  size = $4000, type = ro, file = %O, fill = yes;
+    BANK3:   start = $C010,  size = $4000, type = ro, file = %O, fill = yes;
+    BANK4:   start = $10010, size = $4000, type = ro, file = %O, fill = yes;
+    BANK5:   start = $14010, size = $4000, type = ro, file = %O, fill = yes;
+    BANK6:   start = $18010, size = $4000, type = ro, file = %O, fill = yes;
+    # Bank 7: Fixed bank (always mapped, contains code and vectors)
+    BANK7:   start = $1C010, size = $3FFA, type = ro, file = %O, fill = yes;
     
-    # 6502 vectors at end of PRG-ROM (physical address including header offset)
+    # 6502 vectors at end of ROM
     VECTORS: start = $2000A, size = $0006, type = ro, file = %O, fill = yes;
 }
 
@@ -438,10 +446,10 @@ SEGMENTS {
     HEADER:   load = HEADER,  type = ro;
     ZEROPAGE: load = ZP,      type = zp;
     BSS:      load = RAM,     type = bss, define = yes;
-    # Put music data first
-    RODATA:   load = PRG,     type = ro;
-    # Put main code after music data
-    CODE:     load = PRG,     type = ro;
+    # Put music data in first bank (lots of space available)
+    RODATA:   load = BANK0,   type = ro;
+    # Put main code in fixed bank 7 (always accessible)
+    CODE:     load = BANK7,   type = ro;
     VECTORS:  load = VECTORS, type = ro;
 }"""
         else:
