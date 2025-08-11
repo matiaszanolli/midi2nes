@@ -34,7 +34,7 @@ def test_pattern_reference_fix():
         }
     }
     
-    # This was the problematic structure - pattern IDs as keys mapping to position lists
+    # Pattern references in the correct format: pattern_id -> [frame_positions]
     test_references = {
         "pattern_0": [0, 4, 8],  # This pattern appears at frames 0, 4, 8
         "pattern_1": [2, 6]      # Another pattern at frames 2, 6

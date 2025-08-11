@@ -100,16 +100,49 @@ class CA65Exporter(BaseExporter):
             lines.append("")
         
         # Build frame-to-pattern mapping from pattern references
+        # Handle both old and new formats:
+        # Old format: frame_str -> (pattern_id, offset)
+        # New format: pattern_id -> [frame_list]
         frame_to_pattern = {}
         max_frame = 0
         
         if references:
-            for frame_str, pattern_info in references.items():
-                # Convert string frame to integer
-                frame_num = int(frame_str)
-                pattern_id, offset = pattern_info
-                frame_to_pattern[frame_num] = (pattern_id, offset)
-                max_frame = max(max_frame, frame_num)
+            # Detect format by looking at the first key-value pair
+            first_key, first_value = next(iter(references.items()))
+            
+            if isinstance(first_value, (list, tuple)) and not isinstance(first_value, str):
+                # Check if it's the new format (pattern_id -> [frame_list])
+                if isinstance(first_value, list):
+                    # New format: pattern_id -> [frame_list]
+                    for pattern_id, frame_list in references.items():
+                        for frame_num in frame_list:
+                            # For now, use offset=0 since we don't have sub-pattern offset info
+                            frame_to_pattern[frame_num] = (pattern_id, 0)
+                            max_frame = max(max_frame, frame_num)
+                else:
+                    # Old format: frame_str -> (pattern_id, offset)
+                    for frame_str, pattern_info in references.items():
+                        # Convert string frame to integer
+                        frame_num = int(frame_str)
+                        pattern_id, offset = pattern_info
+                        frame_to_pattern[frame_num] = (pattern_id, offset)
+                        max_frame = max(max_frame, frame_num)
+            else:
+                # Old format: frame_str -> (pattern_id, offset)
+                for frame_str, pattern_info in references.items():
+                    # Convert string frame to integer  
+                    frame_num = int(frame_str)
+                    pattern_id, offset = pattern_info
+                    frame_to_pattern[frame_num] = (pattern_id, offset)
+                    max_frame = max(max_frame, frame_num)
+        
+        # Safety check: limit reference table size to prevent memory issues
+        if max_frame > 4096:  # About 12KB for reference table
+            print(f"  WARNING: Pattern reference table would be very large ({max_frame+1} entries)")
+            print(f"  Limiting to first 4096 frames for practical ROM size")
+            # Filter out frames beyond the limit
+            frame_to_pattern = {f: p for f, p in frame_to_pattern.items() if f <= 4096}
+            max_frame = min(max_frame, 4096)
         
         # Export pattern reference table as dense array indexed by frame number
         lines.append("; Pattern Reference Table")
@@ -125,6 +158,7 @@ class CA65Exporter(BaseExporter):
             for frame in range(max_frame + 1):
                 if frame in frame_to_pattern:
                     pattern_id, offset = frame_to_pattern[frame]
+                    # Use the pattern label address, not the string
                     lines.append(f"    .word {pattern_id}")
                     lines.append(f"    .byte {offset}")
                 else:
