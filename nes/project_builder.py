@@ -41,7 +41,7 @@ class NESProjectBuilder:
     .byte $08             ; 8 x 16KB PRG ROM (128KB total) - MMC1
     .byte $00             ; 0 x 8KB CHR ROM (CHR-RAM)
     .byte $10             ; Mapper 1 (MMC1), horizontal mirroring
-    .byte $00, $00, $00, $00, $00, $00, $00, $00  ; Padding
+    .byte $00, $00, $00, $00, $00, $00, $00, $00  ; Padding"
 
 .segment "ZEROPAGE"
     frame_counter:  .res 2  ; Frame counter (shared with music.asm)
@@ -118,13 +118,18 @@ irq:
 """
 
     def _generate_working_linker_config(self) -> str:
-        """Generate a working MMC1 linker config with correct file layout"""
+        """Generate a working MMC1 linker config with correct memory layout"""
         return """MEMORY {
-    ZP:     start = $00,    size = $0100, type = rw, define = yes;
-    RAM:    start = $0300,  size = $0500, type = rw, define = yes;
-    # Correct NES file layout: Header at start, PRG-ROM follows
-    HEADER: start = $0000,  size = $0010, file = %O, fill = yes;
-    PRG:    start = $0010,  size = $7FF0, file = %O, fill = yes, define = yes;
+    ZP:     start = $00,    size = $0100, type = rw;
+    RAM:    start = $0300,  size = $0500, type = rw;
+    
+    # iNES Header
+    HEADER: start = $0000,  size = $0010, type = ro, file = %O;
+    
+    # PRG-ROM: Full 128KB (8 banks) to match header
+    # Uses file offsets, not CPU addresses
+    PRG:    start = $0010,  size = $1FFF0, type = ro, file = %O, fill = yes;
+    VECTORS: start = $1FFFA, size = $0006, type = ro, file = %O;
 }
 
 SEGMENTS {
@@ -132,7 +137,7 @@ SEGMENTS {
     HEADER:   load = HEADER, type = ro;
     CODE:     load = PRG, type = ro;
     RODATA:   load = PRG, type = ro;
-    VECTORS:  load = PRG, type = ro, start = $7FFA;
+    VECTORS:  load = VECTORS, type = ro;
 }"""
 
     def _create_build_script(self):

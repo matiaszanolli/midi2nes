@@ -3,7 +3,7 @@
 
 .segment "HEADER"
     .byte "NES", $1A   ; iNES header
-    .byte $08          ; 8 x 16KB PRG ROM banks (128KB total)
+    .byte $02          ; 2 x 16KB PRG ROM banks (32KB total)
     .byte $00          ; 0 x 8KB CHR ROM (CHR-RAM)
     .byte $10          ; Mapper 1 (MMC1), horizontal mirroring
     .byte $00, $00, $00, $00, $00, $00, $00, $00  ; Padding
