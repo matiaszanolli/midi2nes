@@ -1,0 +1,10 @@
+{
+  "kick": { "id": 0, "filename": "kick.dmc" },
+  "kick_soft": { "id": 1, "filename": "kick_soft.dmc" },
+  "kick_hard": { "id": 2, "filename": "kick_hard.dmc" },
+  "kick_sub": { "id": 3, "filename": "kick_sub.dmc" },
+  "snare": { "id": 4, "filename": "snare.dmc" },
+  "snare_soft": { "id": 5, "filename": "snare_soft.dmc" },
+  "snare_hard": { "id": 6, "filename": "snare_hard.dmc" },
+  "snare_rattle": { "id": 7, "filename": "snare_rattle.dmc" }
+}

@@ -488,10 +488,11 @@ class TestCommandLineInterface:
         
         # Run the actual CLI script using module syntax
         import subprocess
+        project_root = Path(__file__).parent.parent
         result = subprocess.run([
-            'python3', '-m', 'tracker.parser_fast', 
+            'python3', '-m', 'tracker.parser_fast',
             midi_path, output_path
-        ], cwd='/Users/matias/src/midi2nes', capture_output=True, text=True)
+        ], cwd=str(project_root), capture_output=True, text=True)
         
         assert result.returncode == 0, f"CLI failed with stderr: {result.stderr}"
         assert Path(output_path).exists()
@@ -509,10 +510,11 @@ class TestCommandLineInterface:
         
         # Run the actual CLI script with analysis using module syntax
         import subprocess
+        project_root = Path(__file__).parent.parent
         result = subprocess.run([
-            'python3', '-m', 'tracker.parser_fast', 
+            'python3', '-m', 'tracker.parser_fast',
             midi_path, output_path, '--with-analysis'
-        ], cwd='/Users/matias/src/midi2nes', capture_output=True, text=True)
+        ], cwd=str(project_root), capture_output=True, text=True)
         
         assert result.returncode == 0, f"CLI failed with stderr: {result.stderr}"
         assert Path(output_path).exists()
@@ -526,9 +528,10 @@ class TestCommandLineInterface:
     def test_cli_insufficient_arguments_integration(self):
         """Test CLI with insufficient arguments"""
         import subprocess
+        project_root = Path(__file__).parent.parent
         result = subprocess.run([
             'python3', '-m', 'tracker.parser_fast', 'input.mid'  # Missing output path
-        ], cwd='/Users/matias/src/midi2nes', capture_output=True, text=True)
+        ], cwd=str(project_root), capture_output=True, text=True)
         
         assert result.returncode == 1
         assert "Usage:" in result.stdout or "Usage:" in result.stderr
@@ -536,12 +539,13 @@ class TestCommandLineInterface:
     def test_cli_nonexistent_input_file(self):
         """Test CLI with non-existent input file"""
         output_path = str(self.temp_dir / "output.json")
-        
+
         import subprocess
+        project_root = Path(__file__).parent.parent
         result = subprocess.run([
-            'python3', 'tracker/parser_fast.py', 
+            'python3', 'tracker/parser_fast.py',
             'nonexistent.mid', output_path
-        ], cwd='/Users/matias/src/midi2nes', capture_output=True, text=True)
+        ], cwd=str(project_root), capture_output=True, text=True)
         
         # Should exit with error due to missing input file
         assert result.returncode != 0

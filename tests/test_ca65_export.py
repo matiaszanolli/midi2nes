@@ -354,19 +354,21 @@ class TestCA65CompilationIntegration(unittest.TestCase):
         
         # Read and validate ROM
         rom_size = rom_path.stat().st_size
-        
-        # Expected: 16 bytes header + 2 PRG banks * 16KB = 16 + 32768 = 32784 bytes
-        expected_size = 16 + 2 * 16384
-        self.assertEqual(rom_size, expected_size, 
+
+        # Expected: 16 bytes header + 8 PRG banks * 16KB = 16 + 131072 = 131088 bytes
+        # System always uses MMC1 with 128KB PRG-ROM
+        expected_size = 16 + 8 * 16384
+        self.assertEqual(rom_size, expected_size,
             f"ROM size mismatch: got {rom_size} bytes, expected {expected_size} bytes")
-        
+
         # Verify iNES header
         with open(rom_path, 'rb') as f:
             header = f.read(16)
-        
+
         self.assertEqual(header[0:4], b'NES\x1a', "Invalid iNES header")
-        self.assertEqual(header[4], 2, "PRG bank count should be 2")
+        self.assertEqual(header[4], 8, "PRG bank count should be 8 (MMC1 128KB)")
         self.assertEqual(header[5], 0, "CHR bank count should be 0")
+        self.assertEqual(header[6] & 0xF0, 0x10, "Mapper should be MMC1 (1)")
 
 if __name__ == '__main__':
     unittest.main()
