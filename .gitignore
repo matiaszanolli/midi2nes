@@ -1,104 +1,85 @@
-# Python environment
-/venv
+# ===========================
+# Python Environment
+# ===========================
+/venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+.coverage
+*.egg-info/
 
-# MIDI2NES temporary files
-# Generated ROM files (except examples/docs)
-*.nes
-!examples/*.nes
-!docs/*.nes
+# ===========================
+# MIDI2NES Generated Files
+# ===========================
 
-# Assembly and object files
-*.asm
-*.o
-*.cfg
-!examples/*.asm
-!examples/*.cfg
+# Output directory (all generated files)
+/output/
+!output/.gitkeep
 
-# MIDI files (except examples)
-*.mid
-!examples/*.mid
-!test_data/*.mid
+# Generated assembly and ROM files in root
+/*.asm
+/*.s
+/*.o
+/*.nes
+/*.cfg
 
-# Generated JSON data files
-frames.json
-mapped*.json
-simple*.json
-invalid.json
-parsed.json
-test*.json
-dpcm_index.json
+# Generated JSON files in root
+/*.json
+!requirements.txt
 
-# Debug and test files
-debug_*
-test_*
-working_*
-proper_*
-corrected_*
-fixed_*
-temp_*
-cleanup_*
-output*
+# Allow specific data files
+!dpcm_index.json
 
-# Temporary directories
-test_*/
-debug_*/
-temp_*/
-build_*/
+# ===========================
+# Build Artifacts
+# ===========================
+*_project_dir/
+build/
+dist/
 
-# Standard VSCode files
+# ===========================
+# IDE and Editor Files
+# ===========================
 .vscode/
+.idea/
 *.code-workspace
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Jupyter Notebooks
-.ipynb_checkpoints
-
-*.app/
-*.dmg
-*.zip
 .DS_Store
+
+# ===========================
+# Test and Debug Artifacts
+# ===========================
+/benchmark_results/
+.ipynb_checkpoints/
+
+# ===========================
+# Logs and Temporary Files
+# ===========================
 *.log
 *.out
 *.err
-*.txt
-*.csv
-*.png
-*.jpg
-*.jpeg
-*.gif
+*.tmp
+*.backup
+*.swp
+*~
+
+# ===========================
+# Media Files (generally not needed)
+# ===========================
 *.mp3
 *.wav
-*.mp4
-*.avi
-*.mov
-*.mkv
-*.flv
-*.webm
 *.ogg
 *.m4a
 *.aac
 *.wma
 *.flac
-*.alac
-*.ape
-*.mpc
-*.tta
-*.wv
-*.tak
-*.dff
-*.dsf
-*.dts
-*.dtshd
-*.dsd
-*.dsf
-*.backup
-benchmark_results/
+
+# ===========================
+# Allow Important Examples
+# ===========================
+!examples/**/*.mid
+!examples/**/*.nes
+!examples/**/*.asm
+!examples/**/*.cfg
+!test_data/**/*.mid
