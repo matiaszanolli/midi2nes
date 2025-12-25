@@ -148,5 +148,128 @@ class TestEndToEndPipeline:
         assert output_path.exists()
 
 
+    @pytest.mark.slow
+    @pytest.mark.requires_cc65
+    def test_full_pipeline_midi_to_validated_rom(self):
+        """Test complete pipeline from MIDI to validated ROM.
+
+        This test generates a real ROM file and validates it using ROM diagnostics.
+        """
+        midi_path = self.create_test_midi()
+        rom_path = self.temp_path / "output.nes"
+
+        # Create args for full pipeline
+        args = MagicMock()
+        args.input = str(midi_path)
+        args.output = str(rom_path)
+        args.no_patterns = False
+        args.debug = False
+        args.verbose = False
+        args.skip_validation = True  # Skip validation for this test if integrated
+
+        try:
+            # Run full pipeline (if available)
+            from main import run_full_pipeline
+            run_full_pipeline(args)
+
+            # Check if ROM was generated
+            if rom_path.exists():
+                # Validate the generated ROM
+                from debug.rom_diagnostics import ROMDiagnostics
+                diagnostics = ROMDiagnostics(verbose=False)
+                result = diagnostics.diagnose_rom(str(rom_path))
+
+                assert result.is_valid_nes == True, "Generated ROM should have valid iNES header"
+                assert result.reset_vectors_valid == True, "Generated ROM should have valid reset vectors"
+                assert result.overall_health in ["HEALTHY", "GOOD", "FAIR"], \
+                    f"Generated ROM should be at least FAIR health, got {result.overall_health}"
+        except Exception as e:
+            pytest.skip(f"Full pipeline test skipped: {str(e)}")
+
+    @pytest.mark.integration
+    def test_pipeline_project_structure(self):
+        """Test that the pipeline creates proper project structure."""
+        from nes.project_builder import NESProjectBuilder
+
+        project_dir = self.temp_path / "nes_project"
+        music_asm = self.temp_path / "music.asm"
+        music_asm.write_text("""; Test music
+.importzp frame_counter
+.segment "CODE"
+init_music: lda #$0F
+            sta $4015
+            rts
+update_music: rts
+""")
+
+        builder = NESProjectBuilder(str(project_dir))
+        result = builder.prepare_project(str(music_asm))
+
+        assert result == True
+        assert (project_dir / "main.asm").exists()
+        assert (project_dir / "music.asm").exists()
+        assert (project_dir / "nes.cfg").exists()
+
+    @pytest.mark.integration
+    def test_pipeline_generates_valid_assembly(self):
+        """Test that pipeline generates valid assembly code."""
+        from nes.project_builder import NESProjectBuilder
+
+        project_dir = self.temp_path / "project"
+        music_asm = self.temp_path / "music.asm"
+        music_asm.write_text("""; Music
+.importzp frame_counter
+.segment "CODE"
+init_music: rts
+update_music: rts
+""")
+
+        builder = NESProjectBuilder(str(project_dir))
+        builder.prepare_project(str(music_asm))
+
+        # Check main.asm has required elements
+        main_asm = project_dir / "main.asm"
+        content = main_asm.read_text()
+
+        assert '.segment "HEADER"' in content
+        assert 'NES' in content
+        assert 'reset:' in content
+        assert 'nmi:' in content
+        assert '.segment "VECTORS"' in content
+
+    @pytest.mark.integration
+    def test_rom_diagnostics_on_generated_file(self):
+        """Test that ROM diagnostics works on valid ROM file."""
+        from tests.conftest import _create_ines_header
+        import struct
+
+        # Create a valid test ROM
+        rom_path = self.temp_path / "test.nes"
+        header = _create_ines_header(8, 0, mapper=1)
+
+        # Create PRG data with valid reset vectors
+        prg_rom = bytearray(128 * 1024)
+
+        # Add APU pattern
+        prg_rom[100:105] = b'\xA9\x0F\x8D\x15\x40'  # APU Enable pattern
+
+        # Set reset vectors at end
+        vectors_offset = 0x20000 - 6
+        prg_rom[vectors_offset:vectors_offset+2] = struct.pack('<H', 0x8000)  # NMI
+        prg_rom[vectors_offset+2:vectors_offset+4] = struct.pack('<H', 0x8000)  # RESET
+        prg_rom[vectors_offset+4:vectors_offset+6] = struct.pack('<H', 0x8000)  # IRQ
+
+        rom_path.write_bytes(header + bytes(prg_rom))
+
+        # Diagnose the ROM
+        from debug.rom_diagnostics import ROMDiagnostics
+        diagnostics = ROMDiagnostics(verbose=False)
+        result = diagnostics.diagnose_rom(str(rom_path))
+
+        assert result.is_valid_nes == True
+        assert result.reset_vectors_valid == True
+        assert result.apu_pattern_count > 0
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

@@ -14,6 +14,9 @@ MIDI2NES is a high-performance MIDI to NES ROM compiler. It converts MIDI files 
 # Single-command MIDI to NES ROM conversion
 python main.py input.mid output.nes
 
+# Debug ROM with on-screen diagnostics (RECOMMENDED for development)
+python main.py --debug input.mid output_debug.nes
+
 # Step-by-step pipeline for debugging
 python main.py parse input.mid parsed.json          # Fast MIDI parsing
 python main.py map parsed.json mapped.json          # Track to NES channel mapping

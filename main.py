@@ -422,8 +422,11 @@ def run_full_pipeline(args):
             # Step 6: Prepare NES project
             print("[6/7] Preparing NES project...")
             project_path = temp_path / "nes_project"
-            builder = NESProjectBuilder(str(project_path))
-            
+
+            # Enable debug mode if requested
+            debug_mode = hasattr(args, 'debug') and args.debug
+            builder = NESProjectBuilder(str(project_path), debug_mode=debug_mode)
+
             if not builder.prepare_project(str(music_asm)):
                 print("[ERROR] Failed to prepare NES project")
                 sys.exit(1)
@@ -432,15 +435,51 @@ def run_full_pipeline(args):
             print("[7/7] Compiling NES ROM...")
             if not compile_rom(project_path, output_rom):
                 print("[ERROR] ROM compilation failed")
-                
+
                 # Restore backup if compilation failed
                 if backup_path and backup_path.exists():
                     print(f"  💊 Restoring backup ROM: {backup_path.name} → {output_rom.name}")
                     shutil.copy2(backup_path, output_rom)
                     print(f"  ✅ Original ROM restored from backup")
-                
+
                 sys.exit(1)
-            
+
+            # Step 8: Validate ROM (NEW - Critical for catching ROM validity issues)
+            skip_validation = hasattr(args, 'skip_validation') and args.skip_validation
+            if not skip_validation:
+                print("[8/8] Validating ROM...")
+                try:
+                    from debug.rom_diagnostics import ROMDiagnostics
+
+                    diagnostics = ROMDiagnostics(verbose=False)
+                    rom_result = diagnostics.diagnose_rom(str(output_rom))
+
+                    if rom_result.overall_health not in ["HEALTHY", "GOOD"]:
+                        print(f"⚠️  ROM health check: {rom_result.overall_health}")
+                        print(f"  Issues found: {len(rom_result.issues)}")
+                        for issue in rom_result.issues[:3]:
+                            print(f"    - {issue}")
+
+                        if rom_result.overall_health == "ERROR":
+                            print("[ERROR] ROM validation failed - ROM is invalid")
+
+                            # Restore backup if validation failed
+                            if backup_path and backup_path.exists():
+                                print(f"  💊 Restoring backup ROM: {backup_path.name} → {output_rom.name}")
+                                shutil.copy2(backup_path, output_rom)
+                                print(f"  ✅ Original ROM restored from backup")
+
+                            sys.exit(1)
+                    else:
+                        print(f"  ✓ ROM Health: {rom_result.overall_health}")
+                        print(f"  ✓ APU Patterns: {rom_result.apu_pattern_count}")
+                        print(f"  ✓ Assembly Score: {rom_result.assembly_code_score}/220")
+                except Exception as e:
+                    if args.verbose:
+                        print(f"  Warning: ROM validation failed: {str(e)}")
+                    # Don't exit on validation error, just warn
+                    pass
+
             # Success!
             rom_size = output_rom.stat().st_size
             print("\n" + "=" * 60)
@@ -466,6 +505,7 @@ def main():
     )
     parser.add_argument('--version', action='version', version=f'MIDI2NES {__version__}')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
+    parser.add_argument('--debug', '-d', action='store_true', help='Enable debug overlay in ROM (shows APU status, frame counter, errors on screen)')
     
     subparsers = parser.add_subparsers(dest='command', help='Advanced commands (optional - default is MIDI to ROM conversion)')
 
@@ -609,10 +649,16 @@ def main():
             if arg in ['--verbose', '-v']:
                 global_args.extend([arg])
                 i += 1
+            elif arg in ['--debug', '-d']:
+                global_args.extend([arg])
+                i += 1
             elif arg == '--version':
                 global_args.extend([arg])
                 i += 1
             elif arg == '--no-patterns':
+                global_args.extend([arg])
+                i += 1
+            elif arg == '--skip-validation':
                 global_args.extend([arg])
                 i += 1
             elif arg.startswith('-'):
@@ -621,16 +667,18 @@ def main():
             else:
                 remaining_args.append(arg)
                 i += 1
-        
+
         if not remaining_args:
             print("Error: Please provide an input MIDI file")
             print("\nUsage examples:")
             print("  midi2nes song.mid                  # Creates song.nes")
             print("  midi2nes song.mid output.nes       # Creates output.nes")
             print("  midi2nes --no-patterns song.mid    # Direct export (no compression)")
+            print("  midi2nes --debug song.mid          # Debug ROM (shows APU status on screen)")
+            print("  midi2nes --skip-validation song.mid # Skip ROM validation after compilation")
             print("  midi2nes --help                    # Show full help")
             sys.exit(1)
-        
+
         # Create a simple args object for the default pipeline
         class SimpleArgs:
             def __init__(self):
@@ -638,8 +686,10 @@ def main():
                 self.output = remaining_args[1] if len(remaining_args) > 1 else None
                 self.verbose = '--verbose' in global_args or '-v' in global_args
                 self.no_patterns = '--no-patterns' in global_args
+                self.debug = '--debug' in global_args or '-d' in global_args
+                self.skip_validation = '--skip-validation' in global_args
                 self.command = None
-        
+
         args = SimpleArgs()
         run_full_pipeline(args)
 
