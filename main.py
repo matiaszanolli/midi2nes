@@ -394,25 +394,16 @@ def run_full_pipeline(args):
             # To: {'frame_str': ('pattern_id', offset)}
             # IMPORTANT: Map pattern positions back to actual frame numbers
             ca65_references = {}
-            print(f"  DEBUG: Pattern references before conversion: {pattern_result['references']}")
-            print(f"  DEBUG: Events array has {len(events)} events")
-            print(f"  DEBUG: First few events: {events[:5]}")
-            print(f"  DEBUG: Last few events: {events[-5:]}")
-            
             for pattern_id, positions in pattern_result['references'].items():
                 for i, position in enumerate(positions):
                     # Map event position to actual frame number
                     if position < len(events):
                         actual_frame = events[position]['frame']
                         ca65_references[str(actual_frame)] = (pattern_id, i)
-                        print(f"  DEBUG: Mapped position {position} -> frame {actual_frame}")
                     else:
                         # Fallback if position is out of range
                         ca65_references[str(position)] = (pattern_id, i)
-                        print(f"  DEBUG: Position {position} out of range, using as-is")
-            
-            print(f"  DEBUG: Final CA65 references: {ca65_references}")
-            
+
             exporter = CA65Exporter()
             exporter.export_tables_with_patterns(
                 frames,

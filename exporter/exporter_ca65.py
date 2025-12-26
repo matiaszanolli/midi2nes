@@ -128,36 +128,41 @@ class CA65Exporter(BaseExporter):
             timer_hi_table = []
 
             for frame_num in range(max_frame + 1):
-                frame_str = str(frame_num)
-                if frame_str in channel_data:
-                    frame_data = channel_data[frame_str]
-                    pitch = frame_data.get('pitch', 0)
-                    note = frame_data.get('note', 0)
-
-                    # Triangle channel uses different control format
-                    if channel_name == 'triangle':
-                        # Triangle: bit 7 = control flag, bits 6-0 = linear counter
-                        # Use volume (if available) to set linear counter
-                        volume = frame_data.get('volume', 0)
-                        # FIXED: If volume is 0, control must be 0 (silent), not 0x80!
-                        if volume == 0:
-                            control = 0x00
-                        else:
-                            control = 0x80 | (volume * 7)  # Control flag + linear counter
-                    else:
-                        # Pulse channels: use provided control byte
-                        control = frame_data.get('control', 0)
-
-                    note_table.append(f"${note:02X}")
-                    control_table.append(f"${control:02X}")
-                    timer_lo_table.append(f"${pitch & 0xFF:02X}")
-                    timer_hi_table.append(f"${((pitch >> 8) & 0x07):02X}")
+                # Check if this frame has data (keys can be int or str)
+                if frame_num in channel_data:
+                    frame_data = channel_data[frame_num]
+                elif str(frame_num) in channel_data:
+                    frame_data = channel_data[str(frame_num)]
                 else:
                     # Empty frame - silence
                     note_table.append("$00")
                     control_table.append("$00")
                     timer_lo_table.append("$00")
                     timer_hi_table.append("$00")
+                    continue
+
+                # Frame has data - process it
+                pitch = frame_data.get('pitch', 0)
+                note = frame_data.get('note', 0)
+
+                # Triangle channel uses different control format
+                if channel_name == 'triangle':
+                    # Triangle: bit 7 = control flag, bits 6-0 = linear counter
+                    # Use volume (if available) to set linear counter
+                    volume = frame_data.get('volume', 0)
+                    # FIXED: If volume is 0, control must be 0 (silent), not 0x80!
+                    if volume == 0:
+                        control = 0x00
+                    else:
+                        control = 0x80 | (volume * 7)  # Control flag + linear counter
+                else:
+                    # Pulse channels: use provided control byte
+                    control = frame_data.get('control', 0)
+
+                note_table.append(f"${note:02X}")
+                control_table.append(f"${control:02X}")
+                timer_lo_table.append(f"${pitch & 0xFF:02X}")
+                timer_hi_table.append(f"${((pitch >> 8) & 0x07):02X}")
 
             # Write tables in chunks of 16 bytes per line
             lines.append(f'{channel_name}_note:')
@@ -588,22 +593,153 @@ class CA65Exporter(BaseExporter):
         return output_path
 
     def export_tables_with_patterns(self, frames, patterns, references, output_path, standalone=True):
-        """Export with pattern compression - FIXED VERSION"""
-        
-        # If no patterns provided, use direct frame export but convert frames format first
+        """Export with pattern compression - PROPERLY FIXED VERSION
+
+        Strategy: Expand pattern references back into full frame data, then use direct export.
+        This maintains pattern detection for analysis while avoiding complex playback logic.
+        """
+
+        # If no patterns provided, use direct frame export
         if not patterns or not references:
             print("⚠️  No patterns provided, using direct frame export")
-            # Convert list format to dict format if needed
-            if isinstance(frames, list):
-                frame_dict = {}
-                for frame_num, frame_data in enumerate(frames):
-                    for channel_name, channel_data in frame_data.items():
-                        if channel_name not in frame_dict:
-                            frame_dict[channel_name] = {}
-                        if channel_data['note'] > 0 or channel_data['volume'] > 0:
-                            frame_dict[channel_name][str(frame_num)] = channel_data
-                frames = frame_dict
             return self.export_direct_frames(frames, output_path, standalone)
+
+        print("🔧 CA65 Exporter: Expanding patterns back to frames for export")
+
+        # Step 1: Detect reference format and convert to pattern_id -> positions format
+        # References can be:
+        # Format A: pattern_id -> [position_list] (from pattern detector)
+        # Format B: frame_str -> (pattern_id, offset) (from main.py conversion)
+
+        pattern_refs_by_id = {}
+
+        if references:
+            first_key, first_value = next(iter(references.items()))
+
+            if isinstance(first_value, list):
+                # Format A: pattern_id -> [position_list]
+                print(f"  Using pattern detector reference format")
+                pattern_refs_by_id = references
+            else:
+                # Format B: frame_str -> (pattern_id, offset)
+                # Convert back to Format A by grouping by pattern_id
+                print(f"  Converting main.py reference format")
+                for frame_str, (pattern_id, offset) in references.items():
+                    if pattern_id not in pattern_refs_by_id:
+                        pattern_refs_by_id[pattern_id] = []
+                    # Store (frame_num, offset) tuples
+                    pattern_refs_by_id[pattern_id].append((int(frame_str), offset))
+
+        # Step 2: Build position->frame mapping from the original frames
+        all_event_frames = set()
+        for channel_name, channel_data in frames.items():
+            if channel_data:
+                all_event_frames.update(int(f) for f in channel_data.keys())
+        position_to_frame = sorted(all_event_frames)
+
+        print(f"  Total event positions: {len(position_to_frame)}")
+        print(f"  Frame range: {position_to_frame[0]} to {position_to_frame[-1]}")
+
+        # Step 3: Expand pattern references back to frame data
+        # This reconstructs what events should be at each frame based on pattern matches
+        expanded_frames = {channel: {} for channel in frames.keys()}
+
+        for pattern_id, ref_data in pattern_refs_by_id.items():
+            pattern_data = patterns.get(pattern_id)
+            if not pattern_data:
+                continue
+
+            pattern_events = pattern_data.get('events', [])
+
+            print(f"  Expanding {pattern_id}: {len(ref_data)} references, {len(pattern_events)} events")
+
+            # Find the pattern's base frame (minimum frame in pattern events)
+            if not pattern_events:
+                continue
+
+            pattern_base_frame = min(e['frame'] for e in pattern_events)
+
+            # Check if ref_data is positions or (frame, offset) tuples
+            if ref_data and isinstance(ref_data[0], tuple):
+                # Format B: (frame_num, offset) tuples
+                for start_frame, offset in ref_data:
+                    # Expand each event in the pattern relative to this start frame
+                    for event in pattern_events:
+                        # Calculate the offset from pattern base
+                        event_offset = event['frame'] - pattern_base_frame
+
+                        # Calculate the actual frame number for this event
+                        actual_frame = start_frame + event_offset
+
+                        # Determine which channel this event belongs to
+                        # For now, assume pulse1 (we can enhance this later)
+                        channel = 'pulse1'
+
+                        # Add the event to expanded frames
+                        if channel not in expanded_frames:
+                            expanded_frames[channel] = {}
+
+                        expanded_frames[channel][str(actual_frame)] = {
+                            'note': event['note'],
+                            'volume': event.get('volume', 8),
+                            'pitch': event.get('pitch', self.midi_note_to_timer_value(event['note'])),
+                            'control': event.get('control', 0x88)  # Default pulse control
+                        }
+            else:
+                # Format A: position indices
+                for ref_position in ref_data:
+                    if ref_position >= len(position_to_frame):
+                        continue
+
+                    # Get the actual frame number for this position
+                    start_frame = position_to_frame[ref_position]
+
+                    # Expand each event in the pattern relative to this reference position
+                    for event in pattern_events:
+                        # Calculate the offset from pattern base
+                        event_offset = event['frame'] - pattern_base_frame
+
+                        # Calculate the actual frame number for this event
+                        actual_frame = start_frame + event_offset
+
+                        # Determine which channel this event belongs to
+                        # For now, assume pulse1 (we can enhance this later)
+                        channel = 'pulse1'
+
+                        # Add the event to expanded frames
+                        if channel not in expanded_frames:
+                            expanded_frames[channel] = {}
+
+                        expanded_frames[channel][str(actual_frame)] = {
+                            'note': event['note'],
+                            'volume': event.get('volume', 8),
+                            'pitch': event.get('pitch', self.midi_note_to_timer_value(event['note'])),
+                            'control': event.get('control', 0x88)  # Default pulse control
+                        }
+
+        # DON'T merge with original frames - the expanded patterns represent the full composition
+        # The original frames were used for pattern detection but are now redundant
+
+        # Check if pattern expansion produced reasonable results
+        total_original_events = sum(len(ch) for ch in frames.values())
+        total_expanded_events = sum(len(ch) for ch in expanded_frames.values())
+
+        print(f"✅ Pattern expansion complete")
+        for channel, data in expanded_frames.items():
+            if data:
+                print(f"  {channel}: {len(data)} frames")
+
+        print(f"  Original events: {total_original_events}, Expanded events: {total_expanded_events}")
+
+        # If expansion produced significantly different event count, patterns likely overlap/conflict
+        # Fall back to direct export of original frames
+        if abs(total_expanded_events - total_original_events) > total_original_events * 0.5:
+            print(f"⚠️  Pattern expansion mismatch detected ({total_expanded_events} vs {total_original_events} events)")
+            print(f"     Using original frames instead (patterns have absolute frame offsets)")
+            return self.export_direct_frames(frames, output_path, standalone)
+
+        # Step 4: Use expanded pattern data for export
+        return self.export_direct_frames(expanded_frames, output_path, standalone)
         
         print("🔧 CA65 Exporter: Pattern compression mode")
         
@@ -667,17 +803,32 @@ class CA65Exporter(BaseExporter):
         # Build frame-to-pattern mapping from pattern references
         frame_to_pattern = {}
         max_frame = 0
-        
+
         if references:
             # Handle both formats
             first_key, first_value = next(iter(references.items()))
-            
+
             if isinstance(first_value, list):
-                # New format: pattern_id -> [frame_list]
-                for pattern_id, frame_list in references.items():
-                    for i, frame_num in enumerate(frame_list):
-                        frame_to_pattern[frame_num] = (pattern_id, i)
-                        max_frame = max(max_frame, frame_num)
+                # New format: pattern_id -> [position_list]
+                # positions are indices into the event sequence, NOT frame numbers!
+                # We need to build a mapping from position to frame number first
+
+                # Collect all frames with events across all channels
+                all_event_frames = set()
+                for channel_name, channel_data in frames.items():
+                    if channel_data:
+                        all_event_frames.update(int(f) for f in channel_data.keys())
+
+                # Create position->frame mapping by sorting frames
+                position_to_frame = sorted(all_event_frames)
+
+                # Now convert positions to frame numbers
+                for pattern_id, position_list in references.items():
+                    for i, position in enumerate(position_list):
+                        if position < len(position_to_frame):
+                            frame_num = position_to_frame[position]
+                            frame_to_pattern[frame_num] = (pattern_id, i)
+                            max_frame = max(max_frame, frame_num)
             else:
                 # Old format: frame_str -> (pattern_id, offset)
                 for frame_str, pattern_info in references.items():
