@@ -97,8 +97,9 @@ class NESProjectBuilder:
     ptr1:          .res 2  ; General purpose pointer
     temp1:         .res 1  ; Temporary variable
     temp2:         .res 1  ; Temporary variable
+    temp_ptr:      .res 2  ; Temporary pointer for table lookups
     frame_counter: .res 2  ; Frame counter (shared with music.asm)
-.exportzp ptr1, temp1, temp2, frame_counter
+.exportzp ptr1, temp1, temp2, temp_ptr, frame_counter
 
 .segment "CODE"
 ; Import music functions from music.asm
@@ -202,6 +203,7 @@ irq:
 
 SEGMENTS {
     ZEROPAGE: load = ZP, type = zp;
+    BSS:      load = RAM, type = bss;
     HEADER:   load = HEADER, type = ro;
 
     # Music data in switchable banks (accessible at $8000-$BFFF)
@@ -222,6 +224,7 @@ SEGMENTS {
 
 SEGMENTS {
     ZEROPAGE: load = ZP, type = zp;
+    BSS:      load = RAM, type = bss;
     HEADER:   load = HEADER, type = ro;
     CODE:     load = PRG, type = ro, start = $8000;
     RODATA:   load = PRG, type = ro;

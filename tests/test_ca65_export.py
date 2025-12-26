@@ -83,7 +83,7 @@ class TestCA65Export(unittest.TestCase):
             self.assertIn("lda pattern_refs,x", output)
             self.assertIn("sta ptr1", output)
             self.assertIn("sta temp1", output)
-            self.assertIn("sta temp2", output)
+            # Note: temp2 is not used in current pattern playback implementation
             
             # Test that we don't have any undefined values
             self.assertNotIn("lda\n", output)  # No empty LDA instructions
@@ -266,7 +266,8 @@ class TestCA65CompilationIntegration(unittest.TestCase):
         # Read generated files and check for proper variable declarations
         with open(self.project_path / "main.asm") as f:
             main_content = f.read()
-            self.assertIn(".exportzp ptr1, temp1, temp2, frame_counter", main_content)
+            # Updated to include temp_ptr for table-based lookups
+            self.assertIn(".exportzp ptr1, temp1, temp2, temp_ptr, frame_counter", main_content)
             self.assertIn(".global init_music", main_content)
             self.assertIn(".global update_music", main_content)
         

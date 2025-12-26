@@ -143,6 +143,38 @@ def get_arpeggio_timing(pattern, base_frame, speed=1):
     return base_frame + TIMING_PATTERNS["even"](pattern)
 
 
+def split_polyphonic_track(events):
+    """
+    Split a single polyphonic MIDI track into multiple NES channels by pitch range.
+    Returns dict with pulse1, pulse2, triangle events.
+    """
+    pulse1_events = []  # High notes (melody): >= 60
+    pulse2_events = []  # Mid notes (harmony): 48-59
+    triangle_events = []  # Low notes (bass): < 48
+
+    for event in events:
+        note = event['note']
+        vel = event.get('volume', event.get('velocity', 0))
+
+        # Skip note-off events
+        if vel == 0:
+            continue
+
+        # Split by pitch range
+        if note >= 60:
+            pulse1_events.append(event.copy())
+        elif note >= 48:
+            pulse2_events.append(event.copy())
+        else:
+            triangle_events.append(event.copy())
+
+    return {
+        'pulse1': pulse1_events,
+        'pulse2': pulse2_events,
+        'triangle': triangle_events
+    }
+
+
 def assign_tracks_to_nes_channels(midi_events, dpcm_index_path):
     """
     midi_events: dict[channel] = list of events {frame, note, velocity}
@@ -155,43 +187,58 @@ def assign_tracks_to_nes_channels(midi_events, dpcm_index_path):
         'dpcm': []
     }
 
-    # Basic heuristic: choose based on pitch and density
-    def average_pitch(events):
-        # Handle both 'volume' and 'velocity' field names for compatibility
-        notes = [e['note'] for e in events if e.get('volume', e.get('velocity', 0)) > 0]
-        return sum(notes) / len(notes) if notes else 0
+    # Check if we have a single polyphonic track that needs splitting
+    if len(midi_events) == 1:
+        # Single track - likely polyphonic, split by pitch
+        track_name, events = next(iter(midi_events.items()))
+        print(f"  Detected single polyphonic track '{track_name}' with {len(events)} events")
+        print(f"  Splitting by pitch range: High→Pulse1, Mid→Pulse2, Low→Triangle")
 
-    channel_scores = [
-        (channel, average_pitch(events))
-        for channel, events in midi_events.items()
-    ]
+        split_tracks = split_polyphonic_track(events)
+        nes_tracks['pulse1'] = split_tracks['pulse1']
+        nes_tracks['pulse2'] = split_tracks['pulse2']
+        nes_tracks['triangle'] = split_tracks['triangle']
 
-    # Sort by pitch: high → low
-    channel_scores.sort(key=lambda x: -x[1])
+        print(f"  Split result: Pulse1={len(nes_tracks['pulse1'])}, Pulse2={len(nes_tracks['pulse2'])}, Triangle={len(nes_tracks['triangle'])}")
+    else:
+        # Multiple tracks - use original logic
+        # Basic heuristic: choose based on pitch and density
+        def average_pitch(events):
+            # Handle both 'volume' and 'velocity' field names for compatibility
+            notes = [e['note'] for e in events if e.get('volume', e.get('velocity', 0)) > 0]
+            return sum(notes) / len(notes) if notes else 0
 
-    # Assign melody to pulse1
-    if channel_scores:
-        ch, _ = channel_scores.pop(0)
-        nes_tracks['pulse1'] = midi_events[ch]
+        channel_scores = [
+            (channel, average_pitch(events))
+            for channel, events in midi_events.items()
+        ]
 
-    # Assign harmony to pulse2 with intelligent arpeggio
-    if channel_scores:
-        ch, _ = channel_scores.pop(0)
-        nes_tracks['pulse2'] = apply_arpeggio_fallback(midi_events[ch], style="default")
+        # Sort by pitch: high → low
+        channel_scores.sort(key=lambda x: -x[1])
 
-    # Assign bass (lowest avg pitch) to triangle
-    if channel_scores:
-        ch, _ = min(channel_scores, key=lambda x: x[1])
-        channel_scores.remove((ch, average_pitch(midi_events[ch])))
-        nes_tracks['triangle'] = midi_events[ch]
+        # Assign melody to pulse1
+        if channel_scores:
+            ch, _ = channel_scores.pop(0)
+            nes_tracks['pulse1'] = midi_events[ch]
 
-    # Remaining: try noise + dpcm if drum-like or just fill up
-    for ch, _ in channel_scores:
-        if 'drum' in str(ch).lower():
-            nes_tracks['noise'] = midi_events[ch]
-        elif not nes_tracks['dpcm']:
-            nes_tracks['dpcm'] = midi_events[ch]
-    
+        # Assign harmony to pulse2 with intelligent arpeggio
+        if channel_scores:
+            ch, _ = channel_scores.pop(0)
+            nes_tracks['pulse2'] = apply_arpeggio_fallback(midi_events[ch], style="default")
+
+        # Assign bass (lowest avg pitch) to triangle
+        if channel_scores:
+            ch, _ = min(channel_scores, key=lambda x: x[1])
+            channel_scores.remove((ch, average_pitch(midi_events[ch])))
+            nes_tracks['triangle'] = midi_events[ch]
+
+        # Remaining: try noise + dpcm if drum-like or just fill up
+        for ch, _ in channel_scores:
+            if 'drum' in str(ch).lower():
+                nes_tracks['noise'] = midi_events[ch]
+            elif not nes_tracks['dpcm']:
+                nes_tracks['dpcm'] = midi_events[ch]
+
     # Fallback for DPCM: look for drums
     dpcm_events, noise_events = map_drums_to_dpcm(midi_events, dpcm_index_path)
 

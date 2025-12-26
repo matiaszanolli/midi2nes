@@ -246,9 +246,11 @@ class TestLinkerConfigGeneration:
         nes_cfg = project_dir / "nes.cfg"
         content = nes_cfg.read_text()
 
-        # Should define PRG section for 128KB (0x20000)
-        assert 'PRG' in content or 'prg' in content
-        assert '0x20000' in content or '$20000' in content
+        # MMC1 uses PRGSWAP (0x1C000 = 112KB) + PRGFIXED (0x4000 = 16KB) = 128KB total
+        # Check for either MMC1 structure or simple PRG structure
+        has_mmc1 = 'PRGSWAP' in content and 'PRGFIXED' in content
+        has_simple_prg = ('0x20000' in content or '$20000' in content)
+        assert has_mmc1 or has_simple_prg, "Should have either MMC1 (PRGSWAP+PRGFIXED) or simple PRG structure"
 
     def test_nes_cfg_has_zeropage_section(self, project_dir, minimal_music_asm):
         """Test that nes.cfg defines zero page."""
