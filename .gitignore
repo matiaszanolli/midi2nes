@@ -74,6 +74,7 @@ dist/
 *.aac
 *.wma
 *.flac
+*.mid
 
 # ===========================
 # Allow Important Examples

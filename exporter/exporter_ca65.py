@@ -75,29 +75,36 @@ class CA65Exporter(BaseExporter):
             lines.append('')
         
         # Zero page variables
-        lines.append('.segment "ZEROPAGE"')
-        lines.append('frame_counter: .res 2')
-        lines.append('')
-        
-        # Main code segment  
+        if not standalone:
+            # Import zeropage from main.asm
+            lines.append('.importzp frame_counter')
+            lines.append('')
+        else:
+            # Define our own zeropage
+            lines.append('.segment "ZEROPAGE"')
+            lines.append('frame_counter: .res 2')
+            lines.append('')
+
+        # Main code segment
         lines.append('.segment "CODE"')
         lines.append('')
-        
+
         # Get all channels and find maximum frame
         all_channels = {}
         max_frame = 0
-        
+
         for channel_name, channel_data in frames.items():
             if channel_data:  # Skip empty channels
                 all_channels[channel_name] = channel_data
                 channel_max = max(int(f) for f in channel_data.keys())
                 max_frame = max(max_frame, channel_max)
-        
+
         print(f"  Channels: {list(all_channels.keys())}")
         print(f"  Max frame: {max_frame}")
-        
-        # Add reset routine
-        lines.extend([
+
+        # Add reset routine ONLY if standalone
+        if standalone:
+            lines.extend([
             '.proc reset',
             '    ; Standard NES initialization', 
             '    sei',
@@ -172,8 +179,8 @@ class CA65Exporter(BaseExporter):
             '    rti',
             '.endproc',
             ''
-        ])
-        
+            ])
+
         # Generate frame playback routine
         lines.append('.proc play_music_frame')
         
@@ -487,17 +494,35 @@ class CA65Exporter(BaseExporter):
             "    rts",
             "",
             "play_pattern_frame:",
+            "    ; Get pattern pointer for current frame",
             "    lda frame_counter",
             "    asl",
+            "    asl  ; multiply by 4 (2 words per frame)",
             "    tax",
             "    lda pattern_refs,x",
             "    sta ptr1",
             "    lda pattern_refs+1,x",
             "    sta ptr1+1",
-            "    lda frame_counter",
-            "    sta temp1",
-            "    lda frame_counter+1",
-            "    sta temp2",
+            "    ; Check if pattern is valid (not $0000)",
+            "    ora ptr1",
+            "    beq @done",
+            "    ; Play pattern data - read 3 bytes and write to APU",
+            "    ldy #0",
+            "    lda (ptr1),y  ; Control byte",
+            "    beq @silence  ; If $00, silence channel",
+            "    sta $4000     ; Pulse 1 control",
+            "    iny",
+            "    lda (ptr1),y  ; Timer low",
+            "    sta $4002",
+            "    iny",
+            "    lda (ptr1),y  ; Timer high",
+            "    ora #$08      ; Set length counter",
+            "    sta $4003",
+            "    jmp @done",
+            "@silence:",
+            "    lda #$30      ; Silence (no envelope, volume 0)",
+            "    sta $4000",
+            "@done:",
             "    rts"
         ])
         

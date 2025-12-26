@@ -253,12 +253,15 @@ def compile_rom(project_dir: Path, rom_output: Path) -> bool:
         if result.returncode != 0:
             print(f"[ERROR] Failed to link ROM:\n{result.stderr}")
             return False
-        
+
         # Verify the generated ROM before copying
         generated_rom = project_dir / 'game.nes'
         if not generated_rom.exists():
             print("[ERROR] Generated ROM file not found")
             return False
+
+        # MMC1 ROMs: The linker config now correctly places CODE and VECTORS in bank 7
+        # No post-processing needed
         
         # Check if the generated ROM has a reasonable size
         rom_size = generated_rom.stat().st_size
