@@ -2,7 +2,6 @@ import argparse
 import sys
 import json
 import tempfile
-import subprocess
 import shutil
 from typing import Dict, Optional
 from pathlib import Path
@@ -28,6 +27,7 @@ from dpcm_sampler.enhanced_drum_mapper import EnhancedDrumMapper, DrumMapperConf
 from config.config_manager import ConfigManager
 from benchmarks.performance_suite import PerformanceBenchmark
 from utils.profiling import get_memory_usage, log_memory_usage
+from compiler import compile_rom
 
 def run_parse(args):
     # Use fast parser by default for better performance
@@ -203,85 +203,6 @@ def load_config(config_path: Optional[str] = None) -> DrumMapperConfig:
     if config_path and Path(config_path).exists():
         return DrumMapperConfig.from_file(config_path)
     return DrumMapperConfig()
-
-def compile_rom(project_dir: Path, rom_output: Path) -> bool:
-    """Compile the NES project to ROM using CA65/LD65"""
-    try:
-        # Check if CA65 and LD65 are available
-        result = subprocess.run(['ca65', '--version'], capture_output=True, text=True)
-        if result.returncode != 0:
-            print("[ERROR] CA65 assembler not found. Please install cc65 tools.")
-            return False
-        
-        result = subprocess.run(['ld65', '--version'], capture_output=True, text=True)
-        if result.returncode != 0:
-            print("[ERROR] LD65 linker not found. Please install cc65 tools.")
-            return False
-        
-        # Compile main.asm
-        print("  Compiling main.asm...")
-        result = subprocess.run(
-            ['ca65', 'main.asm', '-o', 'main.o'],
-            cwd=project_dir,
-            capture_output=True,
-            text=True
-        )
-        if result.returncode != 0:
-            print(f"[ERROR] Failed to compile main.asm:\n{result.stderr}")
-            return False
-        
-        # Compile music.asm
-        print("  Compiling music.asm...")
-        result = subprocess.run(
-            ['ca65', 'music.asm', '-o', 'music.o'],
-            cwd=project_dir,
-            capture_output=True,
-            text=True
-        )
-        if result.returncode != 0:
-            print(f"[ERROR] Failed to compile music.asm:\n{result.stderr}")
-            return False
-        
-        # Link the ROM
-        print("  Linking ROM...")
-        result = subprocess.run(
-            ['ld65', '-C', 'nes.cfg', 'main.o', 'music.o', '-o', 'game.nes'],
-            cwd=project_dir,
-            capture_output=True,
-            text=True
-        )
-        if result.returncode != 0:
-            print(f"[ERROR] Failed to link ROM:\n{result.stderr}")
-            return False
-
-        # Verify the generated ROM before copying
-        generated_rom = project_dir / 'game.nes'
-        if not generated_rom.exists():
-            print("[ERROR] Generated ROM file not found")
-            return False
-
-        # MMC1 ROMs: The linker config now correctly places CODE and VECTORS in bank 7
-        # No post-processing needed
-        
-        # Check if the generated ROM has a reasonable size
-        rom_size = generated_rom.stat().st_size
-        min_size = 32768  # Minimum: approximately 32KB (allowing for small alignment differences)
-        if rom_size < min_size:
-            print(f"[ERROR] Generated ROM is too small ({rom_size:,} bytes). Something went wrong during linking.")
-            return False
-        
-        # Only overwrite if we have a valid ROM
-        print(f"  Generated ROM size: {rom_size:,} bytes ({rom_size / 1024:.1f} KB)")
-        shutil.copy(generated_rom, rom_output)
-        
-        return True
-    except FileNotFoundError as e:
-        print(f"[ERROR] Compilation tool not found: {str(e)}")
-        print("Please install the cc65 toolchain: https://cc65.github.io/")
-        return False
-    except Exception as e:
-        print(f"[ERROR] Compilation failed: {str(e)}")
-        return False
 
 def run_full_pipeline(args):
     """Run the complete MIDI to NES ROM pipeline"""

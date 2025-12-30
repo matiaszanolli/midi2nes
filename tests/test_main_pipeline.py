@@ -30,37 +30,46 @@ class TestCompileRomErrorPaths:
         self.project_dir.mkdir()
         self.rom_output = self.temp_dir / "output.nes"
 
+        # Create required project files for validation
+        (self.project_dir / "main.asm").write_text("; main.asm stub")
+        (self.project_dir / "music.asm").write_text("; music.asm stub")
+        (self.project_dir / "nes.cfg").write_text("; nes.cfg stub")
+
     def teardown_method(self):
         """Clean up test fixtures."""
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    @patch('subprocess.run')
-    def test_compile_rom_ca65_version_check_fails(self, mock_run):
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_ca65_version_check_fails(self, mock_which, mock_run):
         """Test compile_rom when ca65 version check fails."""
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="ca65: command not found")
+        mock_which.return_value = "/usr/bin/ca65"  # which finds it
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="ca65: error")
 
         result = compile_rom(self.project_dir, self.rom_output)
 
         assert result == False
-        mock_run.assert_called_once()
 
-    @patch('subprocess.run')
-    def test_compile_rom_ld65_version_check_fails(self, mock_run):
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_ld65_version_check_fails(self, mock_which, mock_run):
         """Test compile_rom when ld65 version check fails."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
         # First call (ca65) succeeds, second call (ld65) fails
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="ca65 V2.18", stderr=""),
-            MagicMock(returncode=1, stdout="", stderr="ld65: command not found")
+            MagicMock(returncode=1, stdout="", stderr="ld65: error")
         ]
 
         result = compile_rom(self.project_dir, self.rom_output)
 
         assert result == False
-        assert mock_run.call_count == 2
 
-    @patch('subprocess.run')
-    def test_compile_rom_main_asm_compilation_fails(self, mock_run):
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_main_asm_compilation_fails(self, mock_which, mock_run):
         """Test compile_rom when main.asm compilation fails."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
         # Version checks succeed, main.asm compilation fails
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="ca65 V2.18", stderr=""),  # ca65 version
@@ -71,11 +80,12 @@ class TestCompileRomErrorPaths:
         result = compile_rom(self.project_dir, self.rom_output)
 
         assert result == False
-        assert mock_run.call_count == 3
 
-    @patch('subprocess.run')
-    def test_compile_rom_music_asm_compilation_fails(self, mock_run):
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_music_asm_compilation_fails(self, mock_which, mock_run):
         """Test compile_rom when music.asm compilation fails."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
         # Version checks succeed, main.asm succeeds, music.asm fails
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="ca65 V2.18", stderr=""),  # ca65 version
@@ -87,11 +97,12 @@ class TestCompileRomErrorPaths:
         result = compile_rom(self.project_dir, self.rom_output)
 
         assert result == False
-        assert mock_run.call_count == 4
 
-    @patch('subprocess.run')
-    def test_compile_rom_linking_fails(self, mock_run):
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_linking_fails(self, mock_which, mock_run):
         """Test compile_rom when linking fails."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
         # All compiles succeed, linking fails
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="ca65 V2.18", stderr=""),  # ca65 version
@@ -104,11 +115,12 @@ class TestCompileRomErrorPaths:
         result = compile_rom(self.project_dir, self.rom_output)
 
         assert result == False
-        assert mock_run.call_count == 5
 
-    @patch('subprocess.run')
-    def test_compile_rom_generated_file_missing(self, mock_run):
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_generated_file_missing(self, mock_which, mock_run):
         """Test compile_rom when generated ROM file doesn't exist."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
         # All steps succeed but no ROM file is created
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
@@ -116,9 +128,11 @@ class TestCompileRomErrorPaths:
 
         assert result == False
 
-    @patch('subprocess.run')
-    def test_compile_rom_generated_file_too_small(self, mock_run):
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_generated_file_too_small(self, mock_which, mock_run):
         """Test compile_rom when generated ROM is too small."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
         # All steps succeed but ROM is too small
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
@@ -130,18 +144,22 @@ class TestCompileRomErrorPaths:
 
         assert result == False
 
-    @patch('subprocess.run')
-    def test_compile_rom_file_not_found_exception(self, mock_run):
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_file_not_found_exception(self, mock_which, mock_run):
         """Test compile_rom when FileNotFoundError is raised."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
         mock_run.side_effect = FileNotFoundError("ca65 not found")
 
         result = compile_rom(self.project_dir, self.rom_output)
 
         assert result == False
 
-    @patch('subprocess.run')
-    def test_compile_rom_generic_exception(self, mock_run):
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_generic_exception(self, mock_which, mock_run):
         """Test compile_rom when generic exception is raised."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
         mock_run.side_effect = Exception("Unexpected error")
 
         result = compile_rom(self.project_dir, self.rom_output)

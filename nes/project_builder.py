@@ -1,58 +1,111 @@
+"""
+NES Project Builder for MIDI2NES.
+
+Prepares complete NES project structures for CC65 compilation,
+using the mapper abstraction for flexible ROM configurations.
+"""
+
 import os
 from pathlib import Path
+from typing import Optional
+
+from mappers import BaseMapper, get_mapper
+
 
 class NESProjectBuilder:
-    """Prepares a complete NES project structure for CC65 compilation"""
+    """
+    Prepares a complete NES project structure for CC65 compilation.
 
-    def __init__(self, project_path: str, debug_mode: bool = False):
-        """Initialize NES project builder.
+    Supports multiple mappers through the mapper abstraction:
+    - NROM (32KB) for small projects
+    - MMC1 (128KB) for medium projects
+    - MMC3 (512KB) for large projects
+    """
+
+    def __init__(
+        self,
+        project_path: str,
+        debug_mode: bool = False,
+        mapper: Optional[BaseMapper] = None,
+        mapper_name: str = "auto",
+    ):
+        """
+        Initialize NES project builder.
 
         Args:
             project_path: Directory to create project in
             debug_mode: If True, enables on-screen debug overlay
+            mapper: Explicit mapper instance (overrides mapper_name)
+            mapper_name: Mapper to use ('auto', 'nrom', 'mmc1', 'mmc3')
         """
         self.project_path = Path(project_path)
-        self.use_mmc1 = True  # Use MMC1 for larger ROM capacity
         self.debug_mode = debug_mode
+        self._mapper = mapper
+        self._mapper_name = mapper_name
 
-    def prepare_project(self, music_asm_path: str):
-        """Creates a complete NES project structure ready for CC65 compilation"""
+    @property
+    def mapper(self) -> BaseMapper:
+        """Get the mapper instance, creating it if needed."""
+        if self._mapper is None:
+            self._mapper = get_mapper(self._mapper_name)
+        return self._mapper
+
+    def set_mapper(self, mapper: BaseMapper) -> None:
+        """Set a specific mapper instance."""
+        self._mapper = mapper
+
+    def set_mapper_by_name(self, name: str) -> None:
+        """Set mapper by name."""
+        self._mapper = get_mapper(name)
+
+    def auto_select_mapper(self, data_size: int) -> BaseMapper:
+        """
+        Auto-select the smallest mapper that fits the data.
+
+        Args:
+            data_size: Size of music data in bytes
+
+        Returns:
+            Selected mapper instance
+        """
+        self._mapper = get_mapper("auto", data_size=data_size)
+        return self._mapper
+
+    def prepare_project(self, music_asm_path: str) -> bool:
+        """
+        Creates a complete NES project structure ready for CC65 compilation.
+
+        Args:
+            music_asm_path: Path to the music.asm file to include
+
+        Returns:
+            True on success
+        """
         # Create project directory
         self.project_path.mkdir(parents=True, exist_ok=True)
 
         # Read music.asm content
         music_content = Path(music_asm_path).read_text()
 
-        mapper_name = "MMC1 with 128KB PRG-ROM" if self.use_mmc1 else "NROM with 32KB PRG-ROM"
-        print(f"  Using {mapper_name}")
+        print(f"  Using {self.mapper.name} with {self.mapper.prg_rom_size // 1024}KB PRG-ROM")
 
         if self.debug_mode:
-            print(f"  🐛 Debug mode enabled - adding on-screen diagnostics")
-            # Add debug overlay to music.asm
+            print(f"  Debug mode enabled - adding on-screen diagnostics")
             from nes.debug_overlay import NESDebugOverlay
             overlay = NESDebugOverlay(enable_overlay=True)
             music_content += "\n" + overlay.generate_full_debug_system()
 
-        # Write the music.asm
+        # Write project files
         (self.project_path / "music.asm").write_text(music_content)
-
-        # Create FIXED main.asm with NMI timing like our working debug ROM
-        main_asm = self._generate_working_main_asm()
-        (self.project_path / "main.asm").write_text(main_asm)
-
-        # Create FIXED nes.cfg (simpler, working MMC1 config)
-        linker_config = self._generate_working_linker_config()
-        (self.project_path / "nes.cfg").write_text(linker_config)
-
-        # Create build script
+        (self.project_path / "main.asm").write_text(self._generate_main_asm())
+        (self.project_path / "nes.cfg").write_text(self.mapper.generate_linker_config())
         self._create_build_script()
 
         return True
 
-    def _generate_working_main_asm(self) -> str:
-        """Generate main.asm that works - uses NMI timing like debug_fixed.nes"""
-
-        # Add debug function imports if in debug mode
+    def _generate_main_asm(self) -> str:
+        """Generate main.asm with mapper-specific code."""
+        # Debug mode imports and calls
         debug_imports = ""
         debug_init_call = ""
         debug_update_call = ""
@@ -75,22 +128,8 @@ class NESProjectBuilder:
     jsr debug_update
 """
 
-        # Generate header based on mapper choice
-        if self.use_mmc1:
-            header = """    .byte "NES", $1A      ; NES header identifier
-    .byte $08             ; 8 x 16KB PRG ROM (128KB total) - MMC1
-    .byte $00             ; 0 x 8KB CHR ROM (CHR-RAM)
-    .byte $10             ; Mapper 1 (MMC1), horizontal mirroring
-    .byte $00, $00, $00, $00, $00, $00, $00, $00  ; Padding"""
-        else:
-            header = """    .byte "NES", $1A      ; NES header identifier
-    .byte $02             ; 2 x 16KB PRG ROM (32KB total) - NROM
-    .byte $00             ; 0 x 8KB CHR ROM (CHR-RAM)
-    .byte $00             ; Mapper 0 (NROM), horizontal mirroring
-    .byte $00, $00, $00, $00, $00, $00, $00, $00  ; Padding"""
-
         return f""".segment "HEADER"
-{header}
+{self.mapper.generate_header_asm()}
 
 .segment "ZEROPAGE"
     ; Export zeropage variables for music.asm
@@ -113,30 +152,7 @@ reset:
     ldx #$FF
     txs                   ; Set up stack
 
-    ; MMC1 initialization
-    lda #$80
-    sta $8000             ; Reset MMC1 state machine
-    lda #$0C              ; Control: 16KB PRG mode, fixed high bank
-    sta $8000
-    lsr a
-    sta $8000
-    lsr a
-    sta $8000
-    lsr a
-    sta $8000
-    lsr a
-    sta $8000             ; Write control register (5 writes)
-
-    lda #$00              ; Select bank 0 for $8000-$BFFF
-    sta $E000
-    lsr a
-    sta $E000
-    lsr a
-    sta $E000
-    lsr a
-    sta $E000
-    lsr a
-    sta $E000             ; Write bank register (5 writes)
+{self.mapper.generate_init_code()}
 
     ; Initialize frame counter
     lda #$00
@@ -146,12 +162,12 @@ reset:
     ; Initialize APU and music
     jsr init_music
 
-    ; CRITICAL: Enable NMI for 60Hz timing (like our working debug ROM)
+    ; CRITICAL: Enable NMI for 60Hz timing
     lda #$80
     sta $2000          ; Enable NMI, this makes music timing work!
 
 mainloop:
-    ; Just wait for NMI to handle timing (like debug ROM)
+    ; Just wait for NMI to handle timing
     jmp mainloop
 
 nmi:
@@ -182,87 +198,29 @@ irq:
     .word irq            ; IRQ vector
 """
 
-    def _generate_working_linker_config(self) -> str:
-        """Generate a working linker config for NROM (32KB) or MMC1 (128KB)"""
-        if self.use_mmc1:
-            # MMC1 configuration: use separate memory regions for switchable and fixed banks
-            # This ensures CODE ends up at the END of the file (bank 7)
-            return """MEMORY {
-    ZP:       start = $0000, size = $0100, type = rw, define = yes;
-    RAM:      start = $0300, size = $0500, type = rw, define = yes;
-    HEADER:   start = $0000, size = $0010, file = %O, fill = yes;
-
-    # Switchable banks 0-6 (112KB total)
-    # These will be at file offsets $0010 - $1C00F
-    PRGSWAP:  start = $8000, size = $1C000, file = %O, fill = yes, fillval = $FF;
-
-    # Fixed bank 7 (16KB) at end of ROM
-    # File offset $1C010 - $2000F, CPU address $C000 - $FFFF
-    PRGFIXED: start = $C000, size = $4000, file = %O, fill = yes, fillval = $FF;
-}
-
-SEGMENTS {
-    ZEROPAGE: load = ZP, type = zp;
-    BSS:      load = RAM, type = bss;
-    HEADER:   load = HEADER, type = ro;
-
-    # Music data in switchable banks (accessible at $8000-$BFFF)
-    RODATA:   load = PRGSWAP, type = ro;
-
-    # Reset code and vectors in fixed bank (always at $C000-$FFFF)
-    CODE:     load = PRGFIXED, type = ro;
-    VECTORS:  load = PRGFIXED, type = ro, start = $FFFA;
-}"""
-        else:
-            # NROM configuration (simple, 32KB)
-            return """MEMORY {
-    ZP:       start = $0000, size = $0100, type = rw, define = yes;
-    RAM:      start = $0300, size = $0500, type = rw, define = yes;
-    HEADER:   start = $0000, size = $0010, file = %O, fill = yes;
-    PRG:      start = $0010, size = $8000, file = %O, fill = yes, fillval = $FF;
-}
-
-SEGMENTS {
-    ZEROPAGE: load = ZP, type = zp;
-    BSS:      load = RAM, type = bss;
-    HEADER:   load = HEADER, type = ro;
-    CODE:     load = PRG, type = ro, start = $8000;
-    RODATA:   load = PRG, type = ro;
-    VECTORS:  load = PRG, type = ro, start = $FFFA;
-}"""
-
     def _create_build_script(self):
-        """Creates a build script based on the OS"""
-        if os.name == 'nt':  # Windows
-            script = "@echo off\n"
-            script += "ca65 main.asm -o main.o\n"
-            script += "ca65 music.asm -o music.o\n"
-            script += "ld65 -C nes.cfg main.o music.o -o game.nes\n"
-            if self.use_mmc1:
-                # Fix vectors for MMC1: copy from 0xFFFA to 0x2000A (last 6 bytes of bank 7)
-                script += "python -c \"import sys; d=open('game.nes','r+b'); d.seek(0xFFFA); v=d.read(6); d.seek(0x2000A); d.write(v); d.close()\"\n"
-        else:  # Unix-like
-            script = "#!/bin/bash\n"
-            script += "ca65 main.asm -o main.o\n"
-            script += "ca65 music.asm -o music.o\n"
-            script += "ld65 -C nes.cfg main.o music.o -o game.nes\n"
-            if self.use_mmc1:
-                # Fix vectors for MMC1: copy from 0xFFFA to 0x2000A (last 6 bytes of bank 7)
-                script += "python3 -c \"import sys; d=open('game.nes','r+b'); d.seek(0xFFFA); v=d.read(6); d.seek(0x2000A); d.write(v); d.close()\"\n"
-            
-        script_name = "build.bat" if os.name == 'nt' else "build.sh"
+        """Creates a build script based on the OS."""
+        is_windows = os.name == 'nt'
+        script = self.mapper.generate_build_script(is_windows)
+
+        script_name = "build.bat" if is_windows else "build.sh"
         script_path = self.project_path / script_name
         script_path.write_text(script)
-        
-        if os.name != 'nt':
+
+        if not is_windows:
             # Make the script executable on Unix-like systems
             script_path.chmod(script_path.stat().st_mode | 0o755)
 
-    # Legacy methods for compatibility
-    def prepare_multi_song_project(self, music_asm_path: str, segments_data: dict):
-        """Fallback to simple project preparation"""
+    # Legacy methods for backwards compatibility
+    @property
+    def use_mmc1(self) -> bool:
+        """Legacy compatibility: check if using MMC1."""
+        return self.mapper.mapper_number == 1
+
+    def prepare_multi_song_project(self, music_asm_path: str, segments_data: dict) -> bool:
+        """Legacy: fallback to simple project preparation."""
         return self.prepare_project(music_asm_path)
-    
-    def add_song_bank(self, song_bank):
-        """Legacy compatibility"""
+
+    def add_song_bank(self, song_bank) -> bool:
+        """Legacy compatibility."""
         return True
