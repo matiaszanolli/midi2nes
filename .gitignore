@@ -51,6 +51,8 @@ dist/
 # Test and Debug Artifacts
 # ===========================
 /benchmark_results/
+/debug_output/
+/nba_project/
 .ipynb_checkpoints/
 
 # ===========================

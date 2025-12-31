@@ -16,6 +16,7 @@ except ImportError:
 from tracker.parser import parse_midi_to_frames
 from tracker.track_mapper import assign_tracks_to_nes_channels
 from nes.emulator_core import NESEmulatorCore
+from arranger import arrange_for_nes
 from nes.project_builder import NESProjectBuilder
 from nes.song_bank import SongBank
 from exporter.exporter_nsf import NSFExporter
@@ -241,16 +242,29 @@ def run_full_pipeline(args):
             print("[1/7] Parsing MIDI file...")
             from tracker.parser_fast import parse_midi_to_frames as parse_fast
             midi_data = parse_fast(str(input_midi))
-            
-            # Step 2: Map tracks to NES channels
-            print("[2/7] Mapping tracks to NES channels...")
-            dpcm_index_path = 'dpcm_index.json' 
-            mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
-            
-            # Step 3: Generate frame data
-            print("[3/7] Generating NES frame data...")
-            emulator = NESEmulatorCore()
-            frames = emulator.process_all_tracks(mapped)
+
+            # Check for arranger mode
+            use_arranger = hasattr(args, 'arranger') and args.arranger
+
+            if use_arranger:
+                # Step 2+3: Use intelligent arranger with arpeggiation
+                print("[2/7] Analyzing musical structure...")
+                print("[3/7] Arranging for NES with arpeggiation...")
+                frames = arrange_for_nes(
+                    midi_data["events"],
+                    arp_speed=3,  # 20Hz arpeggiation (classic NES)
+                    verbose=args.verbose
+                )
+            else:
+                # Step 2: Map tracks to NES channels (legacy mode)
+                print("[2/7] Mapping tracks to NES channels...")
+                dpcm_index_path = 'dpcm_index.json'
+                mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
+
+                # Step 3: Generate frame data
+                print("[3/7] Generating NES frame data...")
+                emulator = NESEmulatorCore()
+                frames = emulator.process_all_tracks(mapped)
             
             # Step 4: Pattern detection or direct export
             if use_patterns:
@@ -421,6 +435,7 @@ def main():
     parser.add_argument('--version', action='version', version=f'MIDI2NES {__version__}')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     parser.add_argument('--debug', '-d', action='store_true', help='Enable debug overlay in ROM (shows APU status, frame counter, errors on screen)')
+    parser.add_argument('--arranger', '-a', action='store_true', help='Use intelligent arranger with arpeggiation for polyphonic content')
     
     subparsers = parser.add_subparsers(dest='command', help='Advanced commands (optional - default is MIDI to ROM conversion)')
 
@@ -567,6 +582,9 @@ def main():
             elif arg in ['--debug', '-d']:
                 global_args.extend([arg])
                 i += 1
+            elif arg in ['--arranger', '-a']:
+                global_args.extend([arg])
+                i += 1
             elif arg == '--version':
                 global_args.extend([arg])
                 i += 1
@@ -588,6 +606,7 @@ def main():
             print("\nUsage examples:")
             print("  midi2nes song.mid                  # Creates song.nes")
             print("  midi2nes song.mid output.nes       # Creates output.nes")
+            print("  midi2nes --arranger song.mid       # Smart voice allocation + arpeggiation")
             print("  midi2nes --no-patterns song.mid    # Direct export (no compression)")
             print("  midi2nes --debug song.mid          # Debug ROM (shows APU status on screen)")
             print("  midi2nes --skip-validation song.mid # Skip ROM validation after compilation")
@@ -602,6 +621,7 @@ def main():
                 self.verbose = '--verbose' in global_args or '-v' in global_args
                 self.no_patterns = '--no-patterns' in global_args
                 self.debug = '--debug' in global_args or '-d' in global_args
+                self.arranger = '--arranger' in global_args or '-a' in global_args
                 self.skip_validation = '--skip-validation' in global_args
                 self.command = None
 

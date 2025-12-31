@@ -8,12 +8,13 @@ from tracker.tempo_map import (EnhancedTempoMap, TempoValidationConfig, TempoOpt
 def parse_midi_to_frames(midi_path):
     """
     Fast MIDI parser that only does basic MIDI-to-frames conversion.
-    Pattern detection, loop detection, and other expensive analysis 
+    Pattern detection, loop detection, and other expensive analysis
     is moved to separate pipeline steps.
     """
     mid = mido.MidiFile(midi_path)
-    
+
     # Initialize tempo map with minimal validation for performance
+    # CRITICAL: Use the MIDI file's ticks_per_beat for accurate timing
     config = TempoValidationConfig(
         min_tempo_bpm=40.0,
         max_tempo_bpm=250.0,
@@ -22,6 +23,7 @@ def parse_midi_to_frames(midi_path):
     )
     tempo_map = EnhancedTempoMap(
         initial_tempo=500000,  # 120 BPM
+        ticks_per_beat=mid.ticks_per_beat,  # Use actual MIDI resolution
         validation_config=config,
         optimization_strategy=None  # Disable expensive optimization
     )
