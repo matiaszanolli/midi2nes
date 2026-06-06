@@ -86,3 +86,4 @@ dist/
 !examples/**/*.asm
 !examples/**/*.cfg
 !test_data/**/*.mid
+.aider*
