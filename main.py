@@ -99,6 +99,26 @@ def run_export(args):
             args.output,
             standalone=False  # Don't include header and vectors for project builder
         )
+            
+        # Pack DPCM samples for exported ASM
+        try:
+            from dpcm_sampler.dpcm_packer import DpcmPacker
+            packer = DpcmPacker()
+            dpcm_index_path = Path('dpcm_index.json')
+            if dpcm_index_path.exists():
+                with open(dpcm_index_path, 'r') as f:
+                    dpcm_index = json.load(f)
+                sorted_samples = sorted(dpcm_index.values(), key=lambda x: x['id'])
+                for sample in sorted_samples:
+                    pitch_rate = sample.get('pitch', 15)
+                    sample_path = Path(sample['filename'])
+                    if sample_path.exists():
+                        packer.add_sample(str(sample['id']), str(sample_path.absolute()).replace('\\', '/'), pitch_rate)
+                with open(args.output, 'a') as f:
+                    f.write("\n\n" + packer.generate_assembly())
+        except Exception as e:
+            print(f" Warning: Failed to pack DPCM samples: {e}")
+                
         print(f" Exported CA65 ASM -> {args.output}")
 
 def run_detect_patterns(args):
@@ -348,6 +368,50 @@ def run_full_pipeline(args):
                 standalone=False  # We'll create our own project structure
             )
             
+            # Step 5.5: Pack DPCM samples
+            print("[5.5/7] Packing DPCM samples...")
+            try:
+                from dpcm_sampler.dpcm_packer import DpcmPacker
+                packer = DpcmPacker()
+                dpcm_index_path = Path('dpcm_index.json')
+                
+                if dpcm_index_path.exists():
+                    with open(dpcm_index_path, 'r') as f:
+                        dpcm_index = json.load(f)
+                        
+                    # Sort items by ID so they strictly align with the 6502 sequencer index order
+                    sorted_samples = sorted(dpcm_index.values(), key=lambda x: x['id'])
+                    
+                    loaded_samples = 0
+                    for sample in sorted_samples:
+                        pitch_rate = sample.get('pitch', 15)
+                        sample_path = Path(sample['filename'])
+                        if sample_path.exists():
+                            packer.add_sample(
+                                sample_id=str(sample['id']),
+                                file_path=str(sample_path.absolute()).replace('\\', '/'), 
+                                pitch_rate=pitch_rate
+                            )
+                            loaded_samples += 1
+                        else:
+                            if args.verbose:
+                                print(f"  ⚠️ Warning: DPCM sample not found: {sample_path}")
+                    
+                    # Generate the lookup tables and binary includes, append to music.asm
+                    dpcm_asm = packer.generate_assembly()
+                    with open(music_asm, 'a') as f:
+                        f.write("\n\n" + dpcm_asm)
+                        
+                    if loaded_samples > 0:
+                        print(f"  ✓ Packed {loaded_samples} DPCM samples across {packer.current_bank_id + 1} banks")
+                else:
+                    print("  ℹ️ No dpcm_index.json found, skipping DPCM packing.")
+            except Exception as e:
+                print(f"  ⚠️ Warning: Failed to pack DPCM samples: {str(e)}")
+                if args.verbose:
+                    import traceback
+                    traceback.print_exc()
+                    
             # Step 6: Prepare NES project
             print("[6/7] Preparing NES project...")
             project_path = temp_path / "nes_project"
