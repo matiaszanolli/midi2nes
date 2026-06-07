@@ -18,6 +18,8 @@ temp_vol:       .res 1
 temp_arp:       .res 1
 temp_duty:      .res 1
 temp_note:      .res 1
+temp_pitch:     .res 1
+temp_pitch_hi:  .res 1
 temp_inst_off:  .res 1
 temp_inst_base: .res 1
 
@@ -191,6 +193,29 @@ audio_update:
     jsr read_macro
     sta temp_duty
     
+    ; 4. Pitch Macro
+    lda #4                  ; Offset 4 in instrument table (Pitch)
+    sta temp_inst_off
+    txa
+    clc
+    adc #10                 ; macro_steps index (x + 10)
+    sta temp1
+    lda #0                  ; Default value if null
+    sta temp2
+    lda temp_inst_off
+    jsr read_macro
+    sta temp_pitch
+
+    ; Sign extend pitch into temp_pitch_hi (for 16-bit signed addition)
+    lda temp_pitch
+    bpl @positive_pitch
+    lda #$FF
+    jmp @store_pitch_hi
+@positive_pitch:
+    lda #0
+@store_pitch_hi:
+    sta temp_pitch_hi
+    
     ; Write to Hardware
     ldy temp_note
     cpx #0
@@ -201,7 +226,9 @@ audio_update:
     beq @write_triangle
     cpx #3
     beq @write_noise
-    jmp @next_channel ; DMC handled later
+    cpx #4
+    beq @write_dpcm
+    jmp @next_channel
     
 @write_pulse1:
     lda temp_duty
@@ -216,8 +243,11 @@ audio_update:
     sta $4000
     
     lda ntsc_period_low, y
+    clc
+    adc temp_pitch
     sta $4002
     lda ntsc_period_high, y
+    adc temp_pitch_hi
     ora #$08      ; Length counter halt
     sta $4003
     jmp @next_channel
@@ -235,8 +265,11 @@ audio_update:
     sta $4004
     
     lda ntsc_period_low, y
+    clc
+    adc temp_pitch
     sta $4006
     lda ntsc_period_high, y
+    adc temp_pitch_hi
     ora #$08
     sta $4007
     jmp @next_channel
@@ -248,8 +281,11 @@ audio_update:
     lda #$FF      ; Halt length/linear counter, max volume
     sta $4008
     lda ntsc_period_low, y
+    clc
+    adc temp_pitch
     sta $400A
     lda ntsc_period_high, y
+    adc temp_pitch_hi
     ora #$08
     sta $400B
     jmp @next_channel
@@ -276,6 +312,36 @@ audio_update:
     sta $400F
     jmp @next_channel
 
+@write_dpcm:
+    ; current_note, x represents sample_id + 1
+    lda current_note, x
+    sec
+    sbc #1
+    tay
+
+    ; Stop any playing DPCM first to reset the byte counter
+    lda #$0F
+    sta $4015
+
+    ; --- Hot-Swap DPCM Bank into $C000 ---
+    lda #$46                ; MMC3 PRG Bank Mode 1, Register 6
+    sta $8000
+    lda dpcm_bank_table, y  ; Fetch the bank number for this sample
+    sta $8001
+
+    ; Load sample parameters
+    lda dpcm_pitch_table, y
+    sta $4010
+    lda dpcm_addr_table, y
+    sta $4012
+    lda dpcm_len_table, y
+    sta $4013
+    
+    ; Trigger playback
+    lda #$1F
+    sta $4015
+    jmp @next_channel
+
 @silence:
     cpx #0
     bne :+
@@ -296,6 +362,10 @@ audio_update:
     bne :+
     lda #$30      ; Silence Noise
     sta $400C
+    jmp @next_channel
+:   cpx #4
+    bne :+
+    ; We don't force stop DPCM for note-offs, we let the sample ring out naturally.
 :   
     jmp @next_channel
     

@@ -707,13 +707,23 @@ class CA65Exporter(BaseExporter):
                         if current_event['note'] > 0:
                             v_seq = optimize_macro(current_event['vol_seq'])
                             d_seq = optimize_macro(current_event['duty_seq'])
+                            p_seq = optimize_macro(current_event['pitch_seq'])
+                            a_seq = optimize_macro(current_event['arp_seq'])
+                            
                             if v_seq not in vol_macros:
                                 vol_macros[v_seq] = len(vol_macro_defs)
                                 vol_macro_defs.append(v_seq)
                             if d_seq not in duty_macros:
                                 duty_macros[d_seq] = len(duty_macro_defs)
                                 duty_macro_defs.append(d_seq)
-                            inst = (vol_macros[v_seq], 0, 0, duty_macros[d_seq])
+                            if p_seq not in pitch_macros:
+                                pitch_macros[p_seq] = len(pitch_macro_defs)
+                                pitch_macro_defs.append(p_seq)
+                            if a_seq not in arp_macros:
+                                arp_macros[a_seq] = len(arp_macro_defs)
+                                arp_macro_defs.append(a_seq)
+                                
+                            inst = (vol_macros[v_seq], arp_macros[a_seq], pitch_macros[p_seq], duty_macros[d_seq])
                             if inst not in instruments:
                                 instruments[inst] = len(instrument_defs)
                                 instrument_defs.append(inst)
@@ -722,27 +732,47 @@ class CA65Exporter(BaseExporter):
                         
                     current_note = note
                     if note > 0:
-                        current_event = {'note': note, 'dur': 1, 'vol_seq': [vol], 'duty_seq': [duty]}
+                        base_timer = self.midi_note_to_timer_value(note)
+                        pitch_val = frame_data.get('pitch', base_timer) if frame_data else base_timer
+                        pitch_offset = max(-128, min(127, pitch_val - base_timer)) & 0xFF
+                        arp_val = frame_data.get('arp', 0) & 0xFF
+                        current_event = {'note': note, 'dur': 1, 'vol_seq': [vol], 'duty_seq': [duty], 'pitch_seq': [pitch_offset], 'arp_seq': [arp_val]}
                     else:
                         current_event = {'note': 0, 'dur': 1}
                 else:
                     if current_event is not None:
                         current_event['dur'] += 1
                         if note > 0:
+                            base_timer = self.midi_note_to_timer_value(note)
+                            pitch_val = frame_data.get('pitch', base_timer) if frame_data else base_timer
+                            pitch_offset = max(-128, min(127, pitch_val - base_timer)) & 0xFF
+                            arp_val = frame_data.get('arp', 0) & 0xFF
                             current_event['vol_seq'].append(vol)
                             current_event['duty_seq'].append(duty)
+                            current_event['pitch_seq'].append(pitch_offset)
+                            current_event['arp_seq'].append(arp_val)
 
             if current_event is not None:
                 if current_event['note'] > 0:
                     v_seq = optimize_macro(current_event['vol_seq'])
                     d_seq = optimize_macro(current_event['duty_seq'])
+                    p_seq = optimize_macro(current_event['pitch_seq'])
+                    a_seq = optimize_macro(current_event['arp_seq'])
+                    
                     if v_seq not in vol_macros:
                         vol_macros[v_seq] = len(vol_macro_defs)
                         vol_macro_defs.append(v_seq)
                     if d_seq not in duty_macros:
                         duty_macros[d_seq] = len(duty_macro_defs)
                         duty_macro_defs.append(d_seq)
-                    inst = (vol_macros[v_seq], 0, 0, duty_macros[d_seq])
+                    if p_seq not in pitch_macros:
+                        pitch_macros[p_seq] = len(pitch_macro_defs)
+                        pitch_macro_defs.append(p_seq)
+                    if a_seq not in arp_macros:
+                        arp_macros[a_seq] = len(arp_macro_defs)
+                        arp_macro_defs.append(a_seq)
+                        
+                    inst = (vol_macros[v_seq], arp_macros[a_seq], pitch_macros[p_seq], duty_macros[d_seq])
                     if inst not in instruments:
                         instruments[inst] = len(instrument_defs)
                         instrument_defs.append(inst)
