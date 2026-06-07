@@ -228,7 +228,8 @@ class TestRunPrepare:
         
         run_prepare(args)
         
-        mock_builder_class.assert_called_once_with(str(self.test_output))
+        mock_builder_class.assert_called_once()
+        assert mock_builder_class.call_args[0][0] == str(self.test_output)
         mock_builder.prepare_project.assert_called_once_with(str(self.test_input))
         
         # Check all print calls
@@ -248,7 +249,8 @@ class TestRunPrepare:
         run_prepare(args)
         
         # Should not print success messages when preparation fails
-        mock_builder_class.assert_called_once_with(str(self.test_output))
+        mock_builder_class.assert_called_once()
+        assert mock_builder_class.call_args[0][0] == str(self.test_output)
 
 
 class TestRunExport:

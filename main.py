@@ -53,7 +53,8 @@ def run_frames(args):
     print(f" Generated frames -> {args.output}")
 
 def run_prepare(args):
-    builder = NESProjectBuilder(args.output)
+    from mappers.mmc3 import MMC3Mapper
+    builder = NESProjectBuilder(args.output, mapper=MMC3Mapper())
     if builder.prepare_project(args.input):
         print(f" Prepared NES project -> {args.output}")
         print(" Ready for CC65 compilation!")
@@ -418,7 +419,9 @@ def run_full_pipeline(args):
 
             # Enable debug mode if requested
             debug_mode = hasattr(args, 'debug') and args.debug
-            builder = NESProjectBuilder(str(project_path), debug_mode=debug_mode)
+            
+            from mappers.mmc3 import MMC3Mapper
+            builder = NESProjectBuilder(str(project_path), debug_mode=debug_mode, mapper=MMC3Mapper())
 
             if not builder.prepare_project(str(music_asm)):
                 print("[ERROR] Failed to prepare NES project")
