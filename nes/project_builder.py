@@ -86,6 +86,10 @@ class NESProjectBuilder:
 
         # Read music.asm content
         music_content = Path(music_asm_path).read_text()
+        
+        # Remove old includes if they were left over
+        music_content = music_content.replace('.include "mmc3_init.asm"\n', '')
+        music_content = music_content.replace('.include "audio_engine.asm"\n', '')
 
         print(f"  Using {self.mapper.name} with {self.mapper.prg_rom_size // 1024}KB PRG-ROM")
 
@@ -93,6 +97,8 @@ class NESProjectBuilder:
             print(f"  Debug mode enabled - adding on-screen diagnostics")
             from nes.debug_overlay import NESDebugOverlay
             overlay = NESDebugOverlay(enable_overlay=True)
+            music_content += "\n.importzp ptr1, temp1, temp2, frame_counter\n"
+            music_content += "\n.global debug_init, debug_update, debug_test_apu\n"
             music_content += "\n" + overlay.generate_full_debug_system()
 
         # Write music.asm
@@ -101,7 +107,12 @@ class NESProjectBuilder:
         # MMC3 mode overriding
         init_src = Path(__file__).parent / "mmc3_init.asm"
         if init_src.exists():
-            (self.project_path / "mmc3_init.asm").write_text(init_src.read_text())
+            init_content = init_src.read_text()
+            if self.debug_mode:
+                init_content = ".import debug_init, debug_test_apu, debug_update\n" + init_content
+                init_content = init_content.replace("JSR audio_init", "JSR debug_init\n    JSR debug_test_apu\n    JSR audio_init")
+                init_content = init_content.replace("JSR audio_update", "JSR audio_update\n    JSR debug_update")
+            (self.project_path / "mmc3_init.asm").write_text(init_content)
             
         engine_src = Path(__file__).parent / "audio_engine.asm"
         if engine_src.exists():
@@ -113,8 +124,8 @@ class NESProjectBuilder:
         else:
             (self.project_path / "nes.cfg").write_text(self.mapper.generate_linker_config())
             
-        # Generate iNES Header
-        header_content = """
+        # Generate main.asm
+        main_content = """
 .segment "HEADER"
     .byte "NES", $1A
     .byte $08        ; 128KB PRG ROM
@@ -124,8 +135,11 @@ class NESProjectBuilder:
     .byte $00
     .byte $00
     .res 5, $00
+
+.include "mmc3_init.asm"
+.include "audio_engine.asm"
 """
-        (self.project_path / "header.asm").write_text(header_content)
+        (self.project_path / "main.asm").write_text(main_content)
         self._create_build_script_mmc3()
 
         return True
@@ -245,9 +259,9 @@ irq:
         script_path = self.project_path / script_name
         
         if is_windows:
-            script = "@echo off\necho Compiling MMC3 Audio Engine...\nca65 header.asm -g -o header.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o output.nes header.o music.o\nif %errorlevel% neq 0 exit /b %errorlevel%\necho Done!\n"
+            script = "@echo off\necho Compiling MMC3 Audio Engine...\nca65 main.asm -g -o main.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o output.nes main.o music.o\nif %errorlevel% neq 0 exit /b %errorlevel%\necho Done!\n"
         else:
-            script = "#!/bin/bash\nset -e\necho \"Compiling MMC3 Audio Engine...\"\nca65 header.asm -g -o header.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o output.nes header.o music.o\necho \"Done!\"\n"
+            script = "#!/bin/bash\nset -e\necho \"Compiling MMC3 Audio Engine...\"\nca65 main.asm -g -o main.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o output.nes main.o music.o\necho \"Done!\"\n"
             
         script_path.write_text(script)
         if not is_windows:

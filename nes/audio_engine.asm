@@ -1,8 +1,18 @@
 ; ---------------------------------------------------------------------------
 ; midi2nes Macro Audio Engine (Sequencer)
 ; ---------------------------------------------------------------------------
+.import pulse1_sequence, pulse2_sequence, triangle_sequence, noise_sequence, dpcm_sequence
+.import ntsc_period_low, ntsc_period_high
+.import dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table
+.import instrument_table
+
 .segment "ZEROPAGE"
 ptr1:           .res 2
+
+.exportzp ptr1, temp1, temp2, frame_counter
+temp1:          .res 1
+temp2:          .res 1
+frame_counter:  .res 2
 
 ; 5 channels: 0=Pulse1, 1=Pulse2, 2=Triangle, 3=Noise, 4=DMC
 stream_ptr_lo:  .res 5
@@ -60,6 +70,11 @@ audio_init:
     sta macro_steps, x
     dex
     bpl @clear_macros
+    
+    ; Initialize frame counter
+    lda #0
+    sta frame_counter
+    sta frame_counter+1
 
     ; Clear internal channel state
     ldx #4
@@ -74,6 +89,10 @@ audio_init:
     rts
     
 audio_update:
+    inc frame_counter
+    bne :+
+    inc frame_counter+1
+:
     ldx #0
 @channel_loop:
     lda frame_wait, x
@@ -95,8 +114,9 @@ audio_update:
     inc ptr1+1
 :   
     cmp #$FF
-    beq @end_of_stream ; Halt sequence if end marker $FF is hit
-    
+    bne :+
+    jmp @end_of_stream ; Halt sequence if end marker $FF is hit
+:   
     cmp #$60
     bcc @is_note
     cmp #$80
@@ -219,17 +239,22 @@ audio_update:
     ; Write to Hardware
     ldy temp_note
     cpx #0
-    beq @write_pulse1
-    cpx #1
-    beq @write_pulse2
-    cpx #2
-    beq @write_triangle
-    cpx #3
-    beq @write_noise
-    cpx #4
-    beq @write_dpcm
-    jmp @next_channel
-    
+    bne :+
+    jmp @write_pulse1
+:   cpx #1
+    bne :+
+    jmp @write_pulse2
+:   cpx #2
+    bne :+
+    jmp @write_triangle
+:   cpx #3
+    bne :+
+    jmp @write_noise
+:   cpx #4
+    bne :+
+    jmp @write_dpcm
+:   jmp @next_channel
+
 @write_pulse1:
     lda temp_duty
     asl
@@ -412,10 +437,14 @@ read_macro:
     lda instrument_table+1, y
     sta ptr1+1
     
+    ; Save channel index
+    txa
+    pha
+    
     ; Get current step for this macro
-    ldy temp1
-    lda macro_steps, y
-    tay 
+    ldx temp1
+    lda macro_steps, x
+    tay
     
     ; Read the macro byte
     lda (ptr1), y
@@ -433,15 +462,18 @@ read_macro:
     
 @is_null:
     lda temp2
-    rts
+    jmp @done_macro
     
 @not_end:
     ; Increment step counter
-    ldy temp1
-    inc macro_steps, y
+    inc macro_steps, x
     
-    ; Return the value we just read
-    lda macro_steps, y
-    dey
     lda (ptr1), y
+    
+@done_macro:
+    ; Save result, restore channel index, and return
+    sta temp2
+    pla
+    tax
+    lda temp2
     rts

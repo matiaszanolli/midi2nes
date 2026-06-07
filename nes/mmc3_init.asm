@@ -6,7 +6,6 @@
 .segment "CODE"
 
 .export reset_handler, nmi_handler, irq_handler
-.import audio_init, audio_update
 
 ; ---------------------------------------------------------------------------
 ; reset_handler: Executed on console power-up or reset button press
