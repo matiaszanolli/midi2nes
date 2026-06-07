@@ -1,7 +1,7 @@
 from .base import BaseMapper
 
 
-class Mmc3Mapper(BaseMapper):
+class MMC3Mapper(BaseMapper):
     """
     MMC3 Mapper implementation (iNES Mapper 004).
     Designed to support 512KB ROMs with large DPCM drum libraries.
