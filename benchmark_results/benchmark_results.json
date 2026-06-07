@@ -1,7 +1,45 @@
 {
-  "synthetic_test": {
-    "execution_time": 0.001,
-    "memory_peak": 10.0,
-    "note": "Synthetic test - no actual MIDI files provided"
+  "NBA.mid": {
+    "file_path": "NBA.mid",
+    "file_size_kb": 0.3154296875,
+    "execution_time": 9.49048712401418,
+    "memory_peak": 17.18359375,
+    "stages": [
+      {
+        "parse": {
+          "duration_ms": 112.40445799194276,
+          "success": true
+        }
+      },
+      {
+        "map": {
+          "duration_ms": 13.325400999747217,
+          "success": true
+        }
+      },
+      {
+        "frames": {
+          "duration_ms": 1.1168919736519456,
+          "success": true
+        }
+      },
+      {
+        "pattern_detection": {
+          "duration_ms": 9360.433267022017,
+          "success": true
+        }
+      },
+      {
+        "export": {
+          "duration_ms": 2.8813090175390244,
+          "success": true
+        }
+      }
+    ],
+    "midi_info": {
+      "tracks": 1,
+      "total_events": 7
+    },
+    "throughput": 0.7375806856412676
   }
 }

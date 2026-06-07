@@ -11,6 +11,15 @@ frame_wait:     .res 5
 current_len:    .res 5
 current_note:   .res 5
 current_inst:   .res 5
+macro_steps:    .res 20 ; 0-4=Vol, 5-9=Arp, 10-14=Pitch, 15-19=Duty
+
+; Locals for macro processing
+temp_vol:       .res 1
+temp_arp:       .res 1
+temp_duty:      .res 1
+temp_note:      .res 1
+temp_inst_off:  .res 1
+temp_inst_base: .res 1
 
 .segment "CODE"
 .export audio_init, audio_update
@@ -42,6 +51,14 @@ audio_init:
     lda #>dpcm_sequence
     sta stream_ptr_hi+4
     
+    ; Clear macro steps
+    ldx #19
+@clear_macros:
+    lda #0
+    sta macro_steps, x
+    dex
+    bpl @clear_macros
+
     ; Clear internal channel state
     ldx #4
 @clear_loop:
@@ -108,9 +125,17 @@ audio_update:
     
 @is_note:
     sta current_note, x
+    
+    ; Reset all macro sequence steps to 0
+    lda #0
+    sta macro_steps, x       ; Vol step
+    sta macro_steps+5, x     ; Arp step
+    sta macro_steps+10, x    ; Pitch step
+    sta macro_steps+15, x    ; Duty step
+    
     lda current_len, x
     sta frame_wait, x
-    ; Wait length-1 frames since we process and play the note immediately on this frame
+    ; Wait length-1 frames since we process and play immediately on this frame
     dec frame_wait, x 
     
     ; Save the advanced pointer
@@ -121,25 +146,75 @@ audio_update:
     
 @process_macros:
     ; ---------------------------------------------------------
-    ; Synthesizer Phase (Hardware Write)
-    ; (Volume, Arpeggio, Duty, and Pitch macros will be added here in Step 2)
+    ; Synthesizer Phase (Macro Evaluation & Hardware Write)
     ; ---------------------------------------------------------
     lda current_note, x
-    beq @silence
+    bne :+
+    jmp @silence
+:
+    ; 1. Volume Macro
+    lda #0                  ; Offset 0 in instrument table (Volume)
+    sta temp_inst_off
+    txa                     ; macro_steps index (x)
+    sta temp1
+    lda #15                 ; Default value if null
+    sta temp2
+    lda temp_inst_off
+    jsr read_macro
+    sta temp_vol
     
-    tay
+    ; 2. Arpeggio Macro
+    lda #2                  ; Offset 2 in instrument table (Arp)
+    sta temp_inst_off
+    txa
+    clc
+    adc #5                  ; macro_steps index (x + 5)
+    sta temp1
+    lda #0                  ; Default value if null
+    sta temp2
+    lda temp_inst_off
+    jsr read_macro
+    clc
+    adc current_note, x     ; Add arp offset to base note
+    sta temp_note
     
+    ; 3. Duty Macro
+    lda #6                  ; Offset 6 in instrument table (Duty)
+    sta temp_inst_off
+    txa
+    clc
+    adc #15                 ; macro_steps index (x + 15)
+    sta temp1
+    lda #2                  ; Default value if null (50% duty)
+    sta temp2
+    lda temp_inst_off
+    jsr read_macro
+    sta temp_duty
+    
+    ; Write to Hardware
+    ldy temp_note
     cpx #0
     beq @write_pulse1
     cpx #1
     beq @write_pulse2
     cpx #2
     beq @write_triangle
-    jmp @next_channel ; Noise/DMC handled later
+    cpx #3
+    beq @write_noise
+    jmp @next_channel ; DMC handled later
     
 @write_pulse1:
-    lda #$BF      ; Duty 50%, Constant Vol 15
+    lda temp_duty
+    asl
+    asl
+    asl
+    asl
+    asl
+    asl           ; Shift duty bits into D7, D6
+    ora #$30      ; Constant volume flag
+    ora temp_vol
     sta $4000
+    
     lda ntsc_period_low, y
     sta $4002
     lda ntsc_period_high, y
@@ -148,8 +223,17 @@ audio_update:
     jmp @next_channel
     
 @write_pulse2:
-    lda #$BF      ; Duty 50%, Constant Vol 15
+    lda temp_duty
+    asl
+    asl
+    asl
+    asl
+    asl
+    asl           ; Shift duty bits into D7, D6
+    ora #$30      ; Constant volume flag
+    ora temp_vol
     sta $4004
+    
     lda ntsc_period_low, y
     sta $4006
     lda ntsc_period_high, y
@@ -158,6 +242,9 @@ audio_update:
     jmp @next_channel
     
 @write_triangle:
+    lda temp_vol
+    beq @silence_tri
+    
     lda #$FF      ; Halt length/linear counter, max volume
     sta $4008
     lda ntsc_period_low, y
@@ -167,6 +254,28 @@ audio_update:
     sta $400B
     jmp @next_channel
     
+@silence_tri:
+    lda #$80      ; Linear Counter Halt (Safely Silences Triangle)
+    sta $4008
+    jmp @next_channel
+
+@write_noise:
+    lda #$30      ; Constant volume flag & Length counter halt
+    ora temp_vol
+    sta $400C
+    
+    lda temp_duty
+    lsr           ; Shift lowest bit of duty macro (Noise Mode) into carry
+    lda temp_note
+    and #$0F      ; Mask pitch down to 4-bit Period Index
+    bcc :+
+    ora #$80      ; Set Mode flag if duty bit was 1
+:   sta $400E
+    
+    lda #$08      ; Length counter load (resets envelope phase safely)
+    sta $400F
+    jmp @next_channel
+
 @silence:
     cpx #0
     bne :+
@@ -182,6 +291,11 @@ audio_update:
     bne :+
     lda #$80      ; Linear Counter Halt (Safely Silences Triangle)
     sta $4008
+    jmp @next_channel
+:   cpx #3
+    bne :+
+    lda #$30      ; Silence Noise
+    sta $400C
 :   
     jmp @next_channel
     
@@ -195,4 +309,69 @@ audio_update:
     jmp @channel_loop
     
 @done:
+    rts
+
+; ---------------------------------------------------------------------------
+; read_macro subroutine
+; ---------------------------------------------------------------------------
+; Inputs:
+; A = Offset in instrument table (0=Vol, 2=Arp, 4=Pitch, 6=Duty)
+; temp1 = Index into macro_steps array
+; temp2 = Default value to return if the macro is null ($FF on step 0)
+; Returns: Evaluated macro value in A
+; ---------------------------------------------------------------------------
+read_macro:
+    sta temp_inst_off
+    
+    ; inst_base = current_inst[x] * 8
+    lda current_inst, x
+    asl
+    asl
+    asl
+    sta temp_inst_base
+    
+    ; Y = inst_base + offset
+    lda temp_inst_base
+    clc
+    adc temp_inst_off
+    tay
+    
+    ; ptr1 = address of the actual macro array
+    lda instrument_table, y
+    sta ptr1
+    lda instrument_table+1, y
+    sta ptr1+1
+    
+    ; Get current step for this macro
+    ldy temp1
+    lda macro_steps, y
+    tay 
+    
+    ; Read the macro byte
+    lda (ptr1), y
+    cmp #$FF
+    bne @not_end
+    
+    ; Macro ended or is null
+    cpy #0
+    beq @is_null
+    
+    ; Not step 0, sustain previous value
+    dey
+    lda (ptr1), y
+    rts
+    
+@is_null:
+    lda temp2
+    rts
+    
+@not_end:
+    ; Increment step counter
+    ldy temp1
+    inc macro_steps, y
+    
+    ; Return the value we just read
+    lda macro_steps, y
+    dey
+    lda (ptr1), y
     rts

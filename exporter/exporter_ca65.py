@@ -657,55 +657,143 @@ class CA65Exporter(BaseExporter):
         lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
         lines.append('')
         
-        lines.append('; The Instrument Macro Pointers')
-        lines.append('instrument_table:')
-        lines.append('    .word macro_null, macro_null, macro_null, macro_null')
-        lines.append('')
-        lines.append('macro_null:')
-        lines.append('    .byte $FF')
-        lines.append('')
+        def optimize_macro(seq):
+            if not seq: return ()
+            last_val = seq[-1]
+            for i in range(len(seq)-1, -1, -1):
+                if seq[i] != last_val:
+                    return tuple(seq[:i+2])
+            return (seq[0],)
+
+        vol_macros = {(): 0}
+        vol_macro_defs = [()]
+        duty_macros = {(): 0}
+        duty_macro_defs = [()]
+        arp_macros = {(): 0}
+        arp_macro_defs = [()]
+        pitch_macros = {(): 0}
+        pitch_macro_defs = [()]
         
-        # Bytecode generation for channels
+        instruments = {(0, 0, 0, 0): 0}
+        instrument_defs = [(0, 0, 0, 0)]
+
+        channel_events = {ch: [] for ch in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']}
+        
         for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
-            lines.append(f'{channel}_sequence:')
             if channel not in frames or not frames[channel]:
-                lines.append('    .byte $FF')
-                lines.append('')
                 continue
                 
             channel_frames = frames[channel]
-            max_frame = max(int(f) for f in channel_frames.keys())
+            max_frame = max(int(f) for f in channel_frames.keys()) if channel_frames else -1
             
-            current_note = None
-            current_duration = 0
+            current_note = 0
+            current_event = None
             
             for frame_idx in range(max_frame + 1):
                 frame_data = channel_frames.get(str(frame_idx), channel_frames.get(frame_idx))
                 note = frame_data.get('note', 0) if frame_data else 0
+                vol = frame_data.get('volume', 0) if frame_data else 0
+                control = frame_data.get('control', 0x80) if frame_data else 0x80
+                duty = (control >> 6) & 0x03
                 
-                if frame_data and frame_data.get('volume', 0) == 0:
+                if frame_data and vol == 0:
                     note = 0
                     
-                if note != current_note:
-                    if current_duration > 0:
-                        rem_dur = current_duration
-                        while rem_dur > 0:
-                            write_dur = min(rem_dur, 32)
-                            lines.append(f'    .byte ${(write_dur - 1) + 0x60:02X}, ${current_note:02X}')
-                            rem_dur -= write_dur
-                            
-                    current_note = note
-                    current_duration = 1
-                else:
-                    current_duration += 1
-            
-            if current_duration > 0:
-                rem_dur = current_duration
-                while rem_dur > 0:
-                    write_dur = min(rem_dur, 32)
-                    lines.append(f'    .byte ${(write_dur - 1) + 0x60:02X}, ${current_note:02X}')
-                    rem_dur -= write_dur
+                if note > 95:
+                    note = 95
                     
+                if note != current_note:
+                    if current_event is not None:
+                        if current_event['note'] > 0:
+                            v_seq = optimize_macro(current_event['vol_seq'])
+                            d_seq = optimize_macro(current_event['duty_seq'])
+                            if v_seq not in vol_macros:
+                                vol_macros[v_seq] = len(vol_macro_defs)
+                                vol_macro_defs.append(v_seq)
+                            if d_seq not in duty_macros:
+                                duty_macros[d_seq] = len(duty_macro_defs)
+                                duty_macro_defs.append(d_seq)
+                            inst = (vol_macros[v_seq], 0, 0, duty_macros[d_seq])
+                            if inst not in instruments:
+                                instruments[inst] = len(instrument_defs)
+                                instrument_defs.append(inst)
+                            current_event['inst_id'] = instruments[inst]
+                        channel_events[channel].append(current_event)
+                        
+                    current_note = note
+                    if note > 0:
+                        current_event = {'note': note, 'dur': 1, 'vol_seq': [vol], 'duty_seq': [duty]}
+                    else:
+                        current_event = {'note': 0, 'dur': 1}
+                else:
+                    if current_event is not None:
+                        current_event['dur'] += 1
+                        if note > 0:
+                            current_event['vol_seq'].append(vol)
+                            current_event['duty_seq'].append(duty)
+
+            if current_event is not None:
+                if current_event['note'] > 0:
+                    v_seq = optimize_macro(current_event['vol_seq'])
+                    d_seq = optimize_macro(current_event['duty_seq'])
+                    if v_seq not in vol_macros:
+                        vol_macros[v_seq] = len(vol_macro_defs)
+                        vol_macro_defs.append(v_seq)
+                    if d_seq not in duty_macros:
+                        duty_macros[d_seq] = len(duty_macro_defs)
+                        duty_macro_defs.append(d_seq)
+                    inst = (vol_macros[v_seq], 0, 0, duty_macros[d_seq])
+                    if inst not in instruments:
+                        instruments[inst] = len(instrument_defs)
+                        instrument_defs.append(inst)
+                    current_event['inst_id'] = instruments[inst]
+                channel_events[channel].append(current_event)
+
+        lines.append('; The Instrument Macro Pointers')
+        lines.append('instrument_table:')
+        for inst in instrument_defs:
+            v_id, a_id, p_id, d_id = inst
+            lines.append(f'    .word macro_vol_{v_id}, macro_arp_{a_id}, macro_pitch_{p_id}, macro_duty_{d_id}')
+        lines.append('')
+        
+        for name, defs in [('vol', vol_macro_defs), ('arp', arp_macro_defs), ('pitch', pitch_macro_defs), ('duty', duty_macro_defs)]:
+            lines.append(f'; --- {name.capitalize()} Macros ---')
+            for i, seq in enumerate(defs):
+                lines.append(f'macro_{name}_{i}:')
+                if not seq:
+                    lines.append('    .byte $FF')
+                else:
+                    lines.append('    .byte ' + ', '.join(f'${val:02X}' for val in seq) + ', $FF')
+            lines.append('')
+        
+        # Bytecode generation for channels
+        for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
+            lines.append(f'{channel}_sequence:')
+            events = channel_events[channel]
+            if not events:
+                lines.append('    .byte $FF')
+                lines.append('')
+                continue
+                
+            current_inst = -1
+            
+            for event in events:
+                note = event['note']
+                dur = event['dur']
+                
+                if note > 0:
+                    inst_id = event['inst_id']
+                    if inst_id != current_inst:
+                        lines.append(f'    .byte $80, ${inst_id:02X} ; CMD_INSTRUMENT')
+                        current_inst = inst_id
+                
+                if dur > 0:
+                    rem_dur = dur
+                    while rem_dur > 0:
+                        write_dur = min(rem_dur, 32)
+                        lines.append(f'    .byte ${(write_dur - 1) + 0x60:02X}, ${note:02X} ; Length {write_dur}, Note {note}')
+                        rem_dur -= write_dur
+            
             lines.append('    .byte $FF')
             lines.append('')
             
