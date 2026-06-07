@@ -149,7 +149,16 @@ ch_macro_duty_hi:   .res 4
 ch_macro_duty_idx:  .res 4
 ch_duty_current:    .res 4
 
+ch_macro_pitch_lo:  .res 4
+ch_macro_pitch_hi:  .res 4
+ch_macro_pitch_idx: .res 4
+ch_pitch_offset:    .res 4 ; signed 8-bit offset
+
+ch_base_note:       .res 4 ; The base note for the current sound
+
 apu_shadow_ctrl:    .res 4
+apu_shadow_timer_lo: .res 4
+apu_shadow_timer_hi: .res 4
 
 .segment "CODE"
 ; ------------------------------------------------------------------
@@ -174,6 +183,12 @@ seq_cmd_instrument:
     lda instrument_table+1, y
     sta ch_macro_vol_hi, x
     
+    ; Load Pitch Macro pointer (Offset 4)
+    lda instrument_table+4, y
+    sta ch_macro_pitch_lo, x
+    lda instrument_table+5, y
+    sta ch_macro_pitch_hi, x
+
     ; Load Duty Macro pointer (Offset 6)
     lda instrument_table+6, y
     sta ch_macro_duty_lo, x
@@ -184,6 +199,7 @@ seq_cmd_instrument:
     lda #$00
     sta ch_macro_vol_idx, x
     sta ch_macro_duty_idx, x
+    sta ch_macro_pitch_idx, x
     rts
 
 ; ------------------------------------------------------------------
@@ -191,6 +207,8 @@ seq_cmd_instrument:
 ; Evaluates volume and duty macros for channel X
 ; ------------------------------------------------------------------
 .global process_channel_macros
+.import ntsc_period_low, ntsc_period_high
+
 process_channel_macros:
     ; --- Process Volume Macro ---
     lda ch_macro_vol_lo, x
@@ -260,6 +278,60 @@ process_channel_macros:
     inc ch_macro_duty_idx, x
 
 @sustain_duty:
+
+    ; --- Process Pitch Macro (Vibrato/Slides) ---
+    lda ch_macro_pitch_lo, x
+    sta ptr1
+    lda ch_macro_pitch_hi, x
+    sta ptr1+1
+
+    ldy ch_macro_pitch_idx, x
+    lda (ptr1), y
+    cmp #$FF
+    beq @sustain_pitch
+    cmp #$FE
+    beq @loop_pitch
+
+    sta ch_pitch_offset, x
+    inc ch_macro_pitch_idx, x
+    jmp @calc_final_pitch
+
+@loop_pitch:
+    iny
+    lda (ptr1), y
+    sta ch_macro_pitch_idx, x
+    tay
+    lda (ptr1), y
+    sta ch_pitch_offset, x
+    inc ch_macro_pitch_idx, x
+
+@sustain_pitch:
+
+@calc_final_pitch:
+    ; Sign-extend the pitch offset into temp1
+    lda ch_pitch_offset, x
+    bpl @positive_pitch
+    lda #$FF
+    jmp @store_pitch_hi
+@positive_pitch:
+    lda #$00
+@store_pitch_hi:
+    sta temp1
+
+    ; Get base note period from lookup table
+    ldy ch_base_note, x
+    
+    ; Calculate final 16-bit period = base_period + pitch_offset
+    ; Low byte
+    lda ntsc_period_low, y
+    clc
+    adc ch_pitch_offset, x
+    sta apu_shadow_timer_lo, x
+    
+    ; High byte
+    lda ntsc_period_high, y
+    adc temp1
+    sta apu_shadow_timer_hi, x
 
 @combine:
     ; Combine Duty + Volume + Constant Volume Flag ($30)
