@@ -598,356 +598,118 @@ class CA65Exporter(BaseExporter):
         Strategy: Expand pattern references back into full frame data, then use direct export.
         This maintains pattern detection for analysis while avoiding complex playback logic.
         """
-
-        # If no patterns provided, use direct frame export
-        if not patterns or not references:
-            print("⚠️  No patterns provided, using direct frame export")
-            return self.export_direct_frames(frames, output_path, standalone)
-
-        print("🔧 CA65 Exporter: Expanding patterns back to frames for export")
-
-        # Step 1: Detect reference format and convert to pattern_id -> positions format
-        # References can be:
-        # Format A: pattern_id -> [position_list] (from pattern detector)
-        # Format B: frame_str -> (pattern_id, offset) (from main.py conversion)
-
-        pattern_refs_by_id = {}
-
-        if references:
-            first_key, first_value = next(iter(references.items()))
-
-            if isinstance(first_value, list):
-                # Format A: pattern_id -> [position_list]
-                print(f"  Using pattern detector reference format")
-                pattern_refs_by_id = references
-            else:
-                # Format B: frame_str -> (pattern_id, offset)
-                # Convert back to Format A by grouping by pattern_id
-                print(f"  Converting main.py reference format")
-                for frame_str, (pattern_id, offset) in references.items():
-                    if pattern_id not in pattern_refs_by_id:
-                        pattern_refs_by_id[pattern_id] = []
-                    # Store (frame_num, offset) tuples
-                    pattern_refs_by_id[pattern_id].append((int(frame_str), offset))
-
-        # Step 2: Build position->frame mapping from the original frames
-        all_event_frames = set()
-        for channel_name, channel_data in frames.items():
-            if channel_data:
-                all_event_frames.update(int(f) for f in channel_data.keys())
-        position_to_frame = sorted(all_event_frames)
-
-        print(f"  Total event positions: {len(position_to_frame)}")
-        print(f"  Frame range: {position_to_frame[0]} to {position_to_frame[-1]}")
-
-        # Step 3: Expand pattern references back to frame data
-        # This reconstructs what events should be at each frame based on pattern matches
-        expanded_frames = {channel: {} for channel in frames.keys()}
-
-        for pattern_id, ref_data in pattern_refs_by_id.items():
-            pattern_data = patterns.get(pattern_id)
-            if not pattern_data:
-                continue
-
-            pattern_events = pattern_data.get('events', [])
-
-            print(f"  Expanding {pattern_id}: {len(ref_data)} references, {len(pattern_events)} events")
-
-            # Find the pattern's base frame (minimum frame in pattern events)
-            if not pattern_events:
-                continue
-
-            pattern_base_frame = min(e['frame'] for e in pattern_events)
-
-            # Check if ref_data is positions or (frame, offset) tuples
-            if ref_data and isinstance(ref_data[0], tuple):
-                # Format B: (frame_num, offset) tuples
-                for start_frame, offset in ref_data:
-                    # Expand each event in the pattern relative to this start frame
-                    for event in pattern_events:
-                        # Calculate the offset from pattern base
-                        event_offset = event['frame'] - pattern_base_frame
-
-                        # Calculate the actual frame number for this event
-                        actual_frame = start_frame + event_offset
-
-                        # Determine which channel this event belongs to
-                        # For now, assume pulse1 (we can enhance this later)
-                        channel = 'pulse1'
-
-                        # Add the event to expanded frames
-                        if channel not in expanded_frames:
-                            expanded_frames[channel] = {}
-
-                        expanded_frames[channel][str(actual_frame)] = {
-                            'note': event['note'],
-                            'volume': event.get('volume', 8),
-                            'pitch': event.get('pitch', self.midi_note_to_timer_value(event['note'])),
-                            'control': event.get('control', 0x88)  # Default pulse control
-                        }
-            else:
-                # Format A: position indices
-                for ref_position in ref_data:
-                    if ref_position >= len(position_to_frame):
-                        continue
-
-                    # Get the actual frame number for this position
-                    start_frame = position_to_frame[ref_position]
-
-                    # Expand each event in the pattern relative to this reference position
-                    for event in pattern_events:
-                        # Calculate the offset from pattern base
-                        event_offset = event['frame'] - pattern_base_frame
-
-                        # Calculate the actual frame number for this event
-                        actual_frame = start_frame + event_offset
-
-                        # Determine which channel this event belongs to
-                        # For now, assume pulse1 (we can enhance this later)
-                        channel = 'pulse1'
-
-                        # Add the event to expanded frames
-                        if channel not in expanded_frames:
-                            expanded_frames[channel] = {}
-
-                        expanded_frames[channel][str(actual_frame)] = {
-                            'note': event['note'],
-                            'volume': event.get('volume', 8),
-                            'pitch': event.get('pitch', self.midi_note_to_timer_value(event['note'])),
-                            'control': event.get('control', 0x88)  # Default pulse control
-                        }
-
-        # DON'T merge with original frames - the expanded patterns represent the full composition
-        # The original frames were used for pattern detection but are now redundant
-
-        # Check if pattern expansion produced reasonable results
-        total_original_events = sum(len(ch) for ch in frames.values())
-        total_expanded_events = sum(len(ch) for ch in expanded_frames.values())
-
-        print(f"✅ Pattern expansion complete")
-        for channel, data in expanded_frames.items():
-            if data:
-                print(f"  {channel}: {len(data)} frames")
-
-        print(f"  Original events: {total_original_events}, Expanded events: {total_expanded_events}")
-
-        # If expansion produced significantly different event count, patterns likely overlap/conflict
-        # Fall back to direct export of original frames
-        if abs(total_expanded_events - total_original_events) > total_original_events * 0.5:
-            print(f"⚠️  Pattern expansion mismatch detected ({total_expanded_events} vs {total_original_events} events)")
-            print(f"     Using original frames instead (patterns have absolute frame offsets)")
-            return self.export_direct_frames(frames, output_path, standalone)
-
-        # Step 4: Use expanded pattern data for export
-        return self.export_direct_frames(expanded_frames, output_path, standalone)
-        
-        print("🔧 CA65 Exporter: Pattern compression mode")
+        print("🔧 CA65 Exporter: MMC3 Macro Bytecode mode")
         
         lines = []
-        lines.append("; CA65 Assembly Export (Pattern Compressed)")
-        lines.append("; Generated by MIDI2NES - Fixed Exporter")
-        lines.append("")
-        
-        # Add header segment if standalone
-        if standalone:
-            lines.append('.segment "HEADER"')
-            lines.append('    .byte "NES", $1A')
-            lines.append('    .byte $02        ; 32K PRG ROM')
-            lines.append('    .byte $00        ; No CHR ROM')
-            lines.append('    .byte $00        ; Mapper 0')
-            lines.append('    .byte $00        ; System type')
-            lines.append('')
-        
-        # Import/export zeropage variables for non-standalone
-        if not standalone:
-            lines.append('.importzp ptr1, temp1, temp2, frame_counter')
-            lines.append('')
-        
-        # Pattern data goes in RODATA
-        lines.append('.segment "RODATA"')
+        lines.append('; CA65 Assembly Export (MMC3 Macro Bytecode)')
+        lines.append('.include "mmc3_init.asm"')
+        lines.append('')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('; DPCM Sample Bank (Mapped to $C000)')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('.segment "DPCM"')
+        lines.append('.align 64')
+        lines.append('; TODO: Insert actual .incbin statements for DPCM files here')
+        lines.append('')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('; Macro & Sequence Data (Mapped to fixed $8000 bank)')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('.segment "CODE_8000"')
         lines.append('')
         
-        # Add note table
-        lines.append("note_table:")
-        for i, note_val in enumerate(NOTE_TABLE_NTSC[:48]):  # First 4 octaves
-            lines.append(f"    .word {note_val}  ; Note {i}")
-        lines.append("")
+        # Write Pitch Lookup Tables
+        lines.append('; The 128-byte Pitch Lookup Tables')
+        lines.append('ntsc_period_low:')
+        lines.append('  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff')
+        lines.append('  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff')
+        lines.append('  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff')
+        lines.append('  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff')
+        lines.append('  .byte $ff, $f1, $7f, $13, $ad, $4d, $f3, $9d')
+        lines.append('  .byte $4c, $00, $b8, $74, $34, $f8, $bf, $89')
+        lines.append('  .byte $56, $26, $f9, $ce, $a6, $80, $5c, $3a')
+        lines.append('  .byte $1a, $fb, $df, $c4, $ab, $93, $7c, $67')
+        lines.append('  .byte $52, $3f, $2d, $1c, $0c, $fd, $ef, $e1')
+        lines.append('  .byte $d5, $c9, $bd, $b3, $a9, $9f, $96, $8e')
+        lines.append('  .byte $86, $7e, $77, $70, $6a, $64, $5e, $59')
+        lines.append('  .byte $54, $4f, $4b, $46, $42, $3f, $3b, $38')
+        lines.append('  .byte $34, $31, $2f, $2c, $29, $27, $25, $23')
+        lines.append('  .byte $21, $1f, $1d, $1b, $1a, $18, $17, $15')
+        lines.append('  .byte $14, $13, $12, $11, $10, $0f, $0e, $0d')
+        lines.append('  .byte $0c, $0c, $0b, $0a, $0a, $09, $08, $08')
+        lines.append('')
+        lines.append('ntsc_period_high:')
+        lines.append('  .byte $07, $07, $07, $07, $07, $07, $07, $07')
+        lines.append('  .byte $07, $07, $07, $07, $07, $07, $07, $07')
+        lines.append('  .byte $07, $07, $07, $07, $07, $07, $07, $07')
+        lines.append('  .byte $07, $07, $07, $07, $07, $07, $07, $07')
+        lines.append('  .byte $07, $07, $07, $07, $06, $06, $05, $05')
+        lines.append('  .byte $05, $05, $04, $04, $04, $03, $03, $03')
+        lines.append('  .byte $03, $03, $02, $02, $02, $02, $02, $02')
+        lines.append('  .byte $02, $01, $01, $01, $01, $01, $01, $01')
+        lines.append('  .byte $01, $01, $01, $01, $01, $00, $00, $00')
+        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
+        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
+        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
+        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
+        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
+        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
+        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
+        lines.append('')
         
-        # Add REAL pattern data using the patterns and frames
-        lines.append("; Pattern Data")
+        lines.append('; The Instrument Macro Pointers')
+        lines.append('instrument_table:')
+        lines.append('    .word macro_null, macro_null, macro_null, macro_null')
+        lines.append('')
+        lines.append('macro_null:')
+        lines.append('    .byte $FF')
+        lines.append('')
         
-        for pattern_id, pattern in patterns.items():
-            lines.append(f"{pattern_id}:")
+        # Bytecode generation for channels
+        for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
+            lines.append(f'{channel}_sequence:')
+            if channel not in frames or not frames[channel]:
+                lines.append('    .byte $FF')
+                lines.append('')
+                continue
+                
+            channel_frames = frames[channel]
+            max_frame = max(int(f) for f in channel_frames.keys())
             
-            # Use the actual pattern events from the patterns structure
-            events = pattern.get('events', [])
-            print(f"  Pattern {pattern_id}: {len(events)} events")
+            current_note = None
+            current_duration = 0
             
-            for event in events:
-                if 'note' in event and event['note'] > 0:
-                    # Use the actual note and volume from the pattern
-                    timer_val = self.midi_note_to_timer_value(event['note'])
-                    volume = min(15, max(0, event.get('volume', 8)))
+            for frame_idx in range(max_frame + 1):
+                frame_data = channel_frames.get(str(frame_idx), channel_frames.get(frame_idx))
+                note = frame_data.get('note', 0) if frame_data else 0
+                
+                if frame_data and frame_data.get('volume', 0) == 0:
+                    note = 0
                     
-                    # Generate proper APU data bytes
-                    control_byte = 0x80 | volume  # 50% duty + constant volume + volume level
-                    lines.append(f"    .byte ${control_byte:02X}, ${timer_val & 0xFF:02X}, ${(timer_val >> 8) & 0x07:02X}")
+                if note != current_note:
+                    if current_duration > 0:
+                        rem_dur = current_duration
+                        while rem_dur > 0:
+                            write_dur = min(rem_dur, 32)
+                            lines.append(f'    .byte ${(write_dur - 1) + 0x60:02X}, ${current_note:02X}')
+                            rem_dur -= write_dur
+                            
+                    current_note = note
+                    current_duration = 1
                 else:
-                    # Silent frame
-                    lines.append("    .byte $00, $00, $00")
+                    current_duration += 1
             
-            # End pattern marker
-            lines.append("    .byte $FF  ; End of pattern")
-            lines.append("")
-        
-        # Build frame-to-pattern mapping from pattern references
-        frame_to_pattern = {}
-        max_frame = 0
-
-        if references:
-            # Handle both formats
-            first_key, first_value = next(iter(references.items()))
-
-            if isinstance(first_value, list):
-                # New format: pattern_id -> [position_list]
-                # positions are indices into the event sequence, NOT frame numbers!
-                # We need to build a mapping from position to frame number first
-
-                # Collect all frames with events across all channels
-                all_event_frames = set()
-                for channel_name, channel_data in frames.items():
-                    if channel_data:
-                        all_event_frames.update(int(f) for f in channel_data.keys())
-
-                # Create position->frame mapping by sorting frames
-                position_to_frame = sorted(all_event_frames)
-
-                # Now convert positions to frame numbers
-                for pattern_id, position_list in references.items():
-                    for i, position in enumerate(position_list):
-                        if position < len(position_to_frame):
-                            frame_num = position_to_frame[position]
-                            frame_to_pattern[frame_num] = (pattern_id, i)
-                            max_frame = max(max_frame, frame_num)
-            else:
-                # Old format: frame_str -> (pattern_id, offset)
-                for frame_str, pattern_info in references.items():
-                    frame_num = int(frame_str)
-                    pattern_id, offset = pattern_info
-                    frame_to_pattern[frame_num] = (pattern_id, offset)
-                    max_frame = max(max_frame, frame_num)
-        
-        # Export pattern reference table
-        lines.append("; Pattern Reference Table")
-        lines.append("pattern_refs:")
-        
-        if not frame_to_pattern:
-            lines.append("    .word 0, 0")
-        else:
-            for frame in range(max_frame + 1):
-                if frame in frame_to_pattern:
-                    pattern_id, offset = frame_to_pattern[frame]
-                    lines.append(f"    .word {pattern_id}, {offset}")
-                else:
-                    lines.append("    .word 0, 0")
-        lines.append("")
-        
-        # Add the music engine code (enhanced for pattern playback)
-        lines.extend([
-            "; Music Engine Code",
-            '.segment "CODE"',
-            "",
-            ".global init_music",
-            "init_music:",
-            "    lda #$0F",
-            "    sta $4015",
-            "    lda #$30  ; APU channel setup",
-            "    sta $4000",
-            "    sta $4004", 
-            "    sta $4008",
-            "    sta $400C",
-            "    rts",
-            "",
-            ".global update_music",
-            "update_music:",
-            "    jsr play_pattern_frame",
-            "    inc frame_counter",
-            "    bne @no_carry",
-            "    inc frame_counter+1",
-            "@no_carry:",
-            "    rts",
-            "",
-            "play_pattern_frame:",
-            "    ; Get pattern pointer and offset for current frame",
-            "    lda frame_counter",
-            "    asl",
-            "    asl  ; multiply by 4 (2 words per frame)",
-            "    tax",
-            "    lda pattern_refs,x  ; Pattern pointer low",
-            "    sta ptr1",
-            "    lda pattern_refs+1,x  ; Pattern pointer high",
-            "    sta ptr1+1",
-            "    ; Check if pattern is valid (not $0000)",
-            "    ora ptr1",
-            "    beq @done",
-            "    ; Get offset into pattern",
-            "    inx",
-            "    inx",
-            "    lda pattern_refs,x  ; Offset low byte",
-            "    sta temp1",
-            "    ; Add offset to pattern pointer (ptr1 += temp1 * 3)",
-            "    ; Each event is 3 bytes, so multiply offset by 3",
-            "    asl temp1  ; temp1 * 2",
-            "    clc",
-            "    lda ptr1",
-            "    adc temp1",
-            "    sta ptr1",
-            "    lda ptr1+1",
-            "    adc #0",
-            "    sta ptr1+1",
-            "    ; Add temp1/2 again to get temp1*3",
-            "    lsr temp1",
-            "    clc",
-            "    lda ptr1",
-            "    adc temp1",
-            "    sta ptr1",
-            "    lda ptr1+1",
-            "    adc #0",
-            "    sta ptr1+1",
-            "    ; Now ptr1 points to the correct event in the pattern",
-            "    ; Read 3-byte event and play it",
-            "    ldy #0",
-            "    lda (ptr1),y  ; Control byte",
-            "    cmp #$FF      ; Check for end marker",
-            "    beq @done",
-            "    beq @silence  ; If $00, silence channel",
-            "    sta $4000     ; Pulse 1 control",
-            "    iny",
-            "    lda (ptr1),y  ; Timer low",
-            "    sta $4002",
-            "    iny",
-            "    lda (ptr1),y  ; Timer high",
-            "    and #$07      ; Mask to 3 bits",
-            "    ora #$08      ; Set length counter load bit",
-            "    sta $4003",
-            "    rts",
-            "@silence:",
-            "    lda #$30      ; Silence (no envelope, volume 0)",
-            "    sta $4000",
-            "@done:",
-            "    rts"
-        ])
-        
-        # Add vectors if standalone
-        if standalone:
+            if current_duration > 0:
+                rem_dur = current_duration
+                while rem_dur > 0:
+                    write_dur = min(rem_dur, 32)
+                    lines.append(f'    .byte ${(write_dur - 1) + 0x60:02X}, ${current_note:02X}')
+                    rem_dur -= write_dur
+                    
+            lines.append('    .byte $FF')
             lines.append('')
-            lines.append('.segment "VECTORS"')
-            lines.append('    .word 0')
-            lines.append('    .word init_music')
-            lines.append('    .word 0')
-        
-        # Write to file
+            
         with open(output_path, 'w') as f:
             f.write('\n'.join(lines))
-        
-        print(f"✅ Pattern export complete: {output_path}")
+            
+        print(f"✅ Macro Bytecode export complete: {output_path}")
+        return output_path

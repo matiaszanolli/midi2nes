@@ -95,11 +95,34 @@ class NESProjectBuilder:
             overlay = NESDebugOverlay(enable_overlay=True)
             music_content += "\n" + overlay.generate_full_debug_system()
 
-        # Write project files
+        # Write music.asm
         (self.project_path / "music.asm").write_text(music_content)
-        (self.project_path / "main.asm").write_text(self._generate_main_asm())
-        (self.project_path / "nes.cfg").write_text(self.mapper.generate_linker_config())
-        self._create_build_script()
+        
+        # MMC3 mode overriding
+        init_src = Path(__file__).parent / "mmc3_init.asm"
+        if init_src.exists():
+            (self.project_path / "mmc3_init.asm").write_text(init_src.read_text())
+            
+        linker_src = Path(__file__).parent / "linker_mmc3.cfg"
+        if linker_src.exists():
+            (self.project_path / "nes.cfg").write_text(linker_src.read_text())
+        else:
+            (self.project_path / "nes.cfg").write_text(self.mapper.generate_linker_config())
+            
+        # Generate iNES Header
+        header_content = """
+.segment "HEADER"
+    .byte "NES", $1A
+    .byte $08        ; 128KB PRG ROM
+    .byte $00        ; 0KB CHR ROM
+    .byte $40        ; Mapper 4 (MMC3), Horizontal mirroring
+    .byte $00
+    .byte $00
+    .byte $00
+    .res 5, $00
+"""
+        (self.project_path / "header.asm").write_text(header_content)
+        self._create_build_script_mmc3()
 
         return True
 
@@ -209,6 +232,21 @@ irq:
 
         if not is_windows:
             # Make the script executable on Unix-like systems
+            script_path.chmod(script_path.stat().st_mode | 0o755)
+            
+    def _create_build_script_mmc3(self):
+        """Creates a build script specifically for the MMC3 Macro Engine."""
+        is_windows = os.name == 'nt'
+        script_name = "build.bat" if is_windows else "build.sh"
+        script_path = self.project_path / script_name
+        
+        if is_windows:
+            script = "@echo off\necho Compiling MMC3 Audio Engine...\nca65 header.asm -g -o header.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o output.nes header.o music.o\nif %errorlevel% neq 0 exit /b %errorlevel%\necho Done!\n"
+        else:
+            script = "#!/bin/bash\nset -e\necho \"Compiling MMC3 Audio Engine...\"\nca65 header.asm -g -o header.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o output.nes header.o music.o\necho \"Done!\"\n"
+            
+        script_path.write_text(script)
+        if not is_windows:
             script_path.chmod(script_path.stat().st_mode | 0o755)
 
     # Legacy methods for backwards compatibility
