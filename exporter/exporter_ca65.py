@@ -592,6 +592,56 @@ class CA65Exporter(BaseExporter):
 
         return output_path
 
+    def _compress_macro(self, data):
+        """
+        Compresses a macro list (volume, pitch, duty) using $FF (sustain) and $FE (loop).
+        """
+        if not data:
+            return [0xFF]
+            
+        n = len(data)
+        
+        # Baseline: No compression, just end with $FF (sustain)
+        best_compression = data + [0xFF]
+        best_len = len(best_compression)
+        
+        # 1. Try Sustain Compression ($FF)
+        # E.g., [15, 14, 13, 10, 10, 10, 10] -> [15, 14, 13, 10, 0xFF]
+        sustain_idx = n - 1
+        while sustain_idx > 0 and data[sustain_idx - 1] == data[-1]:
+            sustain_idx -= 1
+        
+        sustain_comp = data[:sustain_idx + 1] + [0xFF]
+        if len(sustain_comp) < best_len:
+            best_compression = sustain_comp
+            best_len = len(sustain_comp)
+
+        # 2. Try Loop Compression ($FE)
+        # E.g., [15, 12, 10, 8, 10, 12, 10, 8, 10, 12] -> [15, 12, 10, 8, 0xFE, 0x01]
+        for p_len in range(1, n // 2 + 1):
+            pattern = data[-p_len:]
+            
+            # Count backwards to see how many times this exact pattern repeats
+            repeats = 0
+            while True:
+                start_idx = n - (repeats + 2) * p_len
+                if start_idx < 0:
+                    break
+                if data[start_idx : start_idx + p_len] == pattern:
+                    repeats += 1
+                else:
+                    break
+                    
+            if repeats > 0:
+                loop_start = n - (repeats + 1) * p_len
+                # Output the prefix + one instance of the pattern + $FE + loop_start index
+                comp = data[:loop_start + p_len] + [0xFE, loop_start]
+                if len(comp) < best_len:
+                    best_compression = comp
+                    best_len = len(comp)
+
+        return best_compression
+
     def export_tables_with_patterns(self, frames, patterns, references, output_path, standalone=True):
         """Export with pattern compression - PROPERLY FIXED VERSION
 
@@ -656,21 +706,16 @@ class CA65Exporter(BaseExporter):
         lines.append('')
         
         def optimize_macro(seq):
-            if not seq: return ()
-            last_val = seq[-1]
-            for i in range(len(seq)-1, -1, -1):
-                if seq[i] != last_val:
-                    return tuple(seq[:i+2])
-            return (seq[0],)
+            return tuple(self._compress_macro(seq))
 
-        vol_macros = {(): 0}
-        vol_macro_defs = [()]
-        duty_macros = {(): 0}
-        duty_macro_defs = [()]
-        arp_macros = {(): 0}
-        arp_macro_defs = [()]
-        pitch_macros = {(): 0}
-        pitch_macro_defs = [()]
+        vol_macros = {(0xFF,): 0}
+        vol_macro_defs = [(0xFF,)]
+        duty_macros = {(0xFF,): 0}
+        duty_macro_defs = [(0xFF,)]
+        arp_macros = {(0xFF,): 0}
+        arp_macro_defs = [(0xFF,)]
+        pitch_macros = {(0xFF,): 0}
+        pitch_macro_defs = [(0xFF,)]
         
         instruments = {(0, 0, 0, 0): 0}
         instrument_defs = [(0, 0, 0, 0)]
@@ -788,10 +833,7 @@ class CA65Exporter(BaseExporter):
             lines.append(f'; --- {name.capitalize()} Macros ---')
             for i, seq in enumerate(defs):
                 lines.append(f'macro_{name}_{i}:')
-                if not seq:
-                    lines.append('    .byte $FF')
-                else:
-                    lines.append('    .byte ' + ', '.join(f'${val:02X}' for val in seq) + ', $FF')
+                lines.append('    .byte ' + ', '.join(f'${val:02X}' for val in seq))
             lines.append('')
         
         # Bytecode generation for channels
