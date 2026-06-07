@@ -267,7 +267,7 @@ class TestCA65CompilationIntegration(unittest.TestCase):
         with open(self.project_path / "main.asm") as f:
             main_content = f.read()
             # Updated to include temp_ptr for table-based lookups
-            self.assertIn(".exportzp ptr1, temp1, temp2, temp_ptr, frame_counter", main_content)
+            self.assertIn(".exportzp temp_ptr", main_content)
             self.assertIn(".global init_music", main_content)
             self.assertIn(".global update_music", main_content)
         

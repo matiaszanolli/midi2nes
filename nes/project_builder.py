@@ -149,6 +149,11 @@ ch_macro_duty_hi:   .res 4
 ch_macro_duty_idx:  .res 4
 ch_duty_current:    .res 4
 
+ch_macro_arp_lo:    .res 4
+ch_macro_arp_hi:    .res 4
+ch_macro_arp_idx:   .res 4
+ch_arp_offset:      .res 4 ; semitone offset
+
 ch_macro_pitch_lo:  .res 4
 ch_macro_pitch_hi:  .res 4
 ch_macro_pitch_idx: .res 4
@@ -183,6 +188,12 @@ seq_cmd_instrument:
     lda instrument_table+1, y
     sta ch_macro_vol_hi, x
     
+    ; Load Arpeggio Macro pointer (Offset 2)
+    lda instrument_table+2, y
+    sta ch_macro_arp_lo, x
+    lda instrument_table+3, y
+    sta ch_macro_arp_hi, x
+
     ; Load Pitch Macro pointer (Offset 4)
     lda instrument_table+4, y
     sta ch_macro_pitch_lo, x
@@ -199,6 +210,7 @@ seq_cmd_instrument:
     lda #$00
     sta ch_macro_vol_idx, x
     sta ch_macro_duty_idx, x
+    sta ch_macro_arp_idx, x
     sta ch_macro_pitch_idx, x
     rts
 
@@ -279,6 +291,35 @@ process_channel_macros:
 
 @sustain_duty:
 
+    ; --- Process Arpeggio Macro ---
+    lda ch_macro_arp_lo, x
+    sta ptr1
+    lda ch_macro_arp_hi, x
+    sta ptr1+1
+
+    ldy ch_macro_arp_idx, x
+    lda (ptr1), y
+    cmp #$FF
+    beq @sustain_arp
+    cmp #$FE
+    beq @loop_arp
+
+    sta ch_arp_offset, x
+    inc ch_macro_arp_idx, x
+    jmp @process_pitch
+
+@loop_arp:
+    iny
+    lda (ptr1), y
+    sta ch_macro_arp_idx, x
+    tay
+    lda (ptr1), y
+    sta ch_arp_offset, x
+    inc ch_macro_arp_idx, x
+
+@sustain_arp:
+
+@process_pitch:
     ; --- Process Pitch Macro (Vibrato/Slides) ---
     lda ch_macro_pitch_lo, x
     sta ptr1
@@ -318,8 +359,12 @@ process_channel_macros:
 @store_pitch_hi:
     sta temp1
 
-    ; Get base note period from lookup table
-    ldy ch_base_note, x
+    ; Get base note, add arp offset, safely mask to 128-byte table bounds
+    lda ch_base_note, x
+    clc
+    adc ch_arp_offset, x
+    and #$7F
+    tay
     
     ; Calculate final 16-bit period = base_period + pitch_offset
     ; Low byte
@@ -443,12 +488,8 @@ read_joypad_once:
 
 .segment "ZEROPAGE"
     ; Export zeropage variables for music.asm
-    ptr1:          .res 2  ; General purpose pointer
-    temp1:         .res 1  ; Temporary variable
-    temp2:         .res 1  ; Temporary variable
     temp_ptr:      .res 2  ; Temporary pointer for table lookups
-    frame_counter: .res 2  ; Frame counter (shared with music.asm)
-.exportzp ptr1, temp1, temp2, temp_ptr, frame_counter
+.exportzp temp_ptr
 
 .segment "CODE"
 ; Import music functions from music.asm
