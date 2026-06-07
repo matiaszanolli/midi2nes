@@ -404,7 +404,7 @@ def run_full_pipeline(args):
                         f.write("\n\n" + dpcm_asm)
                         
                     if loaded_samples > 0:
-                        print(f"  ✓ Packed {loaded_samples} DPCM samples across {packer.current_bank_id + 1} banks")
+                        print(f"  ✓ Packed {loaded_samples} DPCM samples across {len(packer.banks)} banks")
                 else:
                     print("  ℹ️ No dpcm_index.json found, skipping DPCM packing.")
             except Exception as e:

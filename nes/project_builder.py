@@ -101,44 +101,241 @@ class NESProjectBuilder:
             music_content += "\n.global debug_init, debug_update, debug_test_apu\n"
             music_content += "\n" + overlay.generate_full_debug_system()
 
+        # DPCM Sequence command macro implementation
+        music_content += """
+.import switch_dpcm_bank
+
+; ------------------------------------------------------------------
+; seq_cmd_dpcm_play ($85)
+; Triggers a DPCM sample based on the sample_id parameter.
+; ------------------------------------------------------------------
+.global seq_cmd_dpcm_play
+seq_cmd_dpcm_play:
+    ; Assuming X contains the Sample_ID from the sequence data
+    ; 1. Swap the required MMC3 bank into the $C000-$DFFF window
+    lda dpcm_bank_table, x
+    jsr switch_dpcm_bank
+
+    ; 2. Setup the APU DMC registers using the lookup tables
+    lda dpcm_pitch_table, x
+    sta $4010                   ; Set Pitch/Rate index
+
+    lda dpcm_addr_table, x
+    sta $4012                   ; Set 64-byte aligned Address
+
+    lda dpcm_len_table, x
+    sta $4013                   ; Set 16-byte aligned Length
+
+    ; 3. Trigger the DMC DMA playback
+    lda #$0F                    ; Disable DMC
+    sta $4015
+    lda #$1F                    ; Enable all channels AND DMC
+    sta $4015
+
+    rts
+"""
+
+        # Instrument and Macro Engine implementation
+        music_content += """
+.segment "BSS"
+; Channel state variables (4 channels: Pulse1, Pulse2, Triangle, Noise)
+ch_macro_vol_lo:    .res 4
+ch_macro_vol_hi:    .res 4
+ch_macro_vol_idx:   .res 4
+ch_vol_current:     .res 4
+
+ch_macro_duty_lo:   .res 4
+ch_macro_duty_hi:   .res 4
+ch_macro_duty_idx:  .res 4
+ch_duty_current:    .res 4
+
+apu_shadow_ctrl:    .res 4
+
+.segment "CODE"
+; ------------------------------------------------------------------
+; seq_cmd_instrument ($80)
+; Sets the current instrument for the active channel.
+; ------------------------------------------------------------------
+.global seq_cmd_instrument
+seq_cmd_instrument:
+    ; Assuming X is the channel index (0-3)
+    ; Assuming A contains the instrument ID from the sequencer stream
+    
+    ; Multiply instrument ID by 8 (4 pointers * 2 bytes)
+    asl a
+    asl a
+    asl a
+    tay
+    
+    ; Load Volume Macro pointer (Offset 0)
+    ; (Assuming instrument_table is exported from CA65Exporter)
+    lda instrument_table+0, y
+    sta ch_macro_vol_lo, x
+    lda instrument_table+1, y
+    sta ch_macro_vol_hi, x
+    
+    ; Load Duty Macro pointer (Offset 6)
+    lda instrument_table+6, y
+    sta ch_macro_duty_lo, x
+    lda instrument_table+7, y
+    sta ch_macro_duty_hi, x
+    
+    ; Reset macro indices
+    lda #$00
+    sta ch_macro_vol_idx, x
+    sta ch_macro_duty_idx, x
+    rts
+
+; ------------------------------------------------------------------
+; process_channel_macros
+; Evaluates volume and duty macros for channel X
+; ------------------------------------------------------------------
+.global process_channel_macros
+process_channel_macros:
+    ; --- Process Volume Macro ---
+    lda ch_macro_vol_lo, x
+    sta ptr1
+    lda ch_macro_vol_hi, x
+    sta ptr1+1
+    
+    ldy ch_macro_vol_idx, x
+    lda (ptr1), y
+    cmp #$FF            ; $FF = Sustain last value
+    beq @sustain_vol
+    cmp #$FE            ; $FE = Loop
+    beq @loop_vol
+    
+    sta ch_vol_current, x
+    inc ch_macro_vol_idx, x
+    jmp @process_duty
+    
+@loop_vol:
+    iny
+    lda (ptr1), y       ; Get loop target index
+    sta ch_macro_vol_idx, x
+    tay
+    lda (ptr1), y       ; Fetch the value at the loop target
+    sta ch_vol_current, x
+    inc ch_macro_vol_idx, x
+    
+@sustain_vol:
+
+    ; --- Process Duty Macro ---
+    lda ch_macro_duty_lo, x
+    sta ptr1
+    lda ch_macro_duty_hi, x
+    sta ptr1+1
+    
+    ldy ch_macro_duty_idx, x
+    lda (ptr1), y
+    cmp #$FF
+    beq @sustain_duty
+    cmp #$FE
+    beq @loop_duty
+    
+    ; Shift duty cycle to bits 6-7 (0-3 -> $00-$C0)
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    sta ch_duty_current, x
+    inc ch_macro_duty_idx, x
+    jmp @combine
+    
+@loop_duty:
+    iny
+    lda (ptr1), y
+    sta ch_macro_duty_idx, x
+    tay
+    lda (ptr1), y
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    sta ch_duty_current, x
+    inc ch_macro_duty_idx, x
+
+@sustain_duty:
+
+@combine:
+    ; Combine Duty + Volume + Constant Volume Flag ($30)
+    lda ch_duty_current, x
+    ora ch_vol_current, x
+    ora #$30
+    sta apu_shadow_ctrl, x
+    
+    rts
+"""
+
         # Write music.asm
         (self.project_path / "music.asm").write_text(music_content)
         
-        # MMC3 mode overriding
-        init_src = Path(__file__).parent / "mmc3_init.asm"
-        if init_src.exists():
-            init_content = init_src.read_text()
-            if self.debug_mode:
-                init_content = ".import debug_init, debug_test_apu, debug_update\n" + init_content
-                init_content = init_content.replace("JSR audio_init", "JSR debug_init\n    JSR debug_test_apu\n    JSR audio_init")
-                init_content = init_content.replace("JSR audio_update", "JSR audio_update\n    JSR debug_update")
-            (self.project_path / "mmc3_init.asm").write_text(init_content)
-            
+        # Audio Engine
         engine_src = Path(__file__).parent / "audio_engine.asm"
         if engine_src.exists():
             (self.project_path / "audio_engine.asm").write_text(engine_src.read_text())
             
-        linker_src = Path(__file__).parent / "linker_mmc3.cfg"
-        if linker_src.exists():
-            (self.project_path / "nes.cfg").write_text(linker_src.read_text())
-        else:
-            (self.project_path / "nes.cfg").write_text(self.mapper.generate_linker_config())
+        # Linker Configuration
+        (self.project_path / "nes.cfg").write_text(self.mapper.generate_linker_config())
             
         # Generate main.asm
-        main_content = """
-.segment "HEADER"
-    .byte "NES", $1A
-    .byte $08        ; 128KB PRG ROM
-    .byte $00        ; 0KB CHR ROM
-    .byte $40        ; Mapper 4 (MMC3), Horizontal mirroring
-    .byte $00
-    .byte $00
-    .byte $00
-    .res 5, $00
+        main_content = self._generate_main_asm()
+        
+        # Add mapper-specific bank switching code and export it
+        main_content += "\n.global switch_dpcm_bank\n"
+        main_content += self.mapper.generate_bank_switch_code(0)
+        
+        # Add safe joypad reading logic for DMC DMA conflicts
+        main_content += """
+.segment "ZEROPAGE"
+temp_joypad:  .res 1
+joypad_state: .res 1
 
-.include "mmc3_init.asm"
-.include "audio_engine.asm"
+.segment "CODE"
+.global read_joypad_safe
+
+; ------------------------------------------------------------------
+; read_joypad_safe
+; Safely reads controller 1 at $4016, protecting against the DPCM 
+; DMA double-read glitch. Final valid result is stored in 'joypad_state'.
+; ------------------------------------------------------------------
+read_joypad_safe:
+@retry:
+    jsr read_joypad_once
+    lda temp_joypad
+    sta joypad_state      ; Save it temporarily
+
+    jsr read_joypad_once
+    lda temp_joypad
+    cmp joypad_state      ; Compare second read with the first
+    
+    bne @retry            ; If they differ, glitch occurred! Retry.
+    rts
+
+read_joypad_once:
+    lda #$01
+    sta $4016
+    lda #$00
+    sta $4016
+
+    ldx #8
+@read_loop:
+    lda $4016
+    lsr a
+    rol temp_joypad
+    dex
+    bne @read_loop
+    rts
 """
+        
+        # Include the audio engine if available
+        if engine_src.exists():
+            main_content += '\n.include "audio_engine.asm"\n'
+            
         (self.project_path / "main.asm").write_text(main_content)
         self._create_build_script_mmc3()
 

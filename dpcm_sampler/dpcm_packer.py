@@ -7,9 +7,8 @@ class DpcmPacker:
 
     def __init__(self):
         self.banks = []
-        self.current_bank_id = 0
-        self.current_bank_size = 0
         self.sample_metadata = {}
+        self.pending_samples = []
 
     def add_sample(self, sample_id: str, file_path: str, pitch_rate: int = 15):
         """Adds a sample to the packing queue, respecting NES 64-byte boundaries.
@@ -26,37 +25,59 @@ class DpcmPacker:
 
         aligned_size = math.ceil(size_bytes / 64) * 64
 
-        if self.current_bank_size + aligned_size > self.BANK_SIZE:
-            self.current_bank_id += 1
-            self.current_bank_size = 0
-            
-            if self.current_bank_id >= 60:
-                raise OverflowError("Exceeded maximum allocated DPCM MMC3 banks (60 banks).")
+        self.pending_samples.append({
+            'id': sample_id,
+            'path': file_path,
+            'pitch': pitch_rate,
+            'size': size_bytes,
+            'aligned_size': aligned_size
+        })
 
-        start_address = self.START_ADDR + self.current_bank_size
-        dpcm_address_val = (start_address - 0xC000) // 64
-        dpcm_length_val = (size_bytes - 1) // 16
+    def _pack_samples(self):
+        """Pack pending samples into minimum number of banks using First Fit Decreasing."""
+        # Sort pending samples by aligned size descending
+        sorted_samples = sorted(self.pending_samples, key=lambda x: x['aligned_size'], reverse=True)
         
-        # Mask pitch_rate to ensure it only occupies the lower 4 bits (0-15)
-        # We leave bits 6 (Loop) and 7 (IRQ) as 0.
-        dpcm_pitch_val = pitch_rate & 0x0F
+        self.banks = []
+        bank_sizes = []
+        
+        for sample in sorted_samples:
+            placed = False
+            for bank_id in range(len(self.banks)):
+                if bank_sizes[bank_id] + sample['aligned_size'] <= self.BANK_SIZE:
+                    start_address = self.START_ADDR + bank_sizes[bank_id]
+                    self._place_sample(sample, bank_id, start_address)
+                    self.banks[bank_id].append((sample['id'], sample['path']))
+                    bank_sizes[bank_id] += sample['aligned_size']
+                    placed = True
+                    break
+            
+            if not placed:
+                if len(self.banks) >= 60:
+                    raise OverflowError("Exceeded maximum allocated DPCM MMC3 banks (60 banks).")
+                
+                bank_id = len(self.banks)
+                self.banks.append([(sample['id'], sample['path'])])
+                bank_sizes.append(sample['aligned_size'])
+                self._place_sample(sample, bank_id, self.START_ADDR)
 
-        self.sample_metadata[sample_id] = {
-            "bank": self.current_bank_id,
+    def _place_sample(self, sample: dict, bank_id: int, start_address: int):
+        dpcm_address_val = (start_address - 0xC000) // 64
+        dpcm_length_val = (sample['size'] - 1) // 16
+        dpcm_pitch_val = sample['pitch'] & 0x0F
+        
+        self.sample_metadata[sample['id']] = {
+            "bank": bank_id,
             "address_reg": dpcm_address_val,
             "length_reg": dpcm_length_val,
             "pitch_reg": dpcm_pitch_val,
-            "path": file_path
+            "path": sample['path']
         }
-
-        if len(self.banks) <= self.current_bank_id:
-            self.banks.append([])
-        
-        self.banks[self.current_bank_id].append((sample_id, file_path))
-        self.current_bank_size += aligned_size
 
     def generate_assembly(self) -> str:
         """Generates the CA65 assembly code to include the packed binaries."""
+        self._pack_samples()
+        
         asm_lines = ["; --- DPCM Sample Data ---"]
         
         for bank_id, samples in enumerate(self.banks):
@@ -69,7 +90,8 @@ class DpcmPacker:
         asm_lines.append('\n.segment "RODATA"')
         asm_lines.append("; Lookup tables for DPCM triggers")
         
-        ordered_ids = list(self.sample_metadata.keys())
+        # Must order by integer ID for the 6502 engine to index correctly
+        ordered_ids = sorted(self.sample_metadata.keys(), key=lambda x: int(x))
         
         if not ordered_ids:
             # Provide dummy tables if no samples are loaded to prevent assembly errors
