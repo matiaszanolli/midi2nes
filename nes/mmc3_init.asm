@@ -6,6 +6,7 @@
 .segment "CODE"
 
 .export reset_handler, nmi_handler, irq_handler
+.import audio_init, audio_update
 
 ; ---------------------------------------------------------------------------
 ; reset_handler: Executed on console power-up or reset button press
@@ -74,7 +75,7 @@
     STA $4005           ; Disable Pulse 2 Sweep
 
     ; 6. Start the Engine!
-    ; JSR audio_init    ; (To be implemented: setup song variables and instrument pointers)
+    JSR audio_init
     
     LDA #$80
     STA $2000           ; Enable NMI (Triggering our 60Hz audio updates)
@@ -93,7 +94,7 @@
     TYA
     PHA                 ; Push Y
 
-    ; JSR audio_update  ; (To be implemented: The Macro Sequencer)
+    JSR audio_update
 
     PLA                 ; Pull Y
     TAY

@@ -103,6 +103,10 @@ class NESProjectBuilder:
         if init_src.exists():
             (self.project_path / "mmc3_init.asm").write_text(init_src.read_text())
             
+        engine_src = Path(__file__).parent / "audio_engine.asm"
+        if engine_src.exists():
+            (self.project_path / "audio_engine.asm").write_text(engine_src.read_text())
+            
         linker_src = Path(__file__).parent / "linker_mmc3.cfg"
         if linker_src.exists():
             (self.project_path / "nes.cfg").write_text(linker_src.read_text())

@@ -603,6 +603,7 @@ class CA65Exporter(BaseExporter):
         lines = []
         lines.append('; CA65 Assembly Export (MMC3 Macro Bytecode)')
         lines.append('.include "mmc3_init.asm"')
+        lines.append('.include "audio_engine.asm"')
         lines.append('')
         lines.append('; ---------------------------------------------------------------------------')
         lines.append('; DPCM Sample Bank (Mapped to $C000)')
