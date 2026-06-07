@@ -90,12 +90,18 @@ debug_init:
 debug_init_msg:
     .byte "MIDI2NES DEBUG v1.0", $00
 
+.pushseg
+.segment "ZEROPAGE"
+debug_ptr:              .res 2  ; Zero-page pointer for indirect addressing
+
+.segment "BSS"
 ; Debug variables
 debug_error_code:       .res 1
 debug_frame_counter:    .res 1
 debug_music_frame:      .res 2  ; 16-bit frame counter
 debug_apu_status:       .res 4  ; Status for each channel (Pulse1, Pulse2, Triangle, Noise)
 debug_text_buffer:      .res 32 ; Text buffer for messages
+.popseg
 
 """
 
@@ -423,12 +429,12 @@ debug_set_error:
 
 @set_msg:
     ; Copy error message to debug text buffer
-    STX $00  ; Low byte
-    STY $01  ; High byte
+    STX debug_ptr    ; Low byte
+    STY debug_ptr+1  ; High byte
 
     LDY #$00
 @copy_loop:
-    LDA ($00), Y
+    LDA (debug_ptr), Y
     BEQ @copy_done
     STA debug_text_buffer, Y
     INY
@@ -541,7 +547,10 @@ apu_pulse1_label:
 ; Shows a window of memory on screen
 ; ============================================
 
+.pushseg
+.segment "BSS"
 debug_memory_view_addr: .res 2  ; 16-bit address to view
+.popseg
 
 ; Display 8 bytes of memory starting at debug_memory_view_addr
 debug_show_memory:
@@ -573,10 +582,16 @@ debug_show_memory:
     LDA #' '
     STA $2007
 
+    ; Setup zero-page pointer
+    LDA debug_memory_view_addr
+    STA debug_ptr
+    LDA debug_memory_view_addr+1
+    STA debug_ptr+1
+
     ; Display 8 bytes
     LDY #$00
 @mem_loop:
-    LDA (debug_memory_view_addr), Y
+    LDA (debug_ptr), Y
     JSR debug_print_hex_byte
     LDA #' '
     STA $2007
