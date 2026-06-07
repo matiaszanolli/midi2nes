@@ -35,35 +35,48 @@ class Mmc3Mapper(BaseMapper):
 """
 
     def generate_linker_config(self) -> str:
-        return """
-MEMORY {
-    ZP:      start = $00,    size = $0100, type = rw, file = "";
-    OAM:     start = $0200,  size = $0100, type = rw, file = "";
-    RAM:     start = $0300,  size = $0500, type = rw, file = "";
-    HDR:     start = $0000,  size = $0010, type = ro, file = %O, fill = yes, fillval = $00;
-    
-    # Pad 60 unused 8KB banks to achieve 512KB (Banks 0-59)
-    PRG_PAD: start = $8000,  size = $78000, type = ro, file = %O, fill = yes, fillval = $FF;
-    
-    # Last 4 banks mapped into CPU space on boot (Banks 60-63)
-    PRG_80:  start = $8000,  size = $2000, type = ro, file = %O, fill = yes, fillval = $FF;
-    PRG_A0:  start = $A000,  size = $2000, type = ro, file = %O, fill = yes, fillval = $FF;
-    PRG_C0:  start = $C000,  size = $2000, type = ro, file = %O, fill = yes, fillval = $FF;
-    PRG_FIX: start = $E000,  size = $1FFA, type = ro, file = %O, fill = yes, fillval = $FF;
-    VECTORS: start = $FFFA,  size = $0006, type = ro, file = %O, fill = yes;
-}
+        lines = [
+            "MEMORY {",
+            '    ZP:      start = $00,    size = $0100, type = rw, file = "";',
+            '    OAM:     start = $0200,  size = $0100, type = rw, file = "";',
+            '    RAM:     start = $0300,  size = $0500, type = rw, file = "";',
+            '    HDR:     start = $0000,  size = $0010, type = ro, file = %O, fill = yes, fillval = $00;'
+        ]
 
-SEGMENTS {
-    HEADER:   load = HDR, type = ro;
-    ZEROPAGE: load = ZP,  type = zp;
-    BSS:      load = RAM, type = bss, define = yes;
-    OAM:      load = OAM, type = bss, align = $100;
-    CODE:     load = PRG_FIX, type = ro;
-    RODATA:   load = PRG_FIX, type = ro;
-    DPCM:     load = PRG_C0,  type = ro, optional = yes;
-    VECTORS:  load = VECTORS, type = ro;
-}
-"""
+        # Generate Banks 0-59 (DPCM and Padding)
+        # All mapped to $C000 so their addresses resolve correctly for the APU!
+        for i in range(60):
+            lines.append(f'    PRG_BANK_{i:02d}: start = $C000,  size = $2000, type = ro, file = %O, fill = yes, fillval = $FF;')
+
+        # Last 4 banks mapped into CPU space on boot (Banks 60-63)
+        lines.extend([
+            '    PRG_80:  start = $8000,  size = $2000, type = ro, file = %O, fill = yes, fillval = $FF;',
+            '    PRG_A0:  start = $A000,  size = $2000, type = ro, file = %O, fill = yes, fillval = $FF;',
+            '    PRG_C0:  start = $C000,  size = $2000, type = ro, file = %O, fill = yes, fillval = $FF;',
+            '    PRG_FIX: start = $E000,  size = $1FFA, type = ro, file = %O, fill = yes, fillval = $FF;',
+            '    VECTORS: start = $FFFA,  size = $0006, type = ro, file = %O, fill = yes;',
+            '}',
+            '',
+            'SEGMENTS {',
+            '    HEADER:   load = HDR, type = ro;',
+            '    ZEROPAGE: load = ZP,  type = zp;',
+            '    BSS:      load = RAM, type = bss, define = yes;',
+            '    OAM:      load = OAM, type = bss, align = $100;'
+        ])
+
+        # Generate DPCM segments for Banks 0-59
+        for i in range(60):
+            lines.append(f'    DPCM_{i:02d}:   load = PRG_BANK_{i:02d}, type = ro, optional = yes;')
+
+        lines.extend([
+            '    CODE:     load = PRG_FIX, type = ro;',
+            '    RODATA:   load = PRG_FIX, type = ro;',
+            '    DPCM:     load = PRG_C0,  type = ro, optional = yes;',
+            '    VECTORS:  load = VECTORS, type = ro;',
+            '}'
+        ])
+
+        return "\n".join(lines)
 
     def generate_init_code(self) -> str:
         return """
