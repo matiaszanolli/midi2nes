@@ -347,8 +347,9 @@ class TestFrameDataGeneration(unittest.TestCase):
         self.assertIn('volume', frames[0], "Triangle frame should have volume")
         self.assertIn('pitch', frames[0], "Frame should have pitch")
 
-        # Verify volume is calculated correctly (velocity // 8)
-        expected_volume = min(15, 80 // 8)
+        # Verify volume is calculated correctly using logarithmic curve
+        import math
+        expected_volume = max(1, int(15 * math.pow(80 / 127.0, 1.5)))
         self.assertEqual(frames[0]['volume'], expected_volume)
 
     def test_note_sustain_duration(self):

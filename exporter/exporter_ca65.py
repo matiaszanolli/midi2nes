@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 from exporter.base_exporter import BaseExporter
 
@@ -750,6 +751,14 @@ class CA65Exporter(BaseExporter):
                 
             channel_frames = frames[channel]
             max_frame = max(int(f) for f in channel_frames.keys()) if channel_frames else -1
+            
+            # Detect if this channel uses raw MIDI velocity (0-127) to apply power curve
+            max_vol = 0
+            for f_data in channel_frames.values():
+                v = f_data.get('volume', 0)
+                if v > max_vol:
+                    max_vol = v
+            is_midi_velocity = max_vol > 15
             
             current_note = 0
             current_event = None

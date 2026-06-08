@@ -1,4 +1,5 @@
 from collections import defaultdict
+import math
 from .pitch_table import PitchProcessor
 from collections import defaultdict
 from .envelope_processor import EnvelopeProcessor
@@ -55,11 +56,15 @@ class NESEmulatorCore:
                         "control": control_byte,
                         "arpeggio": arpeggio,
                         "note": event['note'],
-                        "volume": min(15, velocity // 8)  # Also store raw volume for debugging
+                        "volume": min(15, velocity // 8) if velocity == 0 else max(1, int(15 * math.pow(velocity / 127.0, 1.5)))
                     }
                 else:
-                    # For non-pulse channels, use simple volume calculation
-                    volume = min(15, velocity // 8)
+                    # Apply power curve for volume fidelity on all non-pulse channels too
+                    v_clamped = min(127, max(0, velocity))
+                    if v_clamped > 0:
+                        volume = max(1, int(15 * math.pow(v_clamped / 127.0, 1.5)))
+                    else:
+                        volume = 0
                     frames[f] = {
                         "pitch": pitch,
                         "volume": volume,
@@ -98,4 +103,3 @@ class NESEmulatorCore:
                 processed[channel_name] = dpcm_frames
 
         return processed
-

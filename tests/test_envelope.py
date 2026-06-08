@@ -96,9 +96,10 @@ class TestEnvelopeProcessor(unittest.TestCase):
             envelope_type, frame_offset, note_duration, duty_cycle=2, base_velocity=base_velocity
         )
         
-        # Check that MIDI velocity is properly scaled (100 // 8 = 12)
+        # Check that MIDI velocity is properly scaled using logarithmic curve
         volume = control_byte & 0x0F
-        expected_volume = min(15, base_velocity // 8)  # 100 // 8 = 12
+        import math
+        expected_volume = max(1, int(15 * math.pow(base_velocity / 127.0, 1.5)))
         self.assertEqual(volume, expected_volume)
 
     def test_invalid_envelope_type(self):
@@ -331,10 +332,12 @@ class TestEnvelopeProcessor(unittest.TestCase):
             )
             
             volume = control_byte & 0x0F
-            expected_midi_volume = min(15, max(0, velocity // 8))
-            
-            # For default envelope, envelope_volume is 15, so final volume should be midi_volume
-            expected_volume = expected_midi_volume
+            import math
+            if velocity > 0:
+                expected_volume = max(1, int(15 * math.pow(velocity / 127.0, 1.5)))
+            else:
+                expected_volume = 0
+                
             self.assertEqual(volume, expected_volume)
             
         # Test velocity scaling with different envelope types
@@ -410,8 +413,9 @@ class TestNESEmulatorCore(unittest.TestCase):
         self.assertIn('volume', triangle_frame)
         self.assertNotIn('control', triangle_frame)
         
-        # Check volume scaling for non-pulse channel (velocity // 8)
-        expected_volume = min(15, 100 // 8)  # 100 // 8 = 12
+        # Check volume scaling for non-pulse channel
+        import math
+        expected_volume = max(1, int(15 * math.pow(100 / 127.0, 1.5)))
         self.assertEqual(triangle_frame['volume'], expected_volume)
         
     def test_compile_channel_with_effects(self):

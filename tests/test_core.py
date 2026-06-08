@@ -99,8 +99,9 @@ class TestEnvelopeIntegration(unittest.TestCase):
         self.assertIn('control', frames[0])
         control_byte = frames[0]['control']
         
-        # Default envelope with duty cycle 2, velocity 100 → volume 12
-        expected_volume = min(15, 100 // 8)  # 100 // 8 = 12
+        # Default envelope with duty cycle 2, velocity 100
+        import math
+        expected_volume = max(1, int(15 * math.pow(100 / 127.0, 1.5)))
         expected_control = (2 << 6) | 0x10 | expected_volume  # duty(2) << 6 | constant_vol(0x10) | volume(12)
         self.assertEqual(control_byte, expected_control)
 
@@ -186,8 +187,9 @@ class TestEnvelopeIntegration(unittest.TestCase):
         
         # Test sustain phase (frames 4-18)
         sustain_volume = frames[10]['control'] & 0x0F
-        # Piano envelope sustain level (10) scaled by MIDI velocity (100//8=12): (10*12)//15 = 8
-        expected_sustain_volume = (10 * min(15, 100 // 8)) // 15  # (10 * 12) // 15 = 8
+        import math
+        midi_vol = max(1, int(15 * math.pow(100 / 127.0, 1.5)))
+        expected_sustain_volume = round((10 * midi_vol) / 15.0)
         self.assertEqual(sustain_volume, expected_sustain_volume)
         
         # Test release phase (frames 18-20)

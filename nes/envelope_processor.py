@@ -102,10 +102,14 @@ class EnvelopeProcessor:
         
         # Apply base velocity if provided (scale from MIDI 0-127 to NES 0-15)
         if base_velocity is not None:
-            # Convert MIDI velocity (0-127) to NES volume scale (0-15)
-            midi_volume = min(15, max(0, base_velocity // 8))
-            # Use MIDI volume as the base, then apply envelope scaling
-            volume = min(15, (envelope_volume * midi_volume) // 15)
+            # Using a 1.5 power curve maps logarithmic human hearing to linear APU steps
+            base_velocity = min(127, max(0, base_velocity))
+            if base_velocity > 0:
+                midi_volume = max(1, int(15 * math.pow(base_velocity / 127.0, 1.5)))
+            else:
+                midi_volume = 0
+            # Round instead of floor division to preserve fidelity during instrument fades
+            volume = min(15, round((envelope_volume * midi_volume) / 15.0))
         else:
             volume = envelope_volume
         

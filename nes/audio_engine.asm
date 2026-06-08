@@ -346,7 +346,10 @@ audio_update:
     ror
     ror           ; Fast shift duty bits 0-1 into D6-D7
     ora #$30      ; Constant volume flag
-    ora temp_vol
+    sta temp1     ; Save duty+constant flags
+    lda temp_vol
+    and #$0F      ; Clamps volume to 0-15 to prevent register corruption
+    ora temp1
     sta $4000
     
     lda temp_pitch
@@ -375,7 +378,10 @@ audio_update:
     ror
     ror           ; Fast shift duty bits 0-1 into D6-D7
     ora #$30      ; Constant volume flag
-    ora temp_vol
+    sta temp1     ; Save duty+constant flags
+    lda temp_vol
+    and #$0F      ; Clamps volume to 0-15 to prevent register corruption
+    ora temp1
     sta $4004
     
     lda temp_pitch
@@ -431,8 +437,9 @@ audio_update:
     jmp @next_channel
 
 @write_noise:
-    lda #$30      ; Constant volume flag & Length counter halt
-    ora temp_vol
+    lda temp_vol
+    and #$0F      ; Clamps volume to 0-15
+    ora #$30      ; Constant volume flag & Length counter halt
     sta $400C
     
     lda temp_duty
