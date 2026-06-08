@@ -665,6 +665,11 @@ class CA65Exporter(BaseExporter):
         lines.append('.align 64')
         lines.append('; TODO: Insert actual .incbin statements for DPCM files here')
         lines.append('')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('; Macro & Sequence Data (Mapped to fixed $8000 bank)')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('.segment "CODE_8000"')
+        lines.append('')
         lines.append('; DPCM Lookup Tables')
         lines.append('dpcm_bank_table:')
         lines.append('    .byte $00')
@@ -674,11 +679,6 @@ class CA65Exporter(BaseExporter):
         lines.append('    .byte $00')
         lines.append('dpcm_len_table:')
         lines.append('    .byte $00')
-        lines.append('')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('; Macro & Sequence Data (Mapped to fixed $8000 bank)')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('.segment "CODE_8000"')
         lines.append('')
         
         # Export symbols needed by the audio engine

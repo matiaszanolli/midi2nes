@@ -265,7 +265,7 @@ audio_update:
     
     clc
     lda current_note, x
-    adc current_note, x     ; Add arp offset to base note
+    adc temp_arp     ; Add arp offset to base note
     sta temp_note
     
     ; Triangle (2) ignores Duty. Pulse 1/2 (0,1) and Noise (3) use Duty.
@@ -280,6 +280,7 @@ audio_update:
     EVAL_MACRO 4, macro_steps_pitch, 0, temp_pitch
     
     lda temp_pitch
+    beq @skip_pitch    ; Skip 16-bit sign extension if pitch offset is 0
     bpl :+
     lda #$FF           ; Sign extend negative pitch
     .byte $2C          ; BIT absolute (Skip next 2 bytes / lda #0)
@@ -306,6 +307,16 @@ audio_update:
     ora temp_vol
     sta $4000
     
+    lda temp_pitch
+    bne @p1_pitch_mod
+    ; Fast path: No pitch bend, avoid 16-bit math
+    lda ntsc_period_low, y
+    sta $4002
+    lda ntsc_period_high, y
+    ora #$08
+    sta $4003
+    jmp @next_channel
+@p1_pitch_mod:
     lda ntsc_period_low, y
     clc
     adc temp_pitch
@@ -325,6 +336,16 @@ audio_update:
     ora temp_vol
     sta $4004
     
+    lda temp_pitch
+    bne @p2_pitch_mod
+    ; Fast path: No pitch bend, avoid 16-bit math
+    lda ntsc_period_low, y
+    sta $4006
+    lda ntsc_period_high, y
+    ora #$08
+    sta $4007
+    jmp @next_channel
+@p2_pitch_mod:
     lda ntsc_period_low, y
     clc
     adc temp_pitch
@@ -341,6 +362,17 @@ audio_update:
     
     lda #$FF      ; Halt length/linear counter, max volume
     sta $4008
+    
+    lda temp_pitch
+    bne @tri_pitch_mod
+    ; Fast path: No pitch bend, avoid 16-bit math
+    lda ntsc_period_low, y
+    sta $400A
+    lda ntsc_period_high, y
+    ora #$08
+    sta $400B
+    jmp @next_channel
+@tri_pitch_mod:
     lda ntsc_period_low, y
     clc
     adc temp_pitch
