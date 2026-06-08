@@ -116,6 +116,9 @@ audio_init:
     lda #$00
     sta stream_bank+4
     
+    ; Initialize DMC output level to 0 to prevent muffling Triangle/Noise
+    sta $4011
+    
     ; Clear macro steps
     ldx #4
 @clear_macros:
@@ -180,6 +183,10 @@ audio_update:
     ; Handle commands ($80 - $FE)
     cmp #$FE
     beq @cmd_bank_jump
+    cmp #$85
+    beq @cmd_dpcm_play
+    cmp #$87
+    beq @cmd_dmc_level
     cmp #$80
     bne @unknown_command
 
@@ -188,6 +195,41 @@ audio_update:
     sta current_inst, x
     jmp @read_next
     
+@cmd_dpcm_play:
+    ; CMD_DPCM_PLAY ($85 followed by 1 parameter byte: sample_id)
+    jsr fetch_sequence_byte
+    tay                     ; Move sample_id into Y for table lookups
+    
+    ; Stop any playing DPCM first to reset the byte counter
+    lda #$0F
+    sta $4015
+
+    ; --- Hot-Swap DPCM Bank into $C000 ---
+    lda #$46                ; MMC3 PRG Bank Mode 1, Register 6
+    sta $8000
+    lda dpcm_bank_table, y  ; Fetch the bank number for this sample
+    sta $8001
+
+    ; Load sample parameters
+    lda dpcm_pitch_table, y
+    sta $4010
+    lda dpcm_addr_table, y
+    sta $4012
+    lda dpcm_len_table, y
+    sta $4013
+    
+    ; Trigger playback
+    lda #$1F
+    sta $4015
+    jmp @read_next
+
+@cmd_dmc_level:
+    ; CMD_DMC_LEVEL ($87 followed by 1 parameter byte: 7-bit level)
+    jsr fetch_sequence_byte
+    and #$7F                ; Clamp to 7 bits (0-127) for safety
+    sta $4011
+    jmp @read_next
+
 @cmd_bank_jump:
     ; CMD_BANK_JUMP ($FE followed by bank, addr_low, addr_high)
     jsr fetch_sequence_byte
