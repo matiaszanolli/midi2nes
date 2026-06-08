@@ -78,8 +78,6 @@ class NSFExporter(BaseExporter):
         """
         # Convert frames to binary data
         frame_data = self._convert_frames_to_binary(frames_data)
-        # 1. Compile the frames into macro bytecode structures
-        bytecode_data = self.compile_macro_bytecode(frames_data)
         
         # Add frame data pointer table
         pointer_table_start = self.current_address
@@ -92,20 +90,11 @@ class NSFExporter(BaseExporter):
         
         # Add play routine
         play_routine = self._generate_play_routine(pointer_table_start)
-        play_routine = bytes([0x60]) # RTS (To be replaced with actual 6502 NSF playback engine)
         self.data_segment.extend(play_routine)
-        self.current_address += len(play_routine)
 
     def _convert_frames_to_binary(self, frames_data: Dict[str, Any]) -> List[bytes]:
         """Convert frame data to binary format with compression"""
         binary_data = []
-        # 2. Pack the structures into raw binary memory
-        packer = NSFMacroPacker(base_address=self.current_address)
-        binary_payload = packer.pack(
-            macros=bytecode_data['macros'],
-            instruments=bytecode_data['instruments'],
-            sequences=bytecode_data['sequences']
-        )
         
         for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
             if channel not in frames_data:
@@ -141,9 +130,6 @@ class NSFExporter(BaseExporter):
         data_bytes = json_str.encode('utf-8')
         # Add 0xFF end marker as expected by tests
         return data_bytes + bytes([0xFF])
-        # 3. Append the binary payload
-        self.data_segment.extend(binary_payload)
-        self.current_address += len(binary_payload)
 
     def _generate_play_routine(self, pointer_table_start: int) -> bytes:
         """Generate play routine assembly code"""

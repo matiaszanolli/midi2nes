@@ -86,16 +86,12 @@ class TestNSFExport(unittest.TestCase):
     def test_frame_conversion(self):
         exporter = NSFExporter()
         binary_data = exporter._convert_frames_to_binary(self.test_frames)
-        bytecode_data = exporter.compile_macro_bytecode(self.test_frames)
         
         # Verify we have data for all channels
         self.assertEqual(len(binary_data), 5)
-        # Verify we have sequence data for all channels
-        self.assertEqual(len(bytecode_data['sequences']), 5)
         
         # Verify each channel ends with marker
         for channel_data in binary_data:
-        for channel, channel_data in bytecode_data['sequences'].items():
             self.assertEqual(channel_data[-1], 0xFF)
 
     def test_nsf_macro_packer_pointer_resolution(self):
