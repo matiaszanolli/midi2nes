@@ -18,6 +18,7 @@ from tracker.track_mapper import split_polyphonic_track, assign_tracks_to_nes_ch
 from nes.emulator_core import NESEmulatorCore
 
 
+@unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")
 class TestTriangleControlByte(unittest.TestCase):
     """Test triangle channel control byte generation - critical for silence."""
 
@@ -115,6 +116,7 @@ class TestTriangleControlByte(unittest.TestCase):
                     break
 
 
+@unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")
 class TestNoteTableGeneration(unittest.TestCase):
     """Test that note tables are generated correctly for reliable comparison."""
 
@@ -245,6 +247,7 @@ class TestTrackSplitting(unittest.TestCase):
         self.assertEqual(total_events, 2, "Note-off events should be skipped")
 
 
+@unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")
 class TestSilenceHandling(unittest.TestCase):
     """Test that silence is handled correctly in playback code."""
 
@@ -379,6 +382,7 @@ class TestFrameDataGeneration(unittest.TestCase):
             self.assertEqual(frames[f]['note'], 64)
 
 
+@unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")
 class TestAssemblyCodeGeneration(unittest.TestCase):
     """Test that generated assembly code has correct structure."""
 

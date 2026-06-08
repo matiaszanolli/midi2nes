@@ -89,9 +89,8 @@ class TestExporterIntegration(unittest.TestCase):
         self.assertTrue(os.path.exists(output_path))
         with open(output_path, 'r') as f:
             content = f.read()
-            self.assertIn("Pattern Compressed", content)
-            self.assertIn("note_table", content)  # Check for note table instead
-            self.assertIn("pattern_refs", content)  # Check for pattern references
+            self.assertIn("instrument_table:", content)
+            self.assertIn("pulse1_sequence:", content)
     
     def test_nsf_export_with_compression(self):
         """Test NSF export with compression"""
