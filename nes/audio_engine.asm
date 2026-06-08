@@ -5,6 +5,8 @@
 .import ntsc_period_low, ntsc_period_high
 .import dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table
 .import instrument_table
+.import fetch_sequence_byte
+.importzp sequence_ptr, sequence_bank
 
 .segment "ZEROPAGE"
 ptr1:           .res 2
@@ -17,6 +19,7 @@ frame_counter:  .res 2
 ; 5 channels: 0=Pulse1, 1=Pulse2, 2=Triangle, 3=Noise, 4=DMC
 stream_ptr_lo:  .res 5
 stream_ptr_hi:  .res 5
+stream_bank:    .res 5
 frame_wait:     .res 5
 current_len:    .res 5
 current_note:   .res 5
@@ -42,26 +45,36 @@ audio_init:
     sta stream_ptr_lo+0
     lda #>pulse1_sequence
     sta stream_ptr_hi+0
+    lda #$00
+    sta stream_bank+0
     
     lda #<pulse2_sequence
     sta stream_ptr_lo+1
     lda #>pulse2_sequence
     sta stream_ptr_hi+1
+    lda #$00
+    sta stream_bank+1
     
     lda #<triangle_sequence
     sta stream_ptr_lo+2
     lda #>triangle_sequence
     sta stream_ptr_hi+2
+    lda #$00
+    sta stream_bank+2
     
     lda #<noise_sequence
     sta stream_ptr_lo+3
     lda #>noise_sequence
     sta stream_ptr_hi+3
+    lda #$00
+    sta stream_bank+3
     
     lda #<dpcm_sequence
     sta stream_ptr_lo+4
     lda #>dpcm_sequence
     sta stream_ptr_hi+4
+    lda #$00
+    sta stream_bank+4
     
     ; Clear macro steps
     ldx #19
@@ -102,17 +115,15 @@ audio_update:
     
 @fetch_byte:
     lda stream_ptr_lo, x
-    sta ptr1
+    sta sequence_ptr
     lda stream_ptr_hi, x
-    sta ptr1+1
+    sta sequence_ptr+1
+    lda stream_bank, x
+    sta sequence_bank
     
-    ldy #0
 @read_next:
-    lda (ptr1), y
-    inc ptr1
-    bne :+
-    inc ptr1+1
-:   
+    jsr fetch_sequence_byte
+
     cmp #$FF
     bne :+
     jmp @end_of_stream ; Halt sequence if end marker $FF is hit
@@ -124,16 +135,35 @@ audio_update:
     
 @is_command:
     ; Handle commands ($80 - $FE)
+    cmp #$FE
+    beq @cmd_bank_jump
     cmp #$80
     bne @unknown_command
+
     ; CMD_INSTRUMENT ($80 followed by 1 parameter byte)
-    lda (ptr1), y
+    jsr fetch_sequence_byte
     sta current_inst, x
-    inc ptr1
-    bne @read_next
-    inc ptr1+1
     jmp @read_next
     
+@cmd_bank_jump:
+    ; CMD_BANK_JUMP ($FE followed by bank, addr_low, addr_high)
+    jsr fetch_sequence_byte
+    sta sequence_bank
+    sta stream_bank, x
+    
+    jsr fetch_sequence_byte
+    pha                     ; Save low byte
+    
+    jsr fetch_sequence_byte
+    sta sequence_ptr+1      ; Write high byte
+    sta stream_ptr_hi, x
+    
+    pla
+    sta sequence_ptr        ; Write low byte
+    sta stream_ptr_lo, x
+    
+    jmp @read_next
+
 @unknown_command:
     jmp @end_of_stream ; Safely skip to end if command is unknown to avoid crashing
     
@@ -161,9 +191,9 @@ audio_update:
     dec frame_wait, x 
     
     ; Save the advanced pointer
-    lda ptr1
+    lda sequence_ptr
     sta stream_ptr_lo, x
-    lda ptr1+1
+    lda sequence_ptr+1
     sta stream_ptr_hi, x
     
 @process_macros:

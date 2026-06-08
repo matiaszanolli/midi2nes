@@ -91,6 +91,9 @@ class NESProjectBuilder:
         music_content = music_content.replace('.include "mmc3_init.asm"\n', '')
         music_content = music_content.replace('.include "audio_engine.asm"\n', '')
 
+        # Import the sequence tracking ZP variables
+        music_content += "\n.importzp sequence_ptr, sequence_bank\n"
+
         print(f"  Using {self.mapper.name} with {self.mapper.prg_rom_size // 1024}KB PRG-ROM")
 
         if self.debug_mode:
@@ -138,6 +141,9 @@ seq_cmd_dpcm_play:
         # Instrument and Macro Engine implementation
         music_content += """
 .segment "BSS"
+; Sequence Bank tracking for 5 channels (Pulse1, Pulse2, Triangle, Noise, DPCM)
+ch_sequence_bank:   .res 5
+
 ; Channel state variables (4 channels: Pulse1, Pulse2, Triangle, Noise)
 ch_macro_vol_lo:    .res 4
 ch_macro_vol_hi:    .res 4
@@ -166,6 +172,41 @@ apu_shadow_timer_lo: .res 4
 apu_shadow_timer_hi: .res 4
 
 .segment "CODE"
+; ------------------------------------------------------------------
+; fetch_sequence_byte
+; Swaps the sequence bank into $8000-$9FFF, reads 1 byte, increments ptr
+; ------------------------------------------------------------------
+.global fetch_sequence_byte
+fetch_sequence_byte:
+    ; Select MMC3 PRG Bank Register 7 ($A000-$BFFF), keep P=1
+    lda #$47
+    sta $8000
+    
+    ; Swap in the sequence bank
+    lda sequence_bank
+    sta $8001
+    
+    ; Translate pointer from linker address to the $A000 window
+    lda sequence_ptr+1
+    pha
+    and #$1F          ; Isolate the offset within the 8KB bank
+    ora #$A0          ; Shift it into the $A000-$BFFF range
+    sta sequence_ptr+1
+    
+    ldy #$00
+    lda (sequence_ptr), y
+    
+    ; Restore original pointer high byte
+    pla
+    sta sequence_ptr+1
+    
+    ; Advance the pointer
+    inc sequence_ptr
+    bne @no_carry
+    inc sequence_ptr+1
+@no_carry:
+    rts
+
 ; ------------------------------------------------------------------
 ; seq_cmd_instrument ($80)
 ; Sets the current instrument for the active channel.
@@ -489,7 +530,9 @@ read_joypad_once:
 .segment "ZEROPAGE"
     ; Export zeropage variables for music.asm
     temp_ptr:      .res 2  ; Temporary pointer for table lookups
-.exportzp temp_ptr
+    sequence_ptr:  .res 2  ; 16-bit pointer to current sequence byte
+    sequence_bank: .res 1  ; 8-bit bank number where this sequence lives
+.exportzp temp_ptr, sequence_ptr, sequence_bank
 
 .segment "CODE"
 ; Import music functions from music.asm
