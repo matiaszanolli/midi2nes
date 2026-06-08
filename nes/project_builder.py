@@ -249,6 +249,7 @@ process_channel_macros:
     
 @sustain_vol:
 
+@process_duty:
     ; --- Process Duty Macro ---
     lda ch_macro_duty_lo, x
     sta ptr1

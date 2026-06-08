@@ -648,10 +648,15 @@ class CA65Exporter(BaseExporter):
         Strategy: Expand pattern references back into full frame data, then use direct export.
         This maintains pattern detection for analysis while avoiding complex playback logic.
         """
+        if not patterns:
+            return self.export_direct_frames(frames, output_path, standalone)
+
         print("🔧 CA65 Exporter: MMC3 Macro Bytecode mode")
         
         lines = []
         lines.append('; CA65 Assembly Export (MMC3 Macro Bytecode)')
+        lines.append('')
+        lines.append('.importzp ptr1, temp1, temp2, frame_counter')
         lines.append('')
         lines.append('; ---------------------------------------------------------------------------')
         lines.append('; DPCM Sample Bank (Mapped to $C000)')
@@ -659,6 +664,16 @@ class CA65Exporter(BaseExporter):
         lines.append('.segment "DPCM"')
         lines.append('.align 64')
         lines.append('; TODO: Insert actual .incbin statements for DPCM files here')
+        lines.append('')
+        lines.append('; DPCM Lookup Tables')
+        lines.append('dpcm_bank_table:')
+        lines.append('    .byte $00')
+        lines.append('dpcm_pitch_table:')
+        lines.append('    .byte $0F')
+        lines.append('dpcm_addr_table:')
+        lines.append('    .byte $00')
+        lines.append('dpcm_len_table:')
+        lines.append('    .byte $00')
         lines.append('')
         lines.append('; ---------------------------------------------------------------------------')
         lines.append('; Macro & Sequence Data (Mapped to fixed $8000 bank)')

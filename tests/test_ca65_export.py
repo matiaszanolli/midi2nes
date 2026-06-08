@@ -48,50 +48,30 @@ class TestCA65Export(unittest.TestCase):
             with open(test_output, 'r') as f:
                 output = f.read()
                 
-            # Test file header and exports (no imports in standalone mode)
-            self.assertIn("; CA65 Assembly Export", output)
-            self.assertIn(".global init_music", output)
-            self.assertIn(".global update_music", output)
+            # Test file header and new MMC3 mode output
+            self.assertIn("; CA65 Assembly Export (MMC3 Macro Bytecode)", output)
             
             # Test segments
-            self.assertIn(".segment \"RODATA\"", output)
-            self.assertIn(".segment \"CODE\"", output)
-            self.assertNotIn(".segment \"ZEROPAGE\"", output)
+            self.assertIn(".segment \"DPCM\"", output)
+            self.assertIn(".segment \"CODE_8000\"", output)
             
-            # Test pattern data
-            self.assertIn("pattern_1:", output)
-            self.assertIn("pattern_refs:", output)
+            # Test tables
+            self.assertIn("ntsc_period_low:", output)
+            self.assertIn("ntsc_period_high:", output)
+            self.assertIn("instrument_table:", output)
             
-            # Test music engine routines
-            self.assertIn("init_music:", output)
-            self.assertIn("update_music:", output)
-            self.assertIn("play_pattern_frame", output)
+            # Test pattern/sequence data
+            self.assertIn("pulse1_sequence:", output)
+            self.assertIn("pulse2_sequence:", output)
+            self.assertIn("triangle_sequence:", output)
+            self.assertIn("noise_sequence:", output)
+            self.assertIn("dpcm_sequence:", output)
             
-            # Test APU initialization values
-            self.assertIn("sta $4015", output)  # APU enable
-            self.assertIn("sta $4000", output)  # Pulse 1
-            self.assertIn("sta $4004", output)  # Pulse 2
-            self.assertIn("sta $4008", output)  # Triangle
-            self.assertIn("sta $400C", output)  # Noise
-            
-            # Test frame counter handling
-            self.assertIn("lda frame_counter", output)
-            self.assertIn("inc frame_counter", output)
-            self.assertIn("inc frame_counter+1", output)
-            
-            # Test pattern playback
-            self.assertIn("lda pattern_refs,x", output)
-            self.assertIn("sta ptr1", output)
-            self.assertIn("sta temp1", output)
-            # Note: temp2 is not used in current pattern playback implementation
-            
-            # Test that we don't have any undefined values
-            self.assertNotIn("lda\n", output)  # No empty LDA instructions
-            self.assertNotIn("sta\n", output)  # No empty STA instructions
-            
-            # Test proper initialization values
-            self.assertIn("lda #$0F", output)  # APU enable value
-            self.assertIn("lda #$30", output)  # APU channel setup
+            # Test macro definitions
+            self.assertIn("macro_vol_0:", output)
+            self.assertIn("macro_duty_0:", output)
+            self.assertIn("macro_pitch_0:", output)
+            self.assertIn("macro_arp_0:", output)
             
         finally:
             if test_output.exists():
