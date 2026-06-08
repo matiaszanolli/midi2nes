@@ -681,6 +681,13 @@ class CA65Exporter(BaseExporter):
         lines.append('.segment "CODE_8000"')
         lines.append('')
         
+        # Export symbols needed by the audio engine
+        lines.append('.export pulse1_sequence, pulse2_sequence, triangle_sequence, noise_sequence, dpcm_sequence')
+        lines.append('.export ntsc_period_low, ntsc_period_high')
+        lines.append('.export dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table')
+        lines.append('.export instrument_table')
+        lines.append('')
+        
         # Write Pitch Lookup Tables
         lines.append('; The 128-byte Pitch Lookup Tables')
         lines.append('ntsc_period_low:')
@@ -922,6 +929,22 @@ class CA65Exporter(BaseExporter):
             lines.append('    .byte $FF')
             lines.append('')
             bytes_in_current_bank += 1
+
+        if not standalone:
+            lines.extend([
+                '',
+                '; Project builder compatible functions',
+                '.export init_music, update_music',
+                '.import audio_init, audio_update',
+                '',
+                '.segment "CODE"',
+                'init_music:',
+                '    jmp audio_init',
+                '',
+                'update_music:',
+                '    jmp audio_update',
+                ''
+            ])
             
         with open(output_path, 'w') as f:
             f.write('\n'.join(lines))

@@ -6,7 +6,6 @@
 .import dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table
 .import instrument_table
 .import fetch_sequence_byte
-.importzp sequence_ptr, sequence_bank
 
 .segment "ZEROPAGE"
 ptr1:           .res 2
