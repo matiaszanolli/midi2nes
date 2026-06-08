@@ -753,6 +753,7 @@ class CA65Exporter(BaseExporter):
             
             current_note = 0
             current_event = None
+            current_dmc_level = -1
             
             for frame_idx in range(max_frame + 1):
                 frame_data = channel_frames.get(str(frame_idx), channel_frames.get(frame_idx))
@@ -761,13 +762,20 @@ class CA65Exporter(BaseExporter):
                 control = frame_data.get('control', 0x80) if frame_data else 0x80
                 duty = (control >> 6) & 0x03
                 
+                dmc_level = frame_data.get('dmc_level') if frame_data else None
+                
                 if frame_data and vol == 0:
                     note = 0
                     
                 if note > 95:
                     note = 95
                     
-                if note != current_note:
+                dmc_changed = False
+                if dmc_level is not None and dmc_level != current_dmc_level:
+                    dmc_changed = True
+                    current_dmc_level = dmc_level
+                    
+                if note != current_note or dmc_changed:
                     if current_event is not None:
                         if current_event['note'] > 0:
                             v_seq = optimize_macro(current_event['vol_seq'])
@@ -804,6 +812,10 @@ class CA65Exporter(BaseExporter):
                         current_event = {'note': note, 'dur': 1, 'vol_seq': [vol], 'duty_seq': [duty], 'pitch_seq': [pitch_offset], 'arp_seq': [arp_val]}
                     else:
                         current_event = {'note': 0, 'dur': 1}
+                        
+                    if dmc_changed:
+                        current_event['dmc_level'] = current_dmc_level
+                        
                 else:
                     if current_event is not None:
                         current_event['dur'] += 1
@@ -886,6 +898,9 @@ class CA65Exporter(BaseExporter):
                 note = event['note']
                 dur = event['dur']
                 
+                if 'dmc_level' in event:
+                    event_bytes += 2
+                
                 if note > 0:
                     inst_id = event['inst_id']
                     if inst_id != current_inst:
@@ -911,6 +926,10 @@ class CA65Exporter(BaseExporter):
                     lines.append(f'{jump_label}:')
                 
                 # Emit bytes and update size counter
+                if 'dmc_level' in event:
+                    lines.append(f'    .byte $87, ${event["dmc_level"]:02X} ; CMD_DMC_LEVEL')
+                    bytes_in_current_bank += 2
+                
                 if note > 0:
                     inst_id = event['inst_id']
                     if inst_id != current_inst:
