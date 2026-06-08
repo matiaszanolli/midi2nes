@@ -15,6 +15,8 @@ temp1:          .res 1
 temp2:          .res 1
 frame_counter:  .res 2
 
+.segment "BSS"
+
 ; 5 channels: 0=Pulse1, 1=Pulse2, 2=Triangle, 3=Noise, 4=DMC
 stream_ptr_lo:  .res 5
 stream_ptr_hi:  .res 5
@@ -23,7 +25,12 @@ frame_wait:     .res 5
 current_len:    .res 5
 current_note:   .res 5
 current_inst:   .res 5
-macro_steps:    .res 20 ; 0-4=Vol, 5-9=Arp, 10-14=Pitch, 15-19=Duty
+macro_steps_vol:    .res 5
+macro_steps_arp:    .res 5
+macro_steps_pitch:  .res 5
+macro_steps_duty:   .res 5
+
+.segment "ZEROPAGE"
 
 ; Locals for macro processing
 temp_vol:       .res 1
@@ -32,11 +39,45 @@ temp_duty:      .res 1
 temp_note:      .res 1
 temp_pitch:     .res 1
 temp_pitch_hi:  .res 1
-temp_inst_off:  .res 1
 temp_inst_base: .res 1
 
 .segment "CODE"
 .export audio_init, audio_update
+
+; ---------------------------------------------------------------------------
+; Inline Macro Evaluator (Replaces the slow read_macro subroutine)
+; ---------------------------------------------------------------------------
+.macro EVAL_MACRO inst_offset, step_array, default_val, out_var
+    .local @not_end
+    .local @is_null
+    .local @done
+    
+    ldy temp_inst_base
+    lda instrument_table+inst_offset, y
+    sta ptr1
+    lda instrument_table+inst_offset+1, y
+    sta ptr1+1
+    
+    lda step_array, x
+    tay
+    lda (ptr1), y
+    cmp #$FF
+    bne @not_end
+    
+    cpy #0
+    beq @is_null
+    dey
+    lda (ptr1), y
+    jmp @done
+@is_null:
+    lda #default_val
+    jmp @done
+@not_end:
+    inc step_array, x
+    lda (ptr1), y
+@done:
+    sta out_var
+.endmacro
 
 audio_init:
     ; Initialize sequence pointers from the exported CA65 labels
@@ -76,10 +117,13 @@ audio_init:
     sta stream_bank+4
     
     ; Clear macro steps
-    ldx #19
+    ldx #4
 @clear_macros:
     lda #0
-    sta macro_steps, x
+    sta macro_steps_vol, x
+    sta macro_steps_arp, x
+    sta macro_steps_pitch, x
+    sta macro_steps_duty, x
     dex
     bpl @clear_macros
     
@@ -179,10 +223,10 @@ audio_update:
     
     ; Reset all macro sequence steps to 0
     lda #0
-    sta macro_steps, x       ; Vol step
-    sta macro_steps+5, x     ; Arp step
-    sta macro_steps+10, x    ; Pitch step
-    sta macro_steps+15, x    ; Duty step
+    sta macro_steps_vol, x
+    sta macro_steps_arp, x
+    sta macro_steps_pitch, x
+    sta macro_steps_duty, x
     
     lda current_len, x
     sta frame_wait, x
@@ -203,95 +247,61 @@ audio_update:
     bne :+
     jmp @silence
 :
-    ; 1. Volume Macro
-    lda #0                  ; Offset 0 in instrument table (Volume)
-    sta temp_inst_off
-    txa                     ; macro_steps index (x)
-    sta temp1
-    lda #15                 ; Default value if null
-    sta temp2
-    lda temp_inst_off
-    jsr read_macro
-    sta temp_vol
+    ; Skip all macros for DPCM (Channel 4)
+    cpx #4
+    bne :+
+    jmp @write_dpcm
+:
+    ; Precalculate the instrument pointer offset for this channel
+    lda current_inst, x
+    asl
+    asl
+    asl
+    sta temp_inst_base
     
-    ; 2. Arpeggio Macro
-    lda #2                  ; Offset 2 in instrument table (Arp)
-    sta temp_inst_off
-    txa
+    ; All remaining channels (0,1,2,3) use Volume and Arpeggio
+    EVAL_MACRO 0, macro_steps_vol, 15, temp_vol
+    EVAL_MACRO 2, macro_steps_arp, 0, temp_arp
+    
     clc
-    adc #5                  ; macro_steps index (x + 5)
-    sta temp1
-    lda #0                  ; Default value if null
-    sta temp2
-    lda temp_inst_off
-    jsr read_macro
-    clc
+    lda current_note, x
     adc current_note, x     ; Add arp offset to base note
     sta temp_note
     
-    ; 3. Duty Macro
-    lda #6                  ; Offset 6 in instrument table (Duty)
-    sta temp_inst_off
-    txa
-    clc
-    adc #15                 ; macro_steps index (x + 15)
-    sta temp1
-    lda #2                  ; Default value if null (50% duty)
-    sta temp2
-    lda temp_inst_off
-    jsr read_macro
-    sta temp_duty
-    
-    ; 4. Pitch Macro
-    lda #4                  ; Offset 4 in instrument table (Pitch)
-    sta temp_inst_off
-    txa
-    clc
-    adc #10                 ; macro_steps index (x + 10)
-    sta temp1
-    lda #0                  ; Default value if null
-    sta temp2
-    lda temp_inst_off
-    jsr read_macro
-    sta temp_pitch
+    ; Triangle (2) ignores Duty. Pulse 1/2 (0,1) and Noise (3) use Duty.
+    cpx #2
+    beq @skip_duty
+    EVAL_MACRO 6, macro_steps_duty, 2, temp_duty
+@skip_duty:
 
-    ; Sign extend pitch into temp_pitch_hi (for 16-bit signed addition)
+    ; Noise (3) ignores Pitch. Pulse 1/2 (0,1) and Triangle (2) use Pitch.
+    cpx #3
+    beq @skip_pitch
+    EVAL_MACRO 4, macro_steps_pitch, 0, temp_pitch
+    
     lda temp_pitch
-    bpl @positive_pitch
-    lda #$FF
-    jmp @store_pitch_hi
-@positive_pitch:
-    lda #0
-@store_pitch_hi:
+    bpl :+
+    lda #$FF           ; Sign extend negative pitch
+    .byte $2C          ; BIT absolute (Skip next 2 bytes / lda #0)
+:   lda #0             ; Sign extend positive pitch
     sta temp_pitch_hi
+@skip_pitch:
     
     ; Write to Hardware
     ldy temp_note
     cpx #0
-    bne :+
-    jmp @write_pulse1
-:   cpx #1
-    bne :+
-    jmp @write_pulse2
-:   cpx #2
-    bne :+
-    jmp @write_triangle
-:   cpx #3
-    bne :+
+    beq @write_pulse1
+    cpx #1
+    beq @write_pulse2
+    cpx #2
+    beq @write_triangle
     jmp @write_noise
-:   cpx #4
-    bne :+
-    jmp @write_dpcm
-:   jmp @next_channel
 
 @write_pulse1:
     lda temp_duty
-    asl
-    asl
-    asl
-    asl
-    asl
-    asl           ; Shift duty bits into D7, D6
+    lsr
+    ror
+    ror           ; Fast shift duty bits 0-1 into D6-D7
     ora #$30      ; Constant volume flag
     ora temp_vol
     sta $4000
@@ -308,12 +318,9 @@ audio_update:
     
 @write_pulse2:
     lda temp_duty
-    asl
-    asl
-    asl
-    asl
-    asl
-    asl           ; Shift duty bits into D7, D6
+    lsr
+    ror
+    ror           ; Fast shift duty bits 0-1 into D6-D7
     ora #$30      ; Constant volume flag
     ora temp_vol
     sta $4004
@@ -433,76 +440,4 @@ audio_update:
     jmp @channel_loop
     
 @done:
-    rts
-
-; ---------------------------------------------------------------------------
-; read_macro subroutine
-; ---------------------------------------------------------------------------
-; Inputs:
-; A = Offset in instrument table (0=Vol, 2=Arp, 4=Pitch, 6=Duty)
-; temp1 = Index into macro_steps array
-; temp2 = Default value to return if the macro is null ($FF on step 0)
-; Returns: Evaluated macro value in A
-; ---------------------------------------------------------------------------
-read_macro:
-    sta temp_inst_off
-    
-    ; inst_base = current_inst[x] * 8
-    lda current_inst, x
-    asl
-    asl
-    asl
-    sta temp_inst_base
-    
-    ; Y = inst_base + offset
-    lda temp_inst_base
-    clc
-    adc temp_inst_off
-    tay
-    
-    ; ptr1 = address of the actual macro array
-    lda instrument_table, y
-    sta ptr1
-    lda instrument_table+1, y
-    sta ptr1+1
-    
-    ; Save channel index
-    txa
-    pha
-    
-    ; Get current step for this macro
-    ldx temp1
-    lda macro_steps, x
-    tay
-    
-    ; Read the macro byte
-    lda (ptr1), y
-    cmp #$FF
-    bne @not_end
-    
-    ; Macro ended or is null
-    cpy #0
-    beq @is_null
-    
-    ; Not step 0, sustain previous value
-    dey
-    lda (ptr1), y
-    rts
-    
-@is_null:
-    lda temp2
-    jmp @done_macro
-    
-@not_end:
-    ; Increment step counter
-    inc macro_steps, x
-    
-    lda (ptr1), y
-    
-@done_macro:
-    ; Save result, restore channel index, and return
-    sta temp2
-    pla
-    tax
-    lda temp2
     rts
