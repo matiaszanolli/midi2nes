@@ -219,7 +219,6 @@ seq_cmd_instrument:
 ; Evaluates volume and duty macros for channel X
 ; ------------------------------------------------------------------
 .global process_channel_macros
-.import ntsc_period_low, ntsc_period_high
 
 process_channel_macros:
     ; --- Process Volume Macro ---
