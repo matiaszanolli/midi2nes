@@ -78,6 +78,8 @@ class NSFExporter(BaseExporter):
         """
         # Convert frames to binary data
         frame_data = self._convert_frames_to_binary(frames_data)
+        # 1. Compile the frames into macro bytecode structures
+        bytecode_data = self.compile_macro_bytecode(frames_data)
         
         # Add frame data pointer table
         pointer_table_start = self.current_address
@@ -90,11 +92,20 @@ class NSFExporter(BaseExporter):
         
         # Add play routine
         play_routine = self._generate_play_routine(pointer_table_start)
+        play_routine = bytes([0x60]) # RTS (To be replaced with actual 6502 NSF playback engine)
         self.data_segment.extend(play_routine)
+        self.current_address += len(play_routine)
 
     def _convert_frames_to_binary(self, frames_data: Dict[str, Any]) -> List[bytes]:
         """Convert frame data to binary format with compression"""
         binary_data = []
+        # 2. Pack the structures into raw binary memory
+        packer = NSFMacroPacker(base_address=self.current_address)
+        binary_payload = packer.pack(
+            macros=bytecode_data['macros'],
+            instruments=bytecode_data['instruments'],
+            sequences=bytecode_data['sequences']
+        )
         
         for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
             if channel not in frames_data:
@@ -130,6 +141,9 @@ class NSFExporter(BaseExporter):
         data_bytes = json_str.encode('utf-8')
         # Add 0xFF end marker as expected by tests
         return data_bytes + bytes([0xFF])
+        # 3. Append the binary payload
+        self.data_segment.extend(binary_payload)
+        self.current_address += len(binary_payload)
 
     def _generate_play_routine(self, pointer_table_start: int) -> bytes:
         """Generate play routine assembly code"""
@@ -237,3 +251,74 @@ class NSFExporter(BaseExporter):
             self.header.bankswitch_init = [0, 1, 2, 3, 4, 5, 6, 7]
             
         return self.export(frames_data, output_path, title, artist, copyright)
+
+
+class NSFMacroPacker:
+    """
+    Draft logic for packing MMC3 Macro Bytecode into binary arrays for NSF.
+    This will eventually replace the JSON-based serialization in NSFExporter.
+    """
+    def __init__(self, base_address: int = 0x8000):
+        self.base_address = base_address
+        self.macro_pool = bytearray()
+        self.instrument_table = bytearray()
+        self.sequence_data = bytearray()
+        self.pointers = {}
+
+    def pack(self, macros: Dict[str, List[int]], instruments: Dict[str, Dict[str, str]], sequences: Dict[str, List[int]]) -> bytes:
+        """
+        Packs macros, instruments, and channel sequences into a single binary payload.
+        
+        Args:
+            macros: Dict of macro ID to list of integer values (e.g., {'vol_0': [15, 14, 13, 0xFF]})
+            instruments: Dict of instrument ID to macro assignments 
+                         (e.g., {'inst_0': {'vol': 'vol_0', 'arp': None, 'pitch': None, 'duty': None}})
+            sequences: Dict of channel name to list of bytecode integers
+                       (e.g., {'pulse1': [0x80, 0x00, 0x64, 0x3C, 0xFF]})
+        """
+        # 1. Pack Macros (Volume, Arp, Pitch, Duty)
+        macro_start_addr = self.base_address
+        for macro_id, macro_data in macros.items():
+            self.pointers[macro_id] = macro_start_addr + len(self.macro_pool)
+            self.macro_pool.extend(macro_data)
+
+        # 2. Pack Instruments
+        # Each instrument needs 4 pointers (Vol, Arp, Pitch, Duty) - 8 bytes total
+        inst_start_addr = macro_start_addr + len(self.macro_pool)
+        for inst_id, inst_macros in instruments.items():
+            self.pointers[inst_id] = inst_start_addr + len(self.instrument_table)
+            
+            for m_type in ['vol', 'arp', 'pitch', 'duty']:
+                m_id = inst_macros.get(m_type)
+                if m_id and m_id in self.pointers:
+                    ptr = self.pointers[m_id]
+                else:
+                    ptr = 0x0000 # Null pointer (macro_null)
+                
+                self.instrument_table.extend(struct.pack('<H', ptr))
+
+        # 3. Pack Sequence Bytecode
+        seq_start_addr = inst_start_addr + len(self.instrument_table)
+        for channel, bytecode in sequences.items():
+            self.pointers[f"seq_{channel}"] = seq_start_addr + len(self.sequence_data)
+            self.sequence_data.extend(bytecode)
+            
+        # Combine all parts
+        return self.macro_pool + self.instrument_table + self.sequence_data
+        
+    def get_channel_pointers(self) -> List[int]:
+        """Returns the start addresses for the 5 channels to build the song header"""
+        channel_order = ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']
+        ptrs = []
+        for ch in channel_order:
+            key = f"seq_{ch}"
+            ptrs.append(self.pointers.get(key, 0x0000))
+        return ptrs
+        
+    def build_song_header(self, initial_tempo: int) -> bytes:
+        """Builds the 11-byte song header (5 pointers + 1 tempo byte)"""
+        header = bytearray()
+        for ptr in self.get_channel_pointers():
+            header.extend(struct.pack('<H', ptr))
+        header.append(initial_tempo & 0xFF)
+        return bytes(header)
