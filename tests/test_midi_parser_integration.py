@@ -134,9 +134,10 @@ class TestMIDIParserIntegration(unittest.TestCase):
         import os
         os.unlink(dpcm_index_path)
         
-        # 4. Generate frames (using mock function from test_frame_validation)
-        from tests.test_frame_validation import generate_frames
-        frame_data = generate_frames(mapped_data)
+        # 4. Generate frames (using actual NESEmulatorCore)
+        from nes.emulator_core import NESEmulatorCore
+        emulator = NESEmulatorCore()
+        frame_data = emulator.process_all_tracks(mapped_data)
         self.assertTrue(len(frame_data) > 0, "No frames generated")
         
         # 5. Detect patterns (with mock tempo map)
@@ -146,13 +147,13 @@ class TestMIDIParserIntegration(unittest.TestCase):
         
         # Convert frame data to events format expected by pattern detector
         events = []
-        for frame_num, frame in enumerate(frame_data):
-            for channel_name, channel_data in frame.items():
-                if channel_data['note'] > 0 or channel_data['volume'] > 0:
+        for channel_name, channel_frames in frame_data.items():
+            for frame_num, channel_data in channel_frames.items():
+                if channel_data.get('note', 0) > 0 or channel_data.get('volume', 0) > 0:
                     event = {
-                        'frame': frame_num,
-                        'note': channel_data['note'],
-                        'volume': channel_data['volume']
+                        'frame': int(frame_num),
+                        'note': channel_data.get('note', 0),
+                        'volume': channel_data.get('volume', 0)
                     }
                     events.append(event)
         

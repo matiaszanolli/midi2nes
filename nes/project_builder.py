@@ -612,9 +612,9 @@ irq:
         script_path = self.project_path / script_name
         
         if is_windows:
-            script = "@echo off\necho Compiling MMC3 Audio Engine...\nca65 main.asm -g -o main.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o output.nes main.o music.o\nif %errorlevel% neq 0 exit /b %errorlevel%\necho Done!\n"
+            script = "@echo off\necho Compiling MMC3 Audio Engine...\nca65 main.asm -g -o main.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o game.nes main.o music.o\nif %errorlevel% neq 0 exit /b %errorlevel%\necho Done!\n"
         else:
-            script = "#!/bin/bash\nset -e\necho \"Compiling MMC3 Audio Engine...\"\nca65 main.asm -g -o main.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o output.nes main.o music.o\necho \"Done!\"\n"
+            script = "#!/bin/bash\nset -e\necho \"Compiling MMC3 Audio Engine...\"\nca65 main.asm -g -o main.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o game.nes main.o music.o\necho \"Done!\"\n"
             
         script_path.write_text(script)
         if not is_windows:

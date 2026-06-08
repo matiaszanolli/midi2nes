@@ -211,7 +211,8 @@ class NESEmulatorCore:
                         frame_offset, 
                         end_frame - start_frame,
                         default_duty,
-                        effects
+                        effects,
+                        event.get('velocity', 0)
                     )
                     frames[f] = {
                         "pitch": modified_pitch,
@@ -220,7 +221,12 @@ class NESEmulatorCore:
                         "note": event['note']
                     }
                 else:
-                    volume = min(15, event.get('velocity', 0) // 8)
+                    velocity = event.get('velocity', 0)
+                    v_clamped = min(127, max(0, velocity))
+                    if v_clamped > 0:
+                        volume = max(1, int(15 * math.pow(v_clamped / 127.0, 1.5)))
+                    else:
+                        volume = 0
                     frames[f] = {
                         "pitch": modified_pitch,
                         "volume": volume,

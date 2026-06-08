@@ -137,8 +137,9 @@ class TestEnvelopeIntegration(unittest.TestCase):
                 
                 # Verify envelope characteristics  
                 if env_type == 'default':
-                    # Default envelope should maintain scaled velocity volume (100 // 8 = 12)
-                    expected_volume = min(15, 100 // 8)  # 12
+                    # Default envelope should maintain scaled velocity volume
+                    import math
+                    expected_volume = max(1, int(15 * math.pow(100 / 127.0, 1.5)))
                     self.assertEqual(volume, expected_volume)
                 elif env_type == 'pluck':
                     # Pluck should decrease over time
