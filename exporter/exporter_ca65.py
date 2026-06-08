@@ -852,25 +852,64 @@ class CA65Exporter(BaseExporter):
             lines.append('')
         
         # Bytecode generation for channels
+        current_bank = 0
+        bytes_in_current_bank = 0
+        BANK_SIZE_LIMIT = 8192 - 256  # 8KB minus a safety margin
+        
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('; Sequence Data (Dynamically Banked)')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append(f'.segment "BANK_{current_bank:02d}"')
+        lines.append('')
+
         for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
             lines.append(f'{channel}_sequence:')
             events = channel_events[channel]
             if not events:
                 lines.append('    .byte $FF')
                 lines.append('')
+                bytes_in_current_bank += 1
                 continue
                 
             current_inst = -1
             
             for event in events:
+                # Pre-calculate bytes needed for this event
+                event_bytes = 0
                 note = event['note']
                 dur = event['dur']
                 
                 if note > 0:
                     inst_id = event['inst_id']
                     if inst_id != current_inst:
+                        event_bytes += 2
+                
+                if dur > 0:
+                    rem_dur = dur
+                    while rem_dur > 0:
+                        write_dur = min(rem_dur, 32)
+                        event_bytes += 2
+                        rem_dur -= write_dur
+                
+                # Check if we need to switch banks
+                if bytes_in_current_bank + event_bytes + 4 > BANK_SIZE_LIMIT:
+                    next_bank = current_bank + 1
+                    jump_label = f'{channel}_seq_bank_{next_bank:02d}'
+                    lines.append(f'    .byte $FE, ${next_bank:02X}, <{jump_label}, >{jump_label} ; CMD_BANK_JUMP')
+                    
+                    current_bank = next_bank
+                    bytes_in_current_bank = 0
+                    lines.append('')
+                    lines.append(f'.segment "BANK_{current_bank:02d}"')
+                    lines.append(f'{jump_label}:')
+                
+                # Emit bytes and update size counter
+                if note > 0:
+                    inst_id = event['inst_id']
+                    if inst_id != current_inst:
                         lines.append(f'    .byte $80, ${inst_id:02X} ; CMD_INSTRUMENT')
                         current_inst = inst_id
+                        bytes_in_current_bank += 2
                 
                 if dur > 0:
                     rem_dur = dur
@@ -878,9 +917,11 @@ class CA65Exporter(BaseExporter):
                         write_dur = min(rem_dur, 32)
                         lines.append(f'    .byte ${(write_dur - 1) + 0x60:02X}, ${note:02X} ; Length {write_dur}, Note {note}')
                         rem_dur -= write_dur
+                        bytes_in_current_bank += 2
             
             lines.append('    .byte $FF')
             lines.append('')
+            bytes_in_current_bank += 1
             
         with open(output_path, 'w') as f:
             f.write('\n'.join(lines))
