@@ -1,12 +1,13 @@
 """Version information for MIDI2NES."""
 
-__version__ = "0.4.0-dev"
-__version_info__ = (0, 4, 0, "dev")
+__version__ = "0.5.0-dev"
+__version_info__ = (0, 5, 0, "dev")
 
 # Version history
 VERSION_HISTORY = {
     "0.3.5": "Advanced Pattern Detection System with NES-optimized compression",
-    "0.4.0-dev": "Performance optimization and user experience improvements"
+    "0.4.0-dev": "Performance optimization and user experience improvements",
+    "0.5.0-dev": "MMC3 macro-driven bytecode engine, DPCM samples, and arranger mode"
 }
 
 def get_version():

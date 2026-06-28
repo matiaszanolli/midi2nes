@@ -11,7 +11,7 @@ try:
     from midi2nes import __version__
 except ImportError:
     # Fallback for development mode
-    __version__ = "0.4.0-dev"
+    __version__ = "0.5.0-dev"
 
 from tracker.parser import parse_midi_to_frames
 from tracker.track_mapper import assign_tracks_to_nes_channels
