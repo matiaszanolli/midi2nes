@@ -118,7 +118,17 @@ audio_init:
     
     ; Initialize DMC output level to 0 to prevent muffling Triangle/Noise
     sta $4011
-    
+
+    ; Initialize the APU so the NMI-driven engine owns the channels.
+    ; $4017 = $40: frame counter mode 1, disable frame IRQ so it cannot
+    ; clock length/envelope units against us (docs/NES_APU_REFERENCE.md §3.2).
+    lda #$40
+    sta $4017
+    ; $4015 = $0F: enable Pulse1/Pulse2/Triangle/Noise. DMC (bit 4) is enabled
+    ; on demand by the sample playback handlers (docs/NES_APU_REFERENCE.md §3.1).
+    lda #$0F
+    sta $4015
+
     ; Clear macro steps
     ldx #4
 @clear_macros:
@@ -173,12 +183,18 @@ audio_update:
     cmp #$FF
     bne :+
     jmp @end_of_stream ; Halt sequence if end marker $FF is hit
-:   
+:
+    ; Dispatch by byte range. @is_note/@is_length live far past the command
+    ; handlers below, so branch to a local trampoline and jmp to the far target
+    ; (a direct bcc would exceed the 6502 +/-127 relative-branch range).
     cmp #$60
-    bcc @is_note
+    bcs @chk_length
+    jmp @is_note      ; < $60 -> note
+@chk_length:
     cmp #$80
-    bcc @is_length
-    
+    bcs @is_command   ; >= $80 -> command (falls through below)
+    jmp @is_length    ; $60-$7F -> length
+
 @is_command:
     ; Handle commands ($80 - $FE)
     cmp #$FE

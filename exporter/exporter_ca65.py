@@ -540,6 +540,8 @@ class CA65Exporter(BaseExporter):
                 '',
                 'init_music:',
                 '    ; Initialize APU for music playback',
+                '    lda #$40',
+                '    sta $4017  ; Frame counter mode 1, disable frame IRQ (NES_APU_REFERENCE 3.2)',
                 '    lda #$0F',
                 '    sta $4015  ; Enable all channels',
                 '    lda #$00',
@@ -671,21 +673,14 @@ class CA65Exporter(BaseExporter):
         lines.append('; ---------------------------------------------------------------------------')
         lines.append('.segment "CODE_8000"')
         lines.append('')
-        lines.append('; DPCM Lookup Tables')
-        lines.append('dpcm_bank_table:')
-        lines.append('    .byte $00')
-        lines.append('dpcm_pitch_table:')
-        lines.append('    .byte $0F')
-        lines.append('dpcm_addr_table:')
-        lines.append('    .byte $00')
-        lines.append('dpcm_len_table:')
-        lines.append('    .byte $00')
-        lines.append('')
+        # The DPCM lookup tables (dpcm_bank_table/pitch/addr/len) are owned by the
+        # DPCM packer when real samples exist, and stubbed by the project builder
+        # otherwise. Defining them here too would be a duplicate-symbol error once
+        # the packer appends the real tables to music.asm.
         
         # Export symbols needed by the audio engine
         lines.append('.export pulse1_sequence, pulse2_sequence, triangle_sequence, noise_sequence, dpcm_sequence')
         lines.append('.export ntsc_period_low, ntsc_period_high')
-        lines.append('.export dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table')
         lines.append('.export instrument_table')
         lines.append('')
         
