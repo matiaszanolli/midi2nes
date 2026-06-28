@@ -11,19 +11,26 @@ MIDI2NES is a high-performance MIDI to NES ROM compiler. It converts MIDI files 
 ### Core Pipeline Commands
 
 ```bash
-# Single-command MIDI to NES ROM conversion
-python main.py input.mid output.nes
+# Single-command MIDI to NES ROM conversion (parse → map → frames → patterns → export → prepare → compile)
+# When the first non-flag arg is NOT a known subcommand, main.py runs the full pipeline (run_full_pipeline).
+python main.py input.mid output.nes      # output defaults to input.nes if omitted
 
-# Debug ROM with on-screen diagnostics (RECOMMENDED for development)
-python main.py --debug input.mid output_debug.nes
+# Useful top-level flags for the default pipeline:
+python main.py --arranger input.mid out.nes        # Intelligent voice allocation + arpeggiation (polyphony)
+python main.py --no-patterns input.mid out.nes     # Skip pattern compression (direct export, full fidelity)
+python main.py --debug input.mid out.nes           # ROM with on-screen APU/frame/error overlay (dev)
+python main.py --skip-validation input.mid out.nes # Skip post-compile ROM validation
+python main.py -v input.mid out.nes                # Verbose (prints full traceback on failure)
 
-# Step-by-step pipeline for debugging
-python main.py parse input.mid parsed.json          # Fast MIDI parsing
+# Step-by-step pipeline for debugging (subcommands)
+python main.py parse input.mid parsed.json          # Fast MIDI parsing (tracker/parser_fast.py)
 python main.py map parsed.json mapped.json          # Track to NES channel mapping
 python main.py frames mapped.json frames.json       # Frame generation
 python main.py detect-patterns frames.json patterns.json  # Pattern detection
-python main.py export frames.json output.s --format ca65 --patterns patterns.json
-python main.py prepare output.s nes_project/        # Prepare NES project
+python main.py export frames.json music.asm --format ca65 --patterns patterns.json
+python main.py prepare music.asm nes_project/       # Prepare NES project (default mapper: MMC3)
+
+# Other subcommands: `config init|validate`, `song add|list|remove` (multi-song banks), `benchmark run|memory`
 ```
 
 ### Testing
@@ -51,11 +58,12 @@ python -m debug.check_rom output.nes
 # Comprehensive ROM diagnostics
 python debug/rom_diagnostics.py output.nes --verbose
 
-# Performance analysis
-python -m debug.performance_analyzer
+# Full ROM build/playback test harness
+python -m debug.rom_tester
 
-# Pattern analysis
-python -m debug.pattern_analysis output/patterns
+# Performance benchmarking (via main.py, not a debug module)
+python main.py benchmark run [files...] [--memory]
+python main.py benchmark memory
 ```
 
 ### Building NES ROMs
@@ -81,23 +89,47 @@ ld65 -C nes.cfg main.o music.o -o game.nes
 ### Core Pipeline Flow
 
 ```
-MIDI → Parse → Map → Frames → Export → Project → ROM
-       (fast)  (NES) (60fps)  (CA65)   (CC65)   (.nes)
+MIDI → Parse → Map/Arrange → Frames → Patterns → Export → Project → Compile → ROM
+       (fast)   (NES chans)  (60fps)  (compress) (CA65)   (builder)  (CC65)    (.nes)
 ```
+
+Two front-ends select how MIDI tracks become NES channels:
+- **Legacy mode** (default): `track_mapper.assign_tracks_to_nes_channels` + `NESEmulatorCore.process_all_tracks`.
+- **Arranger mode** (`--arranger`): `arranger.arrange_for_nes` does role analysis, GM-instrument mapping, smart channel allocation, and arpeggiation for polyphonic content. Both produce the same `frames` dict consumed downstream.
+
+The full pipeline (`run_full_pipeline` in `main.py`) runs everything in a temp dir and ends by calling `compiler.compile_rom`, so the single-command form needs the CC65 toolchain installed.
 
 ### Key Directories
 
 - **`tracker/`** - MIDI processing core
-  - `parser_fast.py` - Optimized MIDI parser (120x faster)
-  - `pattern_detector_parallel.py` - Multi-core pattern detection
+  - `parser_fast.py` - Optimized MIDI parser (120x faster); `parser.py` is the older full parser
+  - `pattern_detector_parallel.py` - Multi-core pattern detection (`ParallelPatternDetector`)
+  - `pattern_detector.py` - Single-process `EnhancedPatternDetector` (fallback + used by `detect-patterns`)
   - `tempo_map.py` - Enhanced tempo handling
-  - `track_mapper.py` - NES channel assignment
+  - `track_mapper.py` - NES channel assignment (legacy mode)
+  - `loop_manager.py` - Loop point detection
+
+- **`arranger/`** - Intelligent arrangement (`--arranger` mode)
+  - `role_analyzer.py` - Voice role detection (bass/melody/harmony)
+  - `voice_allocator.py` - Smart channel allocation + arpeggiation
+  - `gm_instruments.py` - GM program → NES channel/duty mapping
+  - `pipeline_integration.py` - Exposes `arrange_for_nes`
+
+- **`mappers/`** - NES mapper abstraction (`base.py` + `nrom.py`, `mmc1.py`, `mmc3.py`)
+  - `factory.py` - `MapperFactory` selects/auto-detects a mapper by data size
+
+- **`compiler/`** - ROM compilation via CC65
+  - `compiler.py` - `ROMCompiler` / `compile_rom` (validate → assemble → link → verify)
+  - `cc65_wrapper.py` - Wraps `ca65`/`ld65` invocation
+
+- **`core/`** - Shared data types (`dto.py`, `types.py`) and `exceptions.py` (`CompilationError`, `ValidationError`)
 
 - **`nes/`** - NES-specific components
   - `emulator_core.py` - Frame generation
-  - `project_builder.py` - Complete NES project setup with MMC1
+  - `project_builder.py` - `NESProjectBuilder`: writes main.asm/music.asm/nes.cfg + build scripts
   - `pitch_table.py` - NES frequency tables
   - `envelope_processor.py` - ADSR envelope handling
+  - `song_bank.py` - Multi-song bank support (`song` subcommands)
 
 - **`exporter/`** - Output format generators
   - `exporter_ca65.py` - CA65 assembly export with pattern compression
@@ -123,12 +155,13 @@ MIDI → Parse → Map → Frames → Export → Project → ROM
 
 ### Important Implementation Details
 
-#### MMC1 ROM Generation
-- The system **always uses MMC1 mapper** with 128KB PRG-ROM capacity
+#### Mapper Selection & ROM Generation
+- Mappers are pluggable via `mappers/` (NROM, MMC1, MMC3) behind `BaseMapper`; `MapperFactory` can auto-select by data size.
+- The `prepare` subcommand and `run_full_pipeline` currently instantiate `NESProjectBuilder` with **`MMC3Mapper`** (not MMC1 — the older docs/PROJECT_STATUS may still say MMC1). When changing mapper behavior, check `main.py:run_prepare` and the builder's mapper argument.
 - `NESProjectBuilder` generates complete NES projects with:
   - `main.asm` - NMI-based 60Hz timing system (critical for playback)
   - `music.asm` - Generated CA65 assembly with music data
-  - `nes.cfg` - MMC1 linker configuration
+  - `nes.cfg` - mapper-specific linker configuration
   - Build scripts for cross-platform compilation
 
 #### Pattern Detection & Compression

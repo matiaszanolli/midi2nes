@@ -1,6 +1,6 @@
 # MIDI to NES Compiler
 
-🎵 **High-performance MIDI to NES ROM compiler with advanced pattern detection and multiprocessing optimization**
+🎵 **High-performance MIDI to NES ROM compiler featuring an MMC3 Macro-Driven Bytecode Engine, advanced pattern detection, and multiprocessing optimization**
 
 Convert MIDI files into playable NES ROMs or use the generated audio data in homebrew NES games and music applications.
 
@@ -19,8 +19,8 @@ python main.py input.mid output.nes
 1. **Fast MIDI Parsing** - Optimized parser with 120x performance improvement
 2. **Intelligent Channel Mapping** - Automatic track-to-NES-channel assignment
 3. **Frame Generation** - High-accuracy NES audio frame data
-4. **Parallel Pattern Detection** - Multi-core pattern compression (up to 95x compression)
-5. **NES ROM Compilation** - Ready-to-run NES ROM file
+4. **Macro Engine Bytecode Compilation** - Advanced MMC3 pattern compression and instrument generation
+5. **NES ROM Compilation** - Ready-to-run NES ROM file with optional on-screen debugging
 
 ## 🚀 Performance
 
@@ -43,18 +43,18 @@ python main.py input.mid output.nes
 - **🏃‍♂️ High-performance MIDI parsing** with optimized algorithms
 - **🧠 Intelligent channel mapping** with priority system
 - **🎯 Accurate NES pitch tables** with per-channel processing
-- **📈 ADSR envelope processing** for pulse channels
+- **📈 Macro-driven ADSR volume envelopes** for pulse and noise channels
 - **🔄 Multiple duty cycle patterns** for rich sound
-- **🗜️ Advanced pattern detection** with multiprocessing
-- **📤 Multiple export formats** (CA65, NSF, FamiTracker)
+- **🗜️ Advanced MMC3 bytecode engine** for massive compression
+- ** Multiple export formats** (CA65, NSF, FamiTracker)
 
 ### Advanced Features
-- **⚡ Parallel processing** utilizing all CPU cores
-- **🎼 Multi-song support** with bank switching
-- **📊 Segment management** for complex compositions
+- **🎹 Hardware Arpeggiation** for dynamic polyphonic voice allocation
+- **🥁 DPCM Sample Support** with automatic bank-switching
+- **� Multi-song support** with bank switching
 - **⏱️ Enhanced tempo handling** with accurate timing
-- **🔁 Pattern and loop point support**
-- **🥁 Drum mapping and DPCM support**
+- **📺 On-screen Debug Overlay** for real-time ROM diagnostics
+- **� Pattern and loop point support**
 - **📈 Visual progress bars** with real-time speed and completion tracking
 - **🛡️ Graceful fallback** for compatibility
 
@@ -65,6 +65,9 @@ python main.py input.mid output.nes
 # Convert MIDI directly to NES ROM
 python main.py song.mid
 # Creates: song.nes (ready to play on emulators)
+
+# Generate with on-screen debug overlay
+python main.py song.mid --debug
 
 # Specify output filename
 python main.py song.mid my_game.nes
@@ -151,13 +154,13 @@ Processing pattern chunks: 100%|████████████| 236/236 [0
 
 ## 🎯 Pattern Detection
 
-### Advanced Compression
-The parallel pattern detection system identifies and compresses repeating musical patterns:
+### Advanced MMC3 Macro Compression
+The engine uses a sophisticated macro-driven bytecode to compress repeating musical patterns into minimal ROM space:
 
-- **Pattern Recognition**: Finds exact and transposed musical phrases
+- **Macro Recognition**: Condenses volume, pitch, and duty cycle envelopes
 - **Variation Detection**: Handles pitch shifts and volume changes
-- **Compression Scoring**: Optimizes for NES memory constraints
-- **Non-overlapping Selection**: Ensures optimal pattern selection
+- **MMC3 Bank Switching**: Dynamically maps required sequence banks
+- **DPCM Optimization**: Groups percussive hits
 
 ### Example Output
 ```
