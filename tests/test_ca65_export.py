@@ -281,6 +281,26 @@ class TestCA65CompilationIntegration(unittest.TestCase):
         self.assertIn("$4017", init, "audio_init must write the frame counter ($4017)")
         self.assertIn("$4015", init, "audio_init must enable channels ($4015)")
 
+    def test_direct_export_compilation(self):
+        """The direct/--no-patterns export (real frames, no patterns) must build a
+        self-contained ROM without the bytecode engine or audio_engine.asm, which
+        import symbols the direct path never defines (issue #50).
+        """
+        self.project_path.mkdir(parents=True, exist_ok=True)
+        music_asm = self.project_path / "music.asm"
+        # Empty patterns routes export_tables_with_patterns to the direct exporter.
+        self.exporter.export_tables_with_patterns(
+            self.test_frames, {}, {}, music_asm, standalone=False,
+        )
+        self.patch_music_asm(music_asm)
+        self.builder.prepare_project(str(music_asm))
+
+        success, output = self.compile_and_link(str(self.project_path))
+        self.assertTrue(success, f"Direct-export compilation failed:\n{output}")
+        # The self-contained direct path must not include the bytecode engine.
+        main_asm = (self.project_path / "main.asm").read_text()
+        self.assertNotIn('.include "audio_engine.asm"', main_asm)
+
     def test_empty_project_compilation(self):
         """Test that a project with no music data still compiles"""
         # Create project directory first
