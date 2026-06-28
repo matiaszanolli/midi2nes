@@ -66,28 +66,33 @@ class TestMIDIParserIntegration(unittest.TestCase):
         with open(file_path, 'r') as f:
             content = f.read()
         
-        # Check for basic required sections
-        basic_sections = [
-            '.segment "HEADER"',
-            '.segment "CODE"',
-            '.segment "VECTORS"'
-        ]
-        
-        for section in basic_sections:
-            self.assertIn(section, content, f"Missing required section: {section}")
-        
-        # Different verification based on export mode
-        if "Pattern Compressed" in content:
-            # Pattern mode - check for pattern-specific content
-            pattern_sections = ['note_table:', 'pattern_refs:']
-            for section in pattern_sections:
+        # Verification depends on the export mode (detected by header marker).
+        if "MMC3 Macro Bytecode" in content:
+            # Current macro-bytecode export: a music-data include consumed by the
+            # project builder's main.asm, so it carries no HEADER/VECTORS of its
+            # own. Assert the segments and symbols the audio engine actually reads;
+            # these still fail if the macro-bytecode format genuinely regresses.
+            required = [
+                '.segment "CODE_8000"',
+                '.segment "BANK_00"',
+                'pulse1_sequence:',
+                'ntsc_period_low:',
+                'instrument_table:',
+                'macro_vol_0:',
+            ]
+            for token in required:
+                self.assertIn(token, content, f"Missing macro-bytecode token: {token}")
+        elif "Pattern Compressed" in content:
+            # Legacy standalone pattern mode.
+            for section in ['.segment "HEADER"', '.segment "CODE"', '.segment "VECTORS"',
+                            'note_table:', 'pattern_refs:']:
                 self.assertIn(section, content, f"Missing pattern section: {section}")
         else:
-            # Direct frame mode - check for frame-specific content  
-            frame_sections = ['play_music_frame', '.proc reset', '.proc nmi']
-            for section in frame_sections:
+            # Standalone direct-frame mode.
+            for section in ['.segment "HEADER"', '.segment "CODE"', '.segment "VECTORS"',
+                            'play_music_frame', '.proc reset', '.proc nmi']:
                 self.assertIn(section, content, f"Missing frame section: {section}")
-        
+
         # Check for valid addressing modes
         self.assertNotIn('undefined', content.lower(), "Contains undefined references")
         
