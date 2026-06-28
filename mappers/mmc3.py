@@ -61,12 +61,20 @@ class MMC3Mapper(BaseMapper):
             '    HEADER:   load = HDR, type = ro;',
             '    ZEROPAGE: load = ZP,  type = zp;',
             '    BSS:      load = RAM, type = bss, define = yes;',
-            '    OAM:      load = OAM, type = bss, align = $100;'
+            '    OAM:      load = OAM, type = bss, align = $100;',
+            # Lookup/macro/instrument tables are read with absolute addressing by
+            # the engine, so they must live in an always-mapped bank. In PRG mode 1
+            # the $8000-$9FFF window is the fixed second-to-last bank.
+            '    CODE_8000: load = PRG_80, type = ro, optional = yes;'
         ])
 
-        # Generate DPCM segments for Banks 0-59
+        # Generate DPCM + sequence-bank segments for Banks 0-59.
+        # BANK_NN holds the per-channel sequence bytecode; fetch_sequence_byte
+        # swaps the bank into the $A000 (R7) window and translates the pointer,
+        # so a BANK_NN linked into PRG_BANK_NN (PRG-pool bank N) resolves correctly.
         for i in range(60):
             lines.append(f'    DPCM_{i:02d}:   load = PRG_BANK_{i:02d}, type = ro, optional = yes;')
+            lines.append(f'    BANK_{i:02d}:   load = PRG_BANK_{i:02d}, type = ro, optional = yes;')
 
         lines.extend([
             '    CODE:     load = PRG_FIX, type = ro;',

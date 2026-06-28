@@ -261,6 +261,26 @@ class TestCA65CompilationIntegration(unittest.TestCase):
         success, output = self.compile_and_link(str(self.project_path))
         self.assertTrue(success, f"Compilation failed:\n{output}")
 
+    def test_apu_initialized_in_boot_path(self):
+        """The generated project must initialize the APU frame counter ($4017)
+        and channel-enable register ($4015) before playback, otherwise the
+        hardware frame sequencer fights the NMI-driven engine (issue #7).
+        """
+        self.project_path.mkdir(parents=True, exist_ok=True)
+        music_asm = self.project_path / "music.asm"
+        self.exporter.export_tables_with_patterns(
+            self.test_frames, self.test_patterns, self.test_references,
+            music_asm, standalone=False,
+        )
+        self.patch_music_asm(music_asm)
+        self.builder.prepare_project(str(music_asm))
+
+        # The patterns path boots via audio_engine.asm's audio_init.
+        engine = (self.project_path / "audio_engine.asm").read_text()
+        init = engine.split("audio_init:", 1)[1].split("audio_update:", 1)[0]
+        self.assertIn("$4017", init, "audio_init must write the frame counter ($4017)")
+        self.assertIn("$4015", init, "audio_init must enable channels ($4015)")
+
     def test_empty_project_compilation(self):
         """Test that a project with no music data still compiles"""
         # Create project directory first

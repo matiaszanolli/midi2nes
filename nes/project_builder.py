@@ -429,6 +429,22 @@ process_channel_macros:
     rts
 """
 
+        # Guarantee the DPCM lookup tables the audio engine imports resolve exactly
+        # once. The DPCM packer emits the real tables (appended to music.asm before
+        # this runs) when samples exist; otherwise nothing has defined them, so emit
+        # harmless single-byte stubs. The packer never exports the symbols, so do it
+        # here regardless of which side defined them.
+        music_content += "\n.export dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table\n"
+        if "dpcm_bank_table:" not in music_content:
+            music_content += (
+                '\n.segment "RODATA"\n'
+                "; Stub DPCM lookup tables (no samples packed)\n"
+                "dpcm_bank_table:\n    .byte $00\n"
+                "dpcm_pitch_table:\n    .byte $00\n"
+                "dpcm_addr_table:\n    .byte $00\n"
+                "dpcm_len_table:\n    .byte $00\n"
+            )
+
         # Write music.asm
         (self.project_path / "music.asm").write_text(music_content)
         
@@ -443,8 +459,11 @@ process_channel_macros:
         # Generate main.asm
         main_content = self._generate_main_asm()
         
-        # Add mapper-specific bank switching code and export it
-        main_content += "\n.global switch_dpcm_bank\n"
+        # Add mapper-specific bank switching code and export it.
+        # The main.asm template ends inside the VECTORS segment, so switch back
+        # to CODE first — otherwise this routine is assembled into VECTORS and
+        # overflows the 6-byte reset/NMI/IRQ area.
+        main_content += '\n.segment "CODE"\n.global switch_dpcm_bank\n'
         main_content += self.mapper.generate_bank_switch_code(0)
         
         # Add safe joypad reading logic for DMC DMA conflicts
