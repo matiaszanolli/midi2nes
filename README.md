@@ -7,6 +7,13 @@ Convert MIDI files into playable NES ROMs or use the generated audio data in hom
 [![Performance](https://img.shields.io/badge/Performance-120x%20Faster-brightgreen)](#performance)
 [![CPU](https://img.shields.io/badge/CPU-Multi--Core-blue)](#multiprocessing)
 [![Patterns](https://img.shields.io/badge/Patterns-95.86x%20Compression-orange)](#pattern-detection)
+[![Version](https://img.shields.io/badge/Version-v0.5.0--dev-blueviolet)](docs/ROADMAP.md)
+[![Tests](https://img.shields.io/badge/Tests-586%20passing-success)](#testing)
+
+> **Status:** Fully operational end-to-end pipeline (MIDI → playable NES ROM),
+> 586 tests passing. Current focus is stabilization on the road to v1.0.0.
+> See **[HISTORY.md](HISTORY.md)** · **[docs/ROADMAP.md](docs/ROADMAP.md)** ·
+> **[MEMORY.md](MEMORY.md)**.
 
 ## ⚡ Quick Start
 
@@ -71,6 +78,12 @@ python main.py song.mid --debug
 
 # Specify output filename
 python main.py song.mid my_game.nes
+
+# Intelligent voice allocation + arpeggiation for polyphonic MIDI
+python main.py --arranger song.mid my_game.nes
+
+# Skip pattern compression for full-fidelity direct export
+python main.py --no-patterns song.mid my_game.nes
 ```
 
 ### Advanced Pipeline Control
@@ -252,17 +265,21 @@ For detailed debug tool documentation, see [debug/README.md](debug/README.md).
 ```
 📁 midi2nes/
 ├── 🎵 tracker/           # Core MIDI processing
-│   ├── parser_fast.py    # Optimized MIDI parser
+│   ├── parser_fast.py    # Optimized MIDI parser (120x)
 │   ├── pattern_detector_parallel.py  # Multi-core pattern detection
+│   ├── track_mapper.py   # NES channel assignment (legacy mode)
 │   └── tempo_map.py      # Advanced tempo handling
-├── 🎮 nes/              # NES-specific components
-├── 📤 exporter/         # Output format generators
-├── 🔧 config/           # Configuration management
-├── 🐛 debug/            # Debugging and analysis tools
-│   ├── audio_checker.py      # ROM audio validation
-│   ├── pattern_analysis.py   # Pattern compression analysis
-│   ├── performance_analyzer.py # MIDI parser benchmarking
-│   └── rom_tester.py         # Complete pipeline testing
+├── 🎹 arranger/          # Intelligent arrangement (--arranger mode)
+│   ├── role_analyzer.py  # Bass/melody/harmony detection
+│   ├── voice_allocator.py # Smart allocation + arpeggiation
+│   └── gm_instruments.py # GM program → NES channel/duty
+├── 🎮 nes/              # NES components (frames, project builder, pitch)
+├── 🗺️ mappers/          # NROM / MMC1 / MMC3 + auto-select factory
+├── 📤 exporter/         # CA65 macro engine, NSF, FamiStudio
+├── 🥁 dpcm_sampler/     # Drum mapping + DPCM sample packing
+├── 🏗️ compiler/         # CC65 wrapper + ROM compile/validate
+├── 🔧 config/           # YAML configuration management
+├── 🐛 debug/            # ROM diagnostics + analysis tools
 └── 📊 benchmarks/       # Performance testing
 ```
 
@@ -274,14 +291,17 @@ For detailed debug tool documentation, see [debug/README.md](debug/README.md).
 
 ### Testing
 ```bash
-# Run all tests
+# Run all tests (586 tests across 45 files)
 python -m pytest
 
-# Run performance tests
-python test_input_performance.py
+# Run with coverage
+python -m pytest --cov=.
 
-# Test ROM generation
-python test_rom_generation.py
+# Run a single test file
+python -m pytest tests/test_main.py
+
+# Test the full ROM generation pipeline
+python -m debug.rom_tester
 ```
 
 ## 📝 License
@@ -297,6 +317,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🔗 Links
 
 - [GitHub Repository](https://github.com/matiaszanolli/midi2nes)
-- [Performance Documentation](PERFORMANCE_OPTIMIZATIONS.md)
+- [Project History / Changelog](HISTORY.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Project Memory (architecture notes)](MEMORY.md)
+- [Macro Engine Usage Guide](docs/MACRO_USAGE_GUIDE.md)
+- [Audio Bytecode Spec](docs/AUDIO_BYTECODE_SPEC.md)
+- [Performance Notes](docs/legacy/PERFORMANCE_OPTIMIZATIONS.md)
 - [CC65 Toolchain](https://cc65.github.io/)
 - [NES Development Resources](https://wiki.nesdev.org/)

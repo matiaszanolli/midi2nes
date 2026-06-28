@@ -91,8 +91,16 @@ class NESProjectBuilder:
         music_content = music_content.replace('.include "mmc3_init.asm"\n', '')
         music_content = music_content.replace('.include "audio_engine.asm"\n', '')
 
-        # Import the sequence tracking ZP variables
-        music_content += "\n.importzp sequence_ptr, sequence_bank\n"
+        # The bytecode macro runtime appended below — and audio_engine.asm — only
+        # make sense for the pattern/bytecode export. The direct (--no-patterns /
+        # empty) export is self-contained, so skip the whole runtime for it;
+        # otherwise music.asm references engine-only symbols it never defines
+        # (ptr1/temp1/instrument_table/ntsc_period_*) and won't assemble (issue #50).
+        is_bytecode = "MMC3 Macro Bytecode" in music_content
+
+        # Import the sequence tracking ZP variables (bytecode runtime only)
+        if is_bytecode:
+            music_content += "\n.importzp sequence_ptr, sequence_bank\n"
 
         print(f"  Using {self.mapper.name} with {self.mapper.prg_rom_size // 1024}KB PRG-ROM")
 
@@ -104,8 +112,9 @@ class NESProjectBuilder:
             music_content += "\n.global debug_init, debug_update, debug_test_apu\n"
             music_content += "\n" + overlay.generate_full_debug_system()
 
-        # DPCM Sequence command macro implementation
-        music_content += """
+        # DPCM sequence command implementation (bytecode runtime only)
+        if is_bytecode:
+            music_content += """
 .import switch_dpcm_bank
 
 ; ------------------------------------------------------------------
@@ -138,8 +147,9 @@ seq_cmd_dpcm_play:
     rts
 """
 
-        # Instrument and Macro Engine implementation
-        music_content += """
+        # Instrument and macro engine implementation (bytecode runtime only)
+        if is_bytecode:
+            music_content += """
 .segment "BSS"
 ; Sequence Bank tracking for 5 channels (Pulse1, Pulse2, Triangle, Noise, DPCM)
 ch_sequence_bank:   .res 5
@@ -430,20 +440,21 @@ process_channel_macros:
 """
 
         # Guarantee the DPCM lookup tables the audio engine imports resolve exactly
-        # once. The DPCM packer emits the real tables (appended to music.asm before
-        # this runs) when samples exist; otherwise nothing has defined them, so emit
-        # harmless single-byte stubs. The packer never exports the symbols, so do it
-        # here regardless of which side defined them.
-        music_content += "\n.export dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table\n"
-        if "dpcm_bank_table:" not in music_content:
-            music_content += (
-                '\n.segment "RODATA"\n'
-                "; Stub DPCM lookup tables (no samples packed)\n"
-                "dpcm_bank_table:\n    .byte $00\n"
-                "dpcm_pitch_table:\n    .byte $00\n"
-                "dpcm_addr_table:\n    .byte $00\n"
-                "dpcm_len_table:\n    .byte $00\n"
-            )
+        # once (bytecode runtime only). The DPCM packer emits the real tables
+        # (appended to music.asm before this runs) when samples exist; otherwise
+        # nothing has defined them, so emit harmless single-byte stubs. The packer
+        # never exports the symbols, so do it here regardless of which side defined.
+        if is_bytecode:
+            music_content += "\n.export dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table\n"
+            if "dpcm_bank_table:" not in music_content:
+                music_content += (
+                    '\n.segment "RODATA"\n'
+                    "; Stub DPCM lookup tables (no samples packed)\n"
+                    "dpcm_bank_table:\n    .byte $00\n"
+                    "dpcm_pitch_table:\n    .byte $00\n"
+                    "dpcm_addr_table:\n    .byte $00\n"
+                    "dpcm_len_table:\n    .byte $00\n"
+                )
 
         # Write music.asm
         (self.project_path / "music.asm").write_text(music_content)
@@ -457,7 +468,7 @@ process_channel_macros:
         (self.project_path / "nes.cfg").write_text(self.mapper.generate_linker_config())
             
         # Generate main.asm
-        main_content = self._generate_main_asm()
+        main_content = self._generate_main_asm(is_bytecode)
         
         # Add mapper-specific bank switching code and export it.
         # The main.asm template ends inside the VECTORS segment, so switch back
@@ -509,8 +520,9 @@ read_joypad_once:
     rts
 """
         
-        # Include the audio engine if available
-        if engine_src.exists():
+        # Include the audio engine only for the bytecode export. The direct export
+        # is self-contained and the engine imports symbols it never defines (#50).
+        if is_bytecode and engine_src.exists():
             main_content += '\n.include "audio_engine.asm"\n'
             
         (self.project_path / "main.asm").write_text(main_content)
@@ -518,8 +530,17 @@ read_joypad_once:
 
         return True
 
-    def _generate_main_asm(self) -> str:
-        """Generate main.asm with mapper-specific code."""
+    def _generate_main_asm(self, is_bytecode: bool = True) -> str:
+        """Generate main.asm with mapper-specific code.
+
+        In bytecode mode the included audio_engine.asm defines/exports
+        frame_counter; the self-contained direct export does not include the
+        engine, so main.asm must own frame_counter itself (issue #50).
+        """
+        frame_counter_def = "" if is_bytecode else (
+            "    frame_counter: .res 2  ; 60Hz tick (direct export owns this)\n"
+            ".exportzp frame_counter\n"
+        )
         # Debug mode imports and calls
         debug_imports = ""
         debug_init_call = ""
@@ -552,7 +573,7 @@ read_joypad_once:
     sequence_ptr:  .res 2  ; 16-bit pointer to current sequence byte
     sequence_bank: .res 1  ; 8-bit bank number where this sequence lives
 .exportzp temp_ptr, sequence_ptr, sequence_bank
-
+{frame_counter_def}
 .segment "CODE"
 ; Import music functions from music.asm
 .global init_music
