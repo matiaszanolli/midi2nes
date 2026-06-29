@@ -30,7 +30,7 @@ python main.py detect-patterns frames.json patterns.json  # Pattern detection
 python main.py export frames.json music.asm --format ca65 --patterns patterns.json
 python main.py prepare music.asm nes_project/       # Prepare NES project (default mapper: MMC3)
 
-# Other subcommands: `config init|validate`, `song add|list|remove` (multi-song banks), `benchmark run|memory`
+# Other subcommands: `config init|validate`, `song add|list|remove` (JSON song-bank storage/analysis only — not compiled to ROM), `benchmark run|memory`
 ```
 
 ### Testing
@@ -129,7 +129,7 @@ The full pipeline (`run_full_pipeline` in `main.py`) runs everything in a temp d
   - `project_builder.py` - `NESProjectBuilder`: writes main.asm/music.asm/nes.cfg + build scripts
   - `pitch_table.py` - NES frequency tables
   - `envelope_processor.py` - ADSR envelope handling
-  - `song_bank.py` - Multi-song bank support (`song` subcommands)
+  - `song_bank.py` - Song-bank storage/analysis (`song` subcommands; JSON banks only — there is no song-bank → ROM build route yet, see docs/ROADMAP.md)
 
 - **`exporter/`** - Output format generators
   - `exporter_ca65.py` - CA65 assembly export with pattern compression

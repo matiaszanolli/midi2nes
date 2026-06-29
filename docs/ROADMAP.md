@@ -51,6 +51,15 @@ infrastructure, and the `debug/` diagnostic suite.
 - [ ] FamiStudio export fidelity (effects, pattern organization).
 - [ ] Mapper coverage and auto-selection tuning (NROM/MMC1/MMC3).
 
+### Song banks → ROM
+`SongBank` (`nes/song_bank.py`) is currently **storage/analysis only**: the
+`song add|list|remove` subcommands manage a JSON bank but nothing compiles a
+bank into a `.nes`. Closing the gap (issue #30 / F-13):
+- [ ] `song build <bank> <out.nes>` route through the project builder + compiler.
+- [ ] Real multi-song ROM layout: per-song sequence pointers, a song table, and
+      an in-ROM song-select entry point (today `prepare_multi_song_project` /
+      `add_song_bank` are placeholders that fall back to single-song).
+
 ## 🧭 Mid-term (v0.7.0–v0.9.0)
 
 - [ ] Musical analysis tooling (chord/tempo complexity, instrumentation hints).

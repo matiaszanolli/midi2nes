@@ -28,7 +28,7 @@ from main import (
     run_parse, run_map, run_frames, run_prepare, run_export, 
     run_detect_patterns, run_song_add, run_song_list, run_song_remove,
     load_config, run_config_init, run_config_validate,
-    run_benchmark, run_benchmark_memory, main
+    run_benchmark, run_benchmark_memory, run_full_pipeline, main
 )
 
 
@@ -1049,6 +1049,105 @@ class TestErrorHandling:
         with patch('main.EnhancedTempoMap'):
             with pytest.raises(Exception, match="Detector error"):
                 run_detect_patterns(args)
+
+
+class TestFullPipelineBackupCleanup:
+    """Regression tests for .nes.backup handling in run_full_pipeline (issue #29).
+
+    The backup is created when an output ROM already exists and acts as a
+    rollback safety net: it must be RESTORED and kept on failure, but REMOVED
+    once the new ROM is final on success.
+    """
+
+    def _make_args(self, input_path, output_path):
+        # --no-patterns and --skip-validation keep the pipeline path minimal.
+        return Namespace(
+            input=str(input_path),
+            output=str(output_path),
+            no_patterns=True,
+            arranger=False,
+            verbose=False,
+            debug=False,
+            skip_validation=True,
+        )
+
+    def _common_mocks(self, mock_parse, mock_assign, mock_emu_cls,
+                       mock_exporter_cls, mock_packer_cls, mock_builder_cls):
+        mock_parse.return_value = {"events": {"0": [{"frame": 0, "note": 60}]}}
+        mock_assign.return_value = {}
+        mock_emu = Mock()
+        mock_emu.process_all_tracks.return_value = {"pulse1": {"0": {"note": 60, "volume": 15}}}
+        mock_emu_cls.return_value = mock_emu
+        mock_exporter_cls.return_value = Mock()
+        mock_packer = Mock()
+        mock_packer.generate_assembly.return_value = ""
+        mock_packer.banks = []
+        mock_packer_cls.return_value = mock_packer
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_cls.return_value = mock_builder
+
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('dpcm_sampler.dpcm_packer.DpcmPacker')
+    @patch('main.CA65Exporter')
+    @patch('main.NESEmulatorCore')
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
+    def test_backup_removed_on_success(self, mock_parse, mock_assign, mock_emu_cls,
+                                       mock_exporter_cls, mock_packer_cls,
+                                       mock_builder_cls, mock_compile):
+        self._common_mocks(mock_parse, mock_assign, mock_emu_cls,
+                           mock_exporter_cls, mock_packer_cls, mock_builder_cls)
+
+        def fake_compile(project_path, out_rom):
+            Path(out_rom).write_bytes(b"\x00" * 1024)
+            return True
+        mock_compile.side_effect = fake_compile
+
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            input_midi = tdp / "song.mid"
+            input_midi.write_bytes(b"MThd")
+            output_rom = tdp / "song.nes"
+            output_rom.write_bytes(b"\x01" * 16)  # pre-existing ROM -> backup created
+            backup_path = output_rom.with_suffix('.nes.backup')
+
+            run_full_pipeline(self._make_args(input_midi, output_rom))
+
+            assert output_rom.exists()
+            assert not backup_path.exists(), ".nes.backup must be removed on success"
+
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('dpcm_sampler.dpcm_packer.DpcmPacker')
+    @patch('main.CA65Exporter')
+    @patch('main.NESEmulatorCore')
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
+    def test_backup_kept_and_restored_on_compile_failure(self, mock_parse, mock_assign,
+                                                         mock_emu_cls, mock_exporter_cls,
+                                                         mock_packer_cls, mock_builder_cls,
+                                                         mock_compile):
+        self._common_mocks(mock_parse, mock_assign, mock_emu_cls,
+                           mock_exporter_cls, mock_packer_cls, mock_builder_cls)
+        mock_compile.return_value = False  # compilation fails -> rollback path
+
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            input_midi = tdp / "song.mid"
+            input_midi.write_bytes(b"MThd")
+            output_rom = tdp / "song.nes"
+            original = b"\x02" * 16
+            output_rom.write_bytes(original)  # pre-existing ROM -> backup created
+            backup_path = output_rom.with_suffix('.nes.backup')
+
+            with pytest.raises(SystemExit):
+                run_full_pipeline(self._make_args(input_midi, output_rom))
+
+            # On failure the backup is restored over the output and kept on disk.
+            assert backup_path.exists(), ".nes.backup must be kept on failure"
+            assert output_rom.read_bytes() == original, "original ROM must be restored"
 
 
 if __name__ == "__main__":

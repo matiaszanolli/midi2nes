@@ -484,7 +484,12 @@ def run_full_pipeline(args):
             print(f"   Compression ratio: {pattern_result['stats']['compression_ratio']:.2f}x")
             print(f"   Total patterns detected: {len(pattern_result['patterns'])}")
             print("\n🎮 Your NES ROM is ready to run on emulators or flash carts!")
-            
+
+            # The new ROM is final and validated, so the safety backup is no
+            # longer needed. (On failure it is restored above and kept.)
+            if backup_path:
+                backup_path.unlink(missing_ok=True)
+
         except Exception as e:
             print(f"\n[ERROR] Pipeline failed: {str(e)}")
             if args.verbose:
@@ -563,7 +568,10 @@ def main():
     p_prepare.set_defaults(func=run_prepare)
 
     # Song bank management commands
-    p_song = subparsers.add_parser('song', help='Song bank management')
+    p_song = subparsers.add_parser(
+        'song',
+        help='Song bank management (JSON storage/analysis only; not compiled to ROM)'
+    )
     song_subparsers = p_song.add_subparsers(dest='song_command')
 
     p_song_add = song_subparsers.add_parser('add', help='Add song to bank')

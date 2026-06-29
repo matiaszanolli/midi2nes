@@ -667,9 +667,19 @@ irq:
         return self.mapper.mapper_number == 1
 
     def prepare_multi_song_project(self, music_asm_path: str, segments_data: dict) -> bool:
-        """Legacy: fallback to simple project preparation."""
+        """Placeholder for multi-song ROM builds.
+
+        A true multi-song layout (per-song sequence pointers, a song table, and
+        an in-ROM song-select entry point) is not implemented yet, so this
+        falls back to a single-song project and ignores ``segments_data``. See
+        the song-bank note in docs/ROADMAP.md.
+        """
         return self.prepare_project(music_asm_path)
 
     def add_song_bank(self, song_bank) -> bool:
-        """Legacy compatibility."""
+        """Placeholder for wiring a SongBank into a ROM build.
+
+        No-op until the song-bank -> ROM route exists; SongBank is currently a
+        storage/analysis container only (see nes/song_bank.py).
+        """
         return True
