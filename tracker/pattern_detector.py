@@ -1,8 +1,31 @@
 # tracker/pattern_detector.py
 from collections import defaultdict
 from typing import List, Dict, Tuple
+import numpy as np
 from tqdm import tqdm
 from tracker.tempo_map import TempoChangeType, TempoChange, EnhancedTempoMap
+
+# Shared large-file policy. Pattern detection is O(n^2)-ish in the number of
+# events, so very large inputs are uniformly down-sampled to this many events
+# before detection. This is LOSSY — see docs/legacy/PATTERN_DETECTION_IMPROVEMENTS.md.
+# Both entry points (the `detect-patterns` subcommand and the default full
+# pipeline) must apply this same policy so they agree on large inputs (#21).
+MAX_PATTERN_EVENTS = 15000
+
+
+def sample_events_for_detection(events, max_events=MAX_PATTERN_EVENTS):
+    """Uniformly down-sample ``events`` to at most ``max_events`` entries.
+
+    Sampling is spread across the whole sequence (``np.linspace``) so the
+    musical structure is preserved rather than head-truncated. This is a lossy
+    step; callers should surface a warning when it triggers.
+
+    Returns ``(sampled_events, was_sampled)``.
+    """
+    if len(events) <= max_events:
+        return events, False
+    indices = np.linspace(0, len(events) - 1, max_events, dtype=int)
+    return [events[i] for i in indices], True
 
 class PatternDetector:
     def __init__(self, min_pattern_length=3, max_pattern_length=32):
