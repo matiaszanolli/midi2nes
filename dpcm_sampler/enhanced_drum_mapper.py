@@ -286,14 +286,16 @@ class EnhancedDrumMapper:
                 if sample_name and sample_name in self.sample_index:
                     sample_data = self.sample_index[sample_name]
                     
-                    # Use sample manager for allocation
-                    allocated_sample = self.sample_manager.allocate_sample(
-                        sample_name, sample_data
-                    )
-                    
+                    # Run allocation for its usage/eviction side effects, but emit
+                    # the index id — that is what the packer orders its tables by
+                    # (sorted by dpcm_index.json 'id'), so it is the value the
+                    # engine uses to index dpcm_*_table. The manager's allocation
+                    # counter is a different id space (see issue #65).
+                    self.sample_manager.allocate_sample(sample_name, sample_data)
+
                     dpcm_events.append({
                         "frame": frame,
-                        "sample_id": allocated_sample['id'],
+                        "sample_id": sample_data['id'],
                         "velocity": velocity
                     })
                     
@@ -351,13 +353,13 @@ class EnhancedDrumMapper:
         
         if sample_name and sample_name in self.sample_index:
             sample_data = self.sample_index[sample_name]
-            allocated_sample = self.sample_manager.allocate_sample(
-                sample_name, sample_data
-            )
-            
+            # Index id (not the manager's allocation counter) indexes the packer
+            # tables — see issue #65.
+            self.sample_manager.allocate_sample(sample_name, sample_data)
+
             events.append({
                 "frame": frame,
-                "sample_id": allocated_sample['id'],
+                "sample_id": sample_data['id'],
                 "velocity": int(velocity),
                 "pattern_id": pattern_id
             })
@@ -388,13 +390,13 @@ class EnhancedDrumMapper:
         for layer in layers:
             if layer in self.sample_index:
                 sample_data = self.sample_index[layer]
-                allocated_sample = self.sample_manager.allocate_sample(
-                    layer, sample_data
-                )
-                
+                # Index id (not the manager's allocation counter) indexes the
+                # packer tables — see issue #65.
+                self.sample_manager.allocate_sample(layer, sample_data)
+
                 events.append({
                     "frame": frame,
-                    "sample_id": allocated_sample['id'],
+                    "sample_id": sample_data['id'],
                     "velocity": velocity
                 })
 
