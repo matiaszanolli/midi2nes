@@ -923,5 +923,112 @@ class TestPipelineSafetyGates:
                     assert "WARNING" in out
 
 
+class TestPreparePath(object):
+    """Regression tests for run_prepare error handling and the compile
+    subcommand (#15)."""
+
+    def setup_method(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+
+    def teardown_method(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    @patch('main.NESProjectBuilder')
+    def test_run_prepare_exits_on_falsy_return(self, mock_builder_class):
+        from main import run_prepare
+        asm = self.temp_dir / "music.asm"
+        asm.write_text(".byte 1, 2, 3\n")
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = False
+        mock_builder_class.return_value = mock_builder
+        args = Namespace(input=str(asm), output=str(self.temp_dir / "proj"))
+        with pytest.raises(SystemExit) as exc:
+            run_prepare(args)
+        assert exc.value.code == 1
+
+    @patch('main.NESProjectBuilder')
+    def test_run_prepare_exits_on_exception(self, mock_builder_class):
+        from main import run_prepare
+        asm = self.temp_dir / "music.asm"
+        asm.write_text(".byte 1, 2, 3\n")
+        mock_builder = Mock()
+        mock_builder.prepare_project.side_effect = PermissionError("denied")
+        mock_builder_class.return_value = mock_builder
+        args = Namespace(input=str(asm), output=str(self.temp_dir / "proj"))
+        with pytest.raises(SystemExit) as exc:
+            run_prepare(args)
+        assert exc.value.code == 1
+
+    def test_run_compile_missing_project_exits(self):
+        from main import run_compile
+        args = Namespace(input=str(self.temp_dir / "nope"),
+                         output=str(self.temp_dir / "out.nes"))
+        with pytest.raises(SystemExit) as exc:
+            run_compile(args)
+        assert exc.value.code == 1
+
+    @patch('main.compile_rom')
+    def test_run_compile_validates_and_fails_on_bad_vectors(self, mock_compile):
+        from main import run_compile
+        proj = self.temp_dir / "proj"
+        proj.mkdir()
+        out = self.temp_dir / "out.nes"
+
+        def create_rom(p, r):
+            Path(r).write_bytes(b'NES\x1a' + b'\x00' * 131000)
+            return True
+        mock_compile.side_effect = create_rom
+
+        bad = Mock()
+        bad.reset_vectors_valid = False
+        bad.apu_pattern_count = 5
+        bad.overall_health = "GOOD"
+        bad.issues = []
+        mock_diag = Mock()
+        mock_diag.diagnose_rom.return_value = bad
+
+        args = Namespace(input=str(proj), output=str(out), skip_validation=False, verbose=False)
+        with patch('debug.rom_diagnostics.ROMDiagnostics', return_value=mock_diag):
+            with pytest.raises(SystemExit) as exc:
+                run_compile(args)
+            assert exc.value.code == 1
+
+    @patch('main.compile_rom')
+    def test_run_compile_skip_validation_succeeds(self, mock_compile):
+        from main import run_compile
+        proj = self.temp_dir / "proj"
+        proj.mkdir()
+        out = self.temp_dir / "out.nes"
+
+        def create_rom(p, r):
+            Path(r).write_bytes(b'NES\x1a' + b'\x00' * 131000)
+            return True
+        mock_compile.side_effect = create_rom
+
+        args = Namespace(input=str(proj), output=str(out), skip_validation=True, verbose=False)
+        run_compile(args)  # should not raise
+        assert out.exists()
+
+    def test_validate_rom_passes_for_bootable(self):
+        from main import validate_rom
+        good = Mock()
+        good.reset_vectors_valid = True
+        good.apu_pattern_count = 22
+        good.overall_health = "GOOD"
+        good.assembly_code_score = 180
+        mock_diag = Mock()
+        mock_diag.diagnose_rom.return_value = good
+        with patch('debug.rom_diagnostics.ROMDiagnostics', return_value=mock_diag):
+            assert validate_rom(self.temp_dir / "x.nes") is True
+
+    def test_compile_subcommand_is_registered(self):
+        from main import main as main_entry
+        # `compile` with a missing project dir should exit 1 (recognized command).
+        with patch('sys.argv', ['main.py', 'compile', str(self.temp_dir / 'nope'), 'o.nes']):
+            with pytest.raises(SystemExit) as exc:
+                main_entry()
+            assert exc.value.code == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
