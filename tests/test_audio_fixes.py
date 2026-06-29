@@ -117,6 +117,58 @@ class TestTriangleControlByte(unittest.TestCase):
 
 
 @unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")
+class TestTrianglePitchOctave(unittest.TestCase):
+    """Regression (NH-02 / #12): triangle uses the /32 timer table so it plays
+    the intended note instead of an octave low."""
+
+    def setUp(self):
+        from nes.pitch_table import PitchProcessor
+        self.pitch = PitchProcessor()
+        self.exporter = CA65Exporter()
+
+    def test_triangle_a4_timer_is_126_not_253(self):
+        # Pulse A4 timer is 253 (/16); triangle A4 must be 126 (/32).
+        self.assertEqual(self.pitch.get_channel_pitch(69, 'triangle'), 126)
+        self.assertEqual(self.pitch.get_channel_pitch(69, 'pulse1'), 253)
+
+    def test_triangle_is_octave_above_pulse_period(self):
+        # For every in-range note the triangle period is ~half the pulse period.
+        for note in range(36, 96):
+            tri = self.pitch.get_channel_pitch(note, 'triangle')
+            pul = self.pitch.get_channel_pitch(note, 'pulse1')
+            self.assertAlmostEqual(pul / tri, 2.0, delta=0.05,
+                                   msg=f"note {note}: pulse {pul} vs triangle {tri}")
+
+    def test_exporter_base_timer_channel_aware(self):
+        # Bytecode base timer must match the triangle frame pitch so the offset
+        # is 0 (otherwise it clamps to +/-127 and corrupts the bass).
+        for note in range(36, 96):
+            base = self.exporter.midi_note_to_timer_value(note, 'triangle')
+            frame_pitch = self.pitch.get_channel_pitch(note, 'triangle')
+            offset = max(-128, min(127, frame_pitch - base))
+            self.assertEqual(offset, 0, f"triangle note {note}: base {base} vs {frame_pitch}")
+
+    def test_bytecode_emits_triangle_period_table(self):
+        from nes.pitch_table import PitchProcessor
+        pp = PitchProcessor()
+        frames = {'triangle': {str(f): {'note': 60, 'volume': 8,
+                                        'pitch': pp.get_channel_pitch(60, 'triangle')}
+                               for f in range(8)}}
+        patterns = {'p0': {'events': [{'note': 60, 'volume': 8}], 'positions': [0]}}
+        references = {'0': ('p0', 0)}
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            self.exporter.export_tables_with_patterns(frames, patterns, references,
+                                                      out, standalone=False)
+            content = Path(out).read_text()
+        finally:
+            if os.path.exists(out):
+                os.remove(out)
+        self.assertIn('MMC3 Macro Bytecode', content)
+        self.assertIn('triangle_period_low:', content)
+        self.assertIn('.export triangle_period_low, triangle_period_high', content)
+
+
 class TestNoteTableGeneration(unittest.TestCase):
     """Test that note tables are generated correctly for reliable comparison."""
 
