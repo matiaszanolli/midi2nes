@@ -923,3 +923,110 @@ class TestFrameAlignment(unittest.TestCase):
                 if test_remainder < 0.001:
                     print(f"Found aligned tick: {test_tick} (time={test_time}ms)")
                     break
+
+
+class TestTempoLookupIndex(unittest.TestCase):
+    """Regression tests for the bisect-based tempo/time index (#113).
+
+    The per-note parse hot path calls get_tempo_at_tick / get_frame_for_tick once
+    per event; these must stay correct on a tempo-DENSE map (hundreds of
+    set_tempo) where the old linear/quadratic scans were the bottleneck."""
+
+    @staticmethod
+    def _ref_tempo(changes, tick):
+        """Brute-force O(T) reference: tempo of the last change at/before tick."""
+        active = changes[0][1]
+        for ct, t in changes:
+            if ct <= tick:
+                active = t
+            else:
+                break
+        return active
+
+    @staticmethod
+    def _ref_time_ms(changes, ticks_per_beat, end_tick):
+        """Brute-force per-segment reference for calculate_time_ms(0, end)."""
+        total = np.float64(0)
+        cur = np.int64(0)
+        end = np.int64(end_tick)
+        while cur < end:
+            tempo = TestTempoLookupIndex._ref_tempo(changes, int(cur))
+            nxt = end
+            for ct, _ in changes:
+                if cur < ct < nxt:
+                    nxt = ct
+            upt = np.float64(tempo) / ticks_per_beat
+            total += ((nxt - cur) * upt) / 1000.0
+            cur = nxt
+        return float(total)
+
+    def _build_dense_map(self):
+        tm = TempoMap(initial_tempo=500000, ticks_per_beat=480)
+        changes = [(0, 500000)]
+        for i in range(1, 300):  # tempo-dense: ~300 changes
+            tick = i * 37
+            tempo = 400000 + (i * 211 % 300000)
+            tm.add_tempo_change(tick, tempo)
+            changes.append((tick, tempo))
+        changes.sort()
+        return tm, changes
+
+    def test_tempo_lookup_matches_bruteforce(self):
+        tm, changes = self._build_dense_map()
+        for tick in range(0, 300 * 37 + 500, 7):
+            self.assertEqual(tm.get_tempo_at_tick(tick),
+                             self._ref_tempo(changes, tick),
+                             f"tempo mismatch at tick {tick}")
+
+    def test_calculate_time_ms_matches_bruteforce(self):
+        tm, changes = self._build_dense_map()
+        for tick in range(0, 300 * 37 + 500, 13):
+            self.assertAlmostEqual(tm.calculate_time_ms(0, tick),
+                                   self._ref_time_ms(changes, 480, tick),
+                                   places=6,
+                                   msg=f"time mismatch at tick {tick}")
+
+    def test_calculate_time_ms_is_additive(self):
+        """time[a, c] == time[0, c] - time[0, a] (the index relies on this)."""
+        tm, _ = self._build_dense_map()
+        for a, c in [(100, 5000), (37, 11000), (0, 9999), (2500, 2501)]:
+            self.assertAlmostEqual(
+                tm.calculate_time_ms(a, c),
+                tm.calculate_time_ms(0, c) - tm.calculate_time_ms(0, a),
+                places=6)
+
+    def test_index_invalidated_on_new_tempo_change(self):
+        """A query builds the index; a later add_tempo_change must rebuild it."""
+        tm = TempoMap(initial_tempo=500000, ticks_per_beat=480)
+        self.assertEqual(tm.get_tempo_at_tick(1000), 500000)  # builds index
+        tm.add_tempo_change(500, 300000)
+        self.assertEqual(tm.get_tempo_at_tick(1000), 300000)
+        self.assertEqual(tm.get_tempo_at_tick(100), 500000)
+
+    def test_enhanced_dense_parse_correctness(self):
+        """EnhancedTempoMap (the parser's class) stays correct when fed many
+        IMMEDIATE tempo changes with optimization disabled, as parser_fast does."""
+        config = TempoValidationConfig(min_tempo_bpm=40.0, max_tempo_bpm=250.0)
+        tm = EnhancedTempoMap(initial_tempo=500000, ticks_per_beat=480,
+                              validation_config=config,
+                              optimization_strategy=None)
+        ref = [(0, 500000)]
+        tempo = 500000
+        for i in range(1, 200):
+            tick = i * 50
+            # Keep within validation range and small step (ratio guard).
+            tempo = 400000 if (i % 2) else 600000
+            try:
+                tm.add_tempo_change(tick, tempo, TempoChangeType.IMMEDIATE)
+                ref.append((tick, tempo))
+            except TempoValidationError:
+                continue
+        ref.sort()
+        for tick in range(0, 200 * 50, 11):
+            self.assertEqual(tm.get_tempo_at_tick(tick),
+                             self._ref_tempo(ref, tick),
+                             f"enhanced tempo mismatch at tick {tick}")
+
+
+if __name__ == '__main__':
+    unittest.main()
