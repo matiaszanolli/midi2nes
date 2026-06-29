@@ -129,6 +129,13 @@ audio_init:
     lda #$0F
     sta $4015
 
+    ; Disable both sweep units. A sweep left enabled by power-on garbage
+    ; continuously bends the pulse pitch and can silence the channel on overflow
+    ; (docs/APU_PULSE_REFERENCE.md §1, §5 cond. 2). $08 = enable clear, shift 0.
+    lda #$08
+    sta $4001
+    sta $4005
+
     ; Clear macro steps
     ldx #4
 @clear_macros:

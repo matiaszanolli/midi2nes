@@ -27,6 +27,24 @@ class TestPitchTables(unittest.TestCase):
         high_note = self.processor.get_channel_pitch(60, 'noise')
         self.assertEqual(high_note, 0)  # Lowest noise period
 
+    def test_noise_period_direction_and_unification(self):
+        """Regression (NH-04 / #20): a higher MIDI note must yield a LOWER 4-bit
+        period index (shorter period = higher pitch), and the module-level and
+        PitchProcessor noise mappers must agree (single source of truth).
+        """
+        # Direction: low note -> high index, high note -> low index.
+        self.assertGreater(get_noise_period(24), get_noise_period(60))
+        # Monotonic non-increasing across the noise range (no backwards step).
+        indices = [get_noise_period(n) for n in range(24, 61)]
+        self.assertEqual(indices, sorted(indices, reverse=True))
+        # 4-bit range over the full MIDI span.
+        for n in range(128):
+            self.assertGreaterEqual(get_noise_period(n), 0)
+            self.assertLessEqual(get_noise_period(n), 15)
+        # Both implementations reconciled to one.
+        for n in range(128):
+            self.assertEqual(get_noise_period(n), self.processor._get_noise_period(n))
+
     def test_channel_specific_ranges(self):
         """Test that each channel respects its specific note range"""
         channels = ['pulse1', 'pulse2', 'triangle', 'noise']
