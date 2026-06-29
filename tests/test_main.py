@@ -330,7 +330,11 @@ class TestRunExport:
         assert call_args[0][2] == {"channel_0": ["pattern_0"]}  # references
         assert call_args[0][3] == str(self.test_output)  # output path
         
-        mock_print.assert_called_once_with(f" Exported CA65 ASM -> {args.output}")
+        # Export must report success. Don't assert this is the *only* print:
+        # run_export also packs DPCM from the repo's dpcm_index.json, which can
+        # legitimately emit a warning (e.g. an oversized sample, #68) without
+        # affecting the export dispatch this test covers.
+        mock_print.assert_any_call(f" Exported CA65 ASM -> {args.output}")
     
     @patch('main.CA65Exporter')
     @patch('builtins.print')
