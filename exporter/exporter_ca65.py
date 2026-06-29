@@ -1002,7 +1002,11 @@ class CA65Exporter(BaseExporter):
                     if current_event is not None:
                         current_event['dur'] += 1
                         if note > 0:
-                            base_timer = self.midi_note_to_timer_value(note)
+                            # Continuation frames must use the same per-channel
+                            # table as the first frame (:990) — omitting channel
+                            # here defaults triangle to the pulse table and bends
+                            # every sustained triangle note (#78).
+                            base_timer = self.midi_note_to_timer_value(note, channel)
                             pitch_val = frame_data.get('pitch', base_timer) if frame_data else base_timer
                             pitch_offset = max(-128, min(127, pitch_val - base_timer)) & 0xFF
                             arp_val = frame_data.get('arp', 0) & 0xFF

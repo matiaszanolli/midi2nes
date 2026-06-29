@@ -97,6 +97,43 @@ class TestCA65Export(unittest.TestCase):
             if mapper is None or expected == 'Mapper 4':
                 self.assertNotIn('Mapper 1 (MMC1)', content)
 
+    def test_triangle_continuation_frames_stay_in_tune(self):
+        # Regression (EXP-02 / #78): continuation frames of a sustained note must
+        # compute base_timer with the channel, like the first frame. Omitting it
+        # defaulted triangle to the pulse table, so an in-tune sustained triangle
+        # note got a spurious -128 (0x80) pitch offset on every sustain frame.
+        import re
+        from nes.pitch_table import NES_TRIANGLE_TABLE
+        note = 36  # low bass triangle note: pulse 1709 vs triangle 854
+        tri_timer = NES_TRIANGLE_TABLE[note]
+        # Triangle held in tune (frame pitch == triangle table value) for 4 frames.
+        frames = {'triangle': {str(f): {'note': note, 'volume': 15, 'pitch': tri_timer}
+                               for f in range(4)}}
+        patterns = {'p0': {'events': [{'note': note, 'volume': 15}]}}
+        refs = {'0': ('p0', 0)}  # non-empty -> macro bytecode path
+        test_output = Path("test_tri_tune.asm")
+        try:
+            self.exporter.export_tables_with_patterns(frames, patterns, refs, test_output)
+            output = test_output.read_text()
+            # Collect every pitch-macro byte sequence. Triangle is the only
+            # channel here and the note is in tune, so every offset must be $00;
+            # the bug produced $80 on continuation frames.
+            pitch_bytes = []
+            for m in re.finditer(r'macro_pitch_\d+:\n    \.byte ([^\n]+)', output):
+                pitch_bytes.extend(b.strip() for b in m.group(1).split(','))
+            self.assertTrue(pitch_bytes, "expected at least one pitch macro")
+            # $80 is the clamped -128 offset the bug produced on sustain frames.
+            self.assertNotIn('$80', pitch_bytes,
+                             "continuation frame got pulse-table base timer (#78)")
+            # The in-tune triangle must contribute a real $00-offset macro
+            # ($FF entries are the (0xFF) sentinel macro, not pitch offsets).
+            self.assertIn('$00', pitch_bytes, "in-tune triangle should emit a $00 pitch offset")
+            self.assertTrue(all(b in ('$00', '$FF') for b in pitch_bytes),
+                            f"unexpected non-zero pitch offset for in-tune triangle: {pitch_bytes}")
+        finally:
+            if test_output.exists():
+                test_output.unlink()
+
     def test_dmc_level_clamped_to_7bit(self):
         # Regression (NH-05 / #24): $4011 is a 7-bit register; an out-of-range
         # dmc_level must be masked to 0-127 so CMD_DMC_LEVEL never sets bit 7 or
