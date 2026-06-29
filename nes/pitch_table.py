@@ -26,8 +26,10 @@ def generate_note_table():
         freq = midi_to_freq(midi_note)
         # Calculate timer value
         timer = int(CPU_CLOCK_RATE / (16 * freq) - 1)
-        # Clamp to valid range (0x0000 to 0x07FF)
-        timer = max(0, min(timer, 0x07FF))
+        # Clamp to the audible 11-bit range. The lower bound is 8, NOT 0:
+        # pulse/triangle are silenced whenever timer t < 8 (APU_PULSE_REFERENCE
+        # §3/§7), so the highest MIDI notes must floor at 8 instead of muting.
+        timer = max(8, min(timer, 0x07FF))
         note_table[midi_note] = timer
     
     return note_table
@@ -85,7 +87,8 @@ class PitchProcessor:
         for midi_note in range(128):
             freq = midi_to_freq(midi_note)
             timer = int(CPU_CLOCK_RATE / (16 * freq) - 1)
-            timer = max(0, min(timer, 0x07FF))
+            # Lower bound is 8 (not 0): t < 8 silences pulse/triangle.
+            timer = max(8, min(timer, 0x07FF))
             note_table[midi_note] = timer
         
         return note_table
@@ -122,9 +125,11 @@ class PitchProcessor:
         bend_semitones = (bend_amount / 8192) * 2
         multiplier = 2 ** (bend_semitones / 12)
         
-        # Calculate new timer value (inverse relationship with frequency)
+        # Calculate new timer value (inverse relationship with frequency).
+        # Floor at 8 so an upward bend can't push the timer below the audible
+        # threshold and silence the channel.
         new_timer = int(base_pitch / multiplier)
-        return max(0, min(new_timer, 0x07FF))
+        return max(8, min(new_timer, 0x07FF))
         
     def note_to_timer(self, midi_note):
         """Convert MIDI note to NES timer value."""
