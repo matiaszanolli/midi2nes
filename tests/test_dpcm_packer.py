@@ -72,6 +72,30 @@ class TestDpcmPacker:
         with pytest.raises(ValueError, match="exceeds NES max length of 4081 bytes"):
             packer.add_sample("S1", "dummy_path.dmc")
             
+    @patch('os.path.getsize')
+    def test_oversized_sample_truncated_not_aborted(self, mock_getsize):
+        """Regression for #68: with truncate=True an oversized file is clamped to
+        4081 bytes instead of raising, so one big sample never discards the rest
+        of the catalog. The truncated sample stays addressable (bounded .incbin,
+        max length register) and keeps its table slot aligned with its index id."""
+        sizes = {'ok.dmc': 1000, 'big.dmc': 69347}
+        mock_getsize.side_effect = lambda p: sizes[p]
+
+        packer = DpcmPacker()
+        packer.add_sample('0', 'ok.dmc', truncate=True)
+        packer.add_sample('1', 'big.dmc', truncate=True)  # would raise without truncate
+        asm = packer.generate_assembly()
+
+        # Both samples packed (not the dummy single-byte fallback).
+        assert 'dpcm_sample_0:' in asm
+        assert 'dpcm_sample_1:' in asm
+        assert 'dpcm_bank_table:\n    .byte $00\ndpcm_pitch_table' not in asm
+        # The oversized sample emits a bounded include; the in-range one does not.
+        assert '.incbin "big.dmc", 0, 4081' in asm
+        assert '.incbin "ok.dmc"\n' in asm
+        # Truncated sample's length register is the hardware max ((4081-1)//16 = 255).
+        assert packer.sample_metadata['1']['length_reg'] == 255
+
     def test_empty_packing_generates_safe_assembly(self):
         """Verify that packing 0 samples doesn't crash the assembly generation."""
         packer = DpcmPacker()

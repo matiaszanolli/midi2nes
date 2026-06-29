@@ -35,6 +35,40 @@ def resolve_dpcm_sample_path(filename, index_path):
     return None
 
 
+def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False):
+    """Resolve every entry in ``dpcm_index`` and add it to ``packer``.
+
+    Shared by both DPCM packing call sites so the same robustness rules apply at
+    each (#68 SIBLING):
+
+    - Files are resolved against the ``dmc/`` root (#64); an entry whose file is
+      missing is skipped with an optional warning.
+    - Samples longer than the NES 4081-byte DMC limit are truncated rather than
+      raising, so one oversized sample never aborts the whole pack (#68).
+
+    Samples are added in ascending index-id order, matching the positional
+    lookup tables the engine indexes by ``sample_id``. Returns
+    ``(loaded, skipped)``.
+    """
+    loaded = 0
+    skipped = 0
+    for sample in sorted(dpcm_index.values(), key=lambda s: int(s['id'])):
+        sample_path = resolve_dpcm_sample_path(sample['filename'], index_path)
+        if sample_path is None:
+            skipped += 1
+            if verbose:
+                print(f"  ⚠️ Warning: DPCM sample not found: {sample['filename']}")
+            continue
+        packer.add_sample(
+            str(sample['id']),
+            str(sample_path.absolute()).replace('\\', '/'),
+            sample.get('pitch', 15),
+            truncate=True,
+        )
+        loaded += 1
+    return loaded, skipped
+
+
 def generate_dpcm_index(dmc_folder, output_json):
     index = {}
     current_id = 0
