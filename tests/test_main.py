@@ -63,6 +63,15 @@ class TestMainArgumentParsing:
                 main()
                 mock_help.assert_called_once()
 
+    def test_unknown_default_path_flag_errors(self):
+        """Regression (#8): a typo'd flag on the default path must error with a
+        nonzero exit, not be silently swallowed (which would build a wrong ROM)."""
+        for bad in ['--no-pattern', '--arrange', '--skipvalidation']:
+            with patch('sys.argv', ['main.py', bad, 'song.mid', 'out.nes']):
+                with pytest.raises(SystemExit) as exc:
+                    main()
+                assert exc.value.code == 2, f"{bad} should exit 2, got {exc.value.code}"
+
 
 class TestRunParse:
     """Test run_parse command."""

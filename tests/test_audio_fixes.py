@@ -18,6 +18,85 @@ from tracker.track_mapper import split_polyphonic_track, assign_tracks_to_nes_ch
 from nes.emulator_core import NESEmulatorCore
 
 
+class TestNoiseDpcmReachAPU(unittest.TestCase):
+    """Regression (NH-01 / #9): noise and DPCM frames must carry the fields the
+    exporters turn into APU register writes, and both exporter paths must emit
+    them. Previously percussion/samples were silent."""
+
+    def setUp(self):
+        self.core = NESEmulatorCore()
+        self.exporter = CA65Exporter()
+
+    def test_process_all_tracks_noise_frame_shape(self):
+        mapped = {'noise': [{'frame': 0, 'note': 38, 'velocity': 100}]}
+        frames = self.core.process_all_tracks(mapped)
+        fd = frames['noise'][0]
+        # note = 4-bit period index (floored at 1), volume scaled, mode in control.
+        self.assertGreaterEqual(fd['note'], 1)
+        self.assertLessEqual(fd['note'], 15)
+        self.assertGreater(fd['volume'], 0)
+        self.assertIn('control', fd)
+
+    def test_process_all_tracks_dpcm_frame_shape(self):
+        mapped = {'dpcm': [{'frame': 0, 'note': 36, 'velocity': 100, 'sample_id': 3}]}
+        frames = self.core.process_all_tracks(mapped)
+        fd = frames['dpcm'][0]
+        # note = sample_id + 1 so the engine recovers sample_id as note-1.
+        self.assertEqual(fd['note'], 4)
+        self.assertGreater(fd['volume'], 0)
+
+    def test_bytecode_path_emits_noise_and_dpcm_sequences(self):
+        mapped = {
+            'noise': [{'frame': 0, 'note': 38, 'velocity': 100}],
+            'dpcm': [{'frame': 0, 'note': 36, 'velocity': 100, 'sample_id': 1}],
+        }
+        frames = self.core.process_all_tracks(mapped)
+        patterns = {'p0': {'events': [{'note': 10, 'volume': 8}], 'positions': [0]}}
+        refs = {'0': ('p0', 0)}
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            self.exporter.export_tables_with_patterns(frames, patterns, refs, out, standalone=False)
+            content = Path(out).read_text()
+        finally:
+            if os.path.exists(out):
+                os.remove(out)
+        # Both sequences must carry real note data, not collapse to $FF/silence.
+        noise_block = content.split('noise_sequence:')[1].split('_sequence:')[0]
+        dpcm_block = content.split('dpcm_sequence:')[1].split('\n\n')[0]
+        self.assertIn('Note 10', noise_block)   # period index 10
+        self.assertIn('Note 2', dpcm_block)     # sample_id 1 -> note 2
+
+    def test_direct_path_emits_noise_register_writes(self):
+        mapped = {'noise': [{'frame': 0, 'note': 38, 'velocity': 100}]}
+        frames = self.core.process_all_tracks(mapped)
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            self.exporter.export_direct_frames(frames, out, standalone=True)
+            content = Path(out).read_text()
+        finally:
+            if os.path.exists(out):
+                os.remove(out)
+        self.assertIn('play_noise', content)
+        self.assertIn('sta $400C', content)   # noise volume/envelope
+        self.assertIn('sta $400E', content)   # noise period/mode
+        self.assertIn('noise_note:', content)
+
+    def test_direct_path_emits_dpcm_trigger(self):
+        mapped = {'dpcm': [{'frame': 0, 'note': 36, 'velocity': 100, 'sample_id': 1}]}
+        frames = self.core.process_all_tracks(mapped)
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            self.exporter.export_direct_frames(frames, out, standalone=True)
+            content = Path(out).read_text()
+        finally:
+            if os.path.exists(out):
+                os.remove(out)
+        self.assertIn('play_dpcm', content)
+        self.assertIn('sta $4010', content)   # DMC rate
+        self.assertIn('sta $4013', content)   # DMC length
+        self.assertIn('dpcm_note:', content)
+
+
 @unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")
 class TestTriangleControlByte(unittest.TestCase):
     """Test triangle channel control byte generation - critical for silence."""
