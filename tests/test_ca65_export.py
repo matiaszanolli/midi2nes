@@ -109,6 +109,24 @@ class TestCA65Export(unittest.TestCase):
             if test_output.exists():
                 test_output.unlink()
                 
+    def test_sweep_disabled_in_direct_init_paths(self):
+        # Regression (NH-07 / #31): both direct-export init paths must disable the
+        # pulse sweep units ($4001/$4005). Standalone emits a reset proc;
+        # non-standalone emits init_music for the project builder.
+        for standalone in (True, False):
+            out = Path(f"test_sweep_{int(standalone)}.asm")
+            try:
+                self.exporter.export_tables_with_patterns(
+                    self.test_frames, {}, {}, out, standalone=standalone)
+                asm = out.read_text()
+                self.assertIn("sta $4001", asm,
+                              f"standalone={standalone}: pulse1 sweep ($4001) not disabled")
+                self.assertIn("sta $4005", asm,
+                              f"standalone={standalone}: pulse2 sweep ($4005) not disabled")
+            finally:
+                if out.exists():
+                    out.unlink()
+
     def test_empty_patterns(self):
         test_output = Path("test_empty.asm")
         try:
@@ -311,6 +329,10 @@ class TestCA65CompilationIntegration(unittest.TestCase):
         init = engine.split("audio_init:", 1)[1].split("audio_update:", 1)[0]
         self.assertIn("$4017", init, "audio_init must write the frame counter ($4017)")
         self.assertIn("$4015", init, "audio_init must enable channels ($4015)")
+        # Regression (NH-07 / #31): both sweep units must be disabled at init so
+        # power-on garbage cannot bend or silence the pulse channels.
+        self.assertIn("sta $4001", init, "audio_init must disable pulse1 sweep ($4001)")
+        self.assertIn("sta $4005", init, "audio_init must disable pulse2 sweep ($4005)")
 
     def test_direct_export_compilation(self):
         """The direct/--no-patterns export (real frames, no patterns) must build a

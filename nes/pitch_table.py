@@ -45,22 +45,20 @@ CHANNEL_RANGES = {
     "noise": (24, 60)      # C1 to C4 (approximate)
 }
 
-# Noise period table (16 entries)
-NOISE_PERIOD_TABLE = [
-    0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7,
-    0x8, 0x9, 0xA, 0xB, 0xC, 0xD, 0xE, 0xF
-]
-
 def get_noise_period(midi_note):
-    """Convert MIDI note to noise period value."""
-    # Map MIDI note range to noise period table
-    note_range = CHANNEL_RANGES["noise"]
-    total_notes = note_range[1] - note_range[0]
-    note_offset = midi_note - note_range[0]
-    
-    # Scale note to noise period range
-    index = min(15, max(0, int(note_offset * 16 / total_notes)))
-    return NOISE_PERIOD_TABLE[index]
+    """Convert a MIDI note to a 4-bit NES noise period index ($400E low nibble).
+
+    Lower index = shorter period = higher frequency (docs/APU_NOISE_REFERENCE.md
+    §3), so a higher note must map to a *lower* index. The note is clamped to the
+    noise channel range first. This is the single source of truth for noise
+    pitch; PitchProcessor._get_noise_period delegates here.
+    """
+    min_note, max_note = CHANNEL_RANGES["noise"]
+    midi_note = max(min_note, min(midi_note, max_note))
+    note_range = max_note - min_note
+    scaled = int(((midi_note - min_note) * 15) / note_range)
+    # Invert: higher note -> lower period index -> higher pitch.
+    return 15 - max(0, min(15, scaled))
 
 
 class PitchProcessor:
@@ -107,14 +105,12 @@ class PitchProcessor:
         return self.note_table[midi_note]
         
     def _get_noise_period(self, midi_note):
-        """Convert MIDI note to noise period value (0-15)."""
-        min_note, max_note = self.channel_ranges["noise"]
-        note_range = max_note - min_note
-        
-        # Scale the MIDI note to 0-15 range
-        scaled = int(((midi_note - min_note) * 15) / note_range)
-        # Invert the value since lower periods = higher frequency
-        return 15 - max(0, min(15, scaled))
+        """Convert MIDI note to a 4-bit noise period index (0-15).
+
+        Delegates to the module-level get_noise_period so both impls stay in
+        lockstep (higher note -> lower index -> higher pitch).
+        """
+        return get_noise_period(midi_note)
         
     def apply_pitch_bend(self, base_pitch, bend_amount, channel_type):
         """Apply pitch bend to a base pitch value."""
