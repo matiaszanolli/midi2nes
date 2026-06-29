@@ -59,9 +59,60 @@ def run_frames(args):
     Path(args.output).write_text(json.dumps(frames, indent=2))
     print(f" Generated frames -> {args.output}")
 
+def estimate_music_data_size(music_asm_path):
+    """Rough byte count of the ROM data music.asm emits (.byte/.word/.incbin).
+
+    Used for a capacity pre-flight before linking (#11) so an oversized song
+    fails with a clear message naming the mapper budget instead of a raw ld65
+    region-overflow error. ld65 remains the exact backstop. .res lives in
+    RAM/ZP (not PRG ROM) and is ignored.
+    """
+    import re
+    music_path = Path(music_asm_path)
+    if not music_path.exists():
+        return 0
+    total = 0
+    base_dir = music_path.parent
+    for raw in music_path.read_text().splitlines():
+        line = raw.split(';', 1)[0].strip()  # drop comments
+        low = line.lower()
+        if low.startswith('.byte'):
+            total += len([t for t in line[5:].split(',') if t.strip()])
+        elif low.startswith('.word'):
+            total += 2 * len([t for t in line[5:].split(',') if t.strip()])
+        elif low.startswith('.incbin'):
+            m = re.search(r'"([^"]+)"', line)
+            if m:
+                p = Path(m.group(1))
+                if not p.is_absolute():
+                    p = base_dir / p
+                if p.exists():
+                    total += p.stat().st_size
+    return total
+
+
+def check_mapper_capacity(music_asm_path, mapper):
+    """Pre-flight capacity gate (#11): abort before linking if the emitted music
+    data exceeds the selected mapper's PRG budget. Raises ValueError on overflow."""
+    data_size = estimate_music_data_size(music_asm_path)
+    if not mapper.can_fit_data(data_size):
+        raise ValueError(
+            f"Music data ({data_size:,} bytes) exceeds {mapper.name} capacity "
+            f"({mapper.get_data_capacity():,} bytes). Shorten the song or DPCM "
+            f"samples, or select a larger mapper."
+        )
+    return data_size
+
+
 def run_prepare(args):
     from mappers.mmc3 import MMC3Mapper
-    builder = NESProjectBuilder(args.output, mapper=MMC3Mapper())
+    mapper = MMC3Mapper()
+    try:
+        check_mapper_capacity(args.input, mapper)
+    except ValueError as e:
+        print(f"[ERROR] {e}")
+        sys.exit(1)
+    builder = NESProjectBuilder(args.output, mapper=mapper)
     if builder.prepare_project(args.input):
         print(f" Prepared NES project -> {args.output}")
         print(" Ready for CC65 compilation!")
@@ -304,6 +355,9 @@ def run_full_pipeline(args):
                 frames = emulator.process_all_tracks(mapped)
             
             # Step 4: Pattern detection or direct export
+            # Tracks any lossy event sampling so the success banner can warn that
+            # the ROM is incomplete rather than reporting silent loss (#10).
+            pattern_loss_warning = None
             if use_patterns:
                 print("[4/7] Detecting patterns for compression...")
                 tempo_map = EnhancedTempoMap(initial_tempo=500000)
@@ -318,7 +372,7 @@ def run_full_pipeline(args):
                             'volume': frame_data.get('volume', 0)
                         })
                 events.sort(key=lambda x: x['frame'])
-                
+
                 # Check if we should skip pattern detection for very large files
                 LARGE_FILE_THRESHOLD = 10000
                 if len(events) > LARGE_FILE_THRESHOLD:
@@ -342,7 +396,12 @@ def run_full_pipeline(args):
                     fallback_count = len(events)
                     events, was_sampled = sample_events_for_detection(events, FALLBACK_MAX_EVENTS)
                     if was_sampled:
-                        print(f"  Sampling {fallback_count} -> {len(events)} events for fallback performance (lossy)")
+                        pattern_loss_warning = (
+                            f"pattern detection fell back to the sequential detector and "
+                            f"sampled {fallback_count:,} events down to {len(events):,} — "
+                            f"the ROM is INCOMPLETE. Re-run with --no-patterns for full fidelity."
+                        )
+                        print(f"  ⚠️  WARNING: {pattern_loss_warning}")
                     pattern_result = detector.detect_patterns(events)
             else:
                 print("[4/7] Skipping pattern detection (direct export mode)...")
@@ -438,9 +497,21 @@ def run_full_pipeline(args):
 
             # Enable debug mode if requested
             debug_mode = hasattr(args, 'debug') and args.debug
-            
+
             from mappers.mmc3 import MMC3Mapper
-            builder = NESProjectBuilder(str(project_path), debug_mode=debug_mode, mapper=MMC3Mapper())
+            mapper = MMC3Mapper()
+
+            # Capacity pre-flight (#11): catch an oversized song with a clear
+            # message before ld65 reports a raw region overflow.
+            try:
+                data_size = check_mapper_capacity(str(music_asm), mapper)
+                print(f"  ✓ Music data {data_size:,} bytes fits {mapper.name} "
+                      f"({mapper.get_data_capacity():,} bytes)")
+            except ValueError as e:
+                print(f"[ERROR] {e}")
+                sys.exit(1)
+
+            builder = NESProjectBuilder(str(project_path), debug_mode=debug_mode, mapper=mapper)
 
             if not builder.prepare_project(str(music_asm)):
                 print("[ERROR] Failed to prepare NES project")
@@ -468,6 +539,27 @@ def run_full_pipeline(args):
 
                     diagnostics = ROMDiagnostics(verbose=False)
                     rom_result = diagnostics.diagnose_rom(str(output_rom))
+
+                    # Hard-fail gate for boot-fatal defects (#6). overall_health
+                    # is only "ERROR" for an unreadable file, so a successfully
+                    # linked ROM with bad $FFFA-$FFFF vectors or no APU init would
+                    # otherwise land FAIR/POOR and still ship as SUCCESS — yet it
+                    # crashes the CPU on hardware. Treat these as fatal regardless
+                    # of the health tier.
+                    fatal_defects = []
+                    if not rom_result.reset_vectors_valid:
+                        fatal_defects.append("invalid reset/NMI/IRQ vectors ($FFFA-$FFFF)")
+                    if rom_result.apu_pattern_count == 0:
+                        fatal_defects.append("no APU initialization code found")
+                    if fatal_defects:
+                        print("[ERROR] ROM validation failed - unbootable ROM:")
+                        for defect in fatal_defects:
+                            print(f"    - {defect}")
+                        if backup_path and backup_path.exists():
+                            print(f"  💊 Restoring backup ROM: {backup_path.name} → {output_rom.name}")
+                            shutil.copy2(backup_path, output_rom)
+                            print(f"  ✅ Original ROM restored from backup")
+                        sys.exit(1)
 
                     if rom_result.overall_health not in ["HEALTHY", "GOOD"]:
                         print(f"⚠️  ROM health check: {rom_result.overall_health}")
@@ -502,6 +594,8 @@ def run_full_pipeline(args):
             print(f"   ROM size: {rom_size:,} bytes ({rom_size / 1024:.1f} KB)")
             print(f"   Compression ratio: {pattern_result['stats']['compression_ratio']:.2f}x")
             print(f"   Total patterns detected: {len(pattern_result['patterns'])}")
+            if pattern_loss_warning:
+                print(f"\n   ⚠️  INCOMPLETE OUTPUT: {pattern_loss_warning}")
             print("\n🎮 Your NES ROM is ready to run on emulators or flash carts!")
 
             # The new ROM is final and validated, so the safety backup is no
