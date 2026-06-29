@@ -68,6 +68,35 @@ class TestCA65Export(unittest.TestCase):
             self.assertEqual(offset, 0,
                              f"note {note}: frame {frame_pitch} vs base {base}")
 
+    def test_standalone_header_tracks_selected_mapper(self):
+        # Regression (NH-09 / #36): the standalone iNES header must come from the
+        # selected mapper, not a hardcoded MMC1 byte. Default is MMC3.
+        from mappers.nrom import NROMMapper
+        from mappers.mmc1 import MMC1Mapper
+        from mappers.mmc3 import MMC3Mapper
+        frames = {'pulse1': {'0': {'note': 60, 'pitch': 426, 'control': 0x8F}}}
+
+        cases = [
+            (None, 'Mapper 4'),            # default -> MMC3
+            (MMC3Mapper(), 'Mapper 4'),
+            (MMC1Mapper(), 'Mapper 1'),
+            (NROMMapper(), 'Mapper 0'),
+        ]
+        for mapper, expected in cases:
+            out = Path(tempfile.mktemp(suffix='.asm'))
+            try:
+                self.exporter.export_direct_frames(frames, str(out), standalone=True,
+                                                   mapper=mapper)
+                content = out.read_text()
+            finally:
+                if out.exists():
+                    out.unlink()
+            # Exactly one HEADER segment, and the mapper byte matches the mapper.
+            self.assertEqual(content.count('.segment "HEADER"'), 1)
+            self.assertIn(expected, content)
+            if mapper is None or expected == 'Mapper 4':
+                self.assertNotIn('Mapper 1 (MMC1)', content)
+
     def test_dmc_level_clamped_to_7bit(self):
         # Regression (NH-05 / #24): $4011 is a 7-bit register; an out-of-range
         # dmc_level must be masked to 0-127 so CMD_DMC_LEVEL never sets bit 7 or
