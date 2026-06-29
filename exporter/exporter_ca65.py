@@ -54,7 +54,9 @@ class CA65Exporter(BaseExporter):
     def midi_note_to_timer_value(self, midi_note):
         if midi_note < 24 or midi_note > 119:  # Valid range for NES
             return 0
-        return NOTE_TABLE_NTSC[midi_note - 24]
+        # Floor at 8: t < 8 silences pulse/triangle, and the top NOTE_TABLE_NTSC
+        # entries are 7 (APU_PULSE_REFERENCE §3/§7).
+        return max(8, NOTE_TABLE_NTSC[midi_note - 24])
 
     def export_direct_frames(self, frames, output_path, standalone=True):
         """Export frames data directly using efficient lookup tables"""
@@ -159,6 +161,12 @@ class CA65Exporter(BaseExporter):
                 else:
                     # Pulse channels: use provided control byte
                     control = frame_data.get('control', 0)
+
+                # Re-assert the audible 11-bit timer range before the byte split.
+                # t < 8 silences pulse/triangle (APU_PULSE_REFERENCE §3/§7), so a
+                # nonzero pitch is floored at 8; a true rest (pitch 0) stays 0.
+                if pitch:
+                    pitch = max(8, min(pitch, 0x07FF))
 
                 note_table.append(f"${note:02X}")
                 control_table.append(f"${control:02X}")
@@ -767,7 +775,12 @@ class CA65Exporter(BaseExporter):
                 duty = (control >> 6) & 0x03
                 
                 dmc_level = frame_data.get('dmc_level') if frame_data else None
-                
+                # $4011 is a 7-bit register (0-127). Mask on read so the value
+                # carried through dedup/storage and emitted as CMD_DMC_LEVEL
+                # never sets bit 7 (out of spec) or overflows the :02X byte.
+                if dmc_level is not None:
+                    dmc_level &= 0x7F
+
                 if frame_data and vol == 0:
                     note = 0
                     

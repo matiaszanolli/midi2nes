@@ -36,7 +36,38 @@ class TestCA65Export(unittest.TestCase):
         # Test invalid notes
         self.assertEqual(self.exporter.midi_note_to_timer_value(20), 0)  # Too low
         self.assertEqual(self.exporter.midi_note_to_timer_value(120), 0)  # Too high
-        
+
+    def test_midi_note_to_timer_value_floors_at_8(self):
+        # Regression (NH-06 / #27): the top NOTE_TABLE_NTSC entries are 7, which
+        # silences pulse/triangle (t < 8). In-range notes must floor at 8.
+        self.assertGreaterEqual(self.exporter.midi_note_to_timer_value(118), 8)
+        self.assertGreaterEqual(self.exporter.midi_note_to_timer_value(119), 8)
+        # Out-of-range still returns the 0 "rest" sentinel.
+        self.assertEqual(self.exporter.midi_note_to_timer_value(120), 0)
+
+    def test_dmc_level_clamped_to_7bit(self):
+        # Regression (NH-05 / #24): $4011 is a 7-bit register; an out-of-range
+        # dmc_level must be masked to 0-127 so CMD_DMC_LEVEL never sets bit 7 or
+        # overflows the :02X byte.
+        import re
+        frames = {'dpcm': {'0': {'note': 1, 'volume': 15, 'dmc_level': 200},
+                           '1': {'note': 1, 'volume': 15}}}
+        patterns = {'p0': {'events': [{'note': 1, 'volume': 15}]}}
+        refs = {'0': ('p0', 0)}  # non-empty patterns -> macro bytecode path
+        test_output = Path("test_dmc_clamp.asm")
+        try:
+            self.exporter.export_tables_with_patterns(frames, patterns, refs, test_output)
+            output = test_output.read_text()
+            levels = [int(b, 16) for b in re.findall(
+                r'\.byte \$87, \$([0-9A-Fa-f]{2}) ; CMD_DMC_LEVEL', output)]
+            self.assertTrue(levels, "expected at least one CMD_DMC_LEVEL emission")
+            for lvl in levels:
+                self.assertLessEqual(lvl, 0x7F)
+            self.assertEqual(levels[0], 200 & 0x7F)  # 0x48, not 0xC8
+        finally:
+            if test_output.exists():
+                test_output.unlink()
+
     def test_export_tables_with_patterns(self):
         test_output = Path("test_output.asm")
         try:
