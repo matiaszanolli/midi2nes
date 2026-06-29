@@ -242,7 +242,8 @@ class TestRunFullPipeline:
             input=str(self.test_midi),
             output=str(self.output_rom),
             verbose=False,
-            no_patterns=False
+            no_patterns=False,
+            skip_validation=True  # orchestration test - fake ROM, not validating vectors
         )
 
         with patch('tracker.pattern_detector_parallel.ParallelPatternDetector') as mock_detector_class:
@@ -305,7 +306,8 @@ class TestRunFullPipeline:
             input=str(self.test_midi),
             output=str(self.output_rom),
             verbose=False,
-            no_patterns=True  # Skip pattern detection
+            no_patterns=True,  # Skip pattern detection
+            skip_validation=True  # orchestration test - fake ROM, not validating vectors
         )
 
         run_full_pipeline(args)
@@ -364,7 +366,8 @@ class TestRunFullPipeline:
             input=str(self.test_midi),
             output=str(self.output_rom),
             verbose=False,
-            no_patterns=False
+            no_patterns=False,
+            skip_validation=True  # orchestration test - fake ROM, not validating vectors
         )
 
         with patch('tracker.pattern_detector_parallel.ParallelPatternDetector') as mock_detector_class:
@@ -423,7 +426,8 @@ class TestRunFullPipeline:
             input=str(self.test_midi),
             output=str(self.output_rom),
             verbose=False,
-            no_patterns=False
+            no_patterns=False,
+            skip_validation=True  # orchestration test - fake ROM, not validating vectors
         )
 
         # Make ParallelPatternDetector fail, forcing fallback
@@ -586,7 +590,8 @@ class TestRunFullPipeline:
             input=str(self.test_midi),
             output=str(self.output_rom),
             verbose=False,
-            no_patterns=False
+            no_patterns=False,
+            skip_validation=True  # orchestration test - fake ROM, not validating vectors
         )
 
         with pytest.raises(SystemExit):
@@ -627,7 +632,8 @@ class TestRunFullPipeline:
             input=str(self.test_midi),
             output=None,  # No output specified
             verbose=False,
-            no_patterns=True
+            no_patterns=True,
+            skip_validation=True  # orchestration test - fake ROM, not validating vectors
         )
 
         run_full_pipeline(args)
@@ -736,6 +742,185 @@ class TestCC65WrapperProbes:
         ]
         with pytest.raises(ToolchainError):
             CC65Wrapper().get_version()
+
+
+class TestPipelineSafetyGates:
+    """Regression tests for the pipeline safety gates (#6, #10, #11)."""
+
+    def setup_method(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.test_midi = self.temp_dir / "test.mid"
+        self.output_rom = self.temp_dir / "test.nes"
+        import mido
+        mid = mido.MidiFile()
+        track = mido.MidiTrack()
+        mid.tracks.append(track)
+        track.append(mido.Message('note_on', note=60, velocity=64, time=0))
+        track.append(mido.Message('note_off', note=60, velocity=0, time=480))
+        mid.save(self.test_midi)
+
+    def teardown_method(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    # --- #11: capacity pre-flight ---
+    def test_estimate_music_data_size_counts_bytes(self):
+        from main import estimate_music_data_size
+        asm = self.temp_dir / "m.asm"
+        asm.write_text(".byte 1, 2, 3   ; comment\n.word 1, 2\n.res 99\n")
+        # 3 bytes + 2 words*2 = 7; .res is RAM, ignored.
+        assert estimate_music_data_size(str(asm)) == 7
+
+    def test_estimate_missing_file_is_zero(self):
+        from main import estimate_music_data_size
+        assert estimate_music_data_size(str(self.temp_dir / "nope.asm")) == 0
+
+    def test_check_mapper_capacity_raises_on_overflow(self):
+        from main import check_mapper_capacity
+
+        class TinyMapper:
+            name = "Tiny"
+            def can_fit_data(self, n): return n <= 4
+            def get_data_capacity(self): return 4
+
+        asm = self.temp_dir / "big.asm"
+        asm.write_text(".byte 1, 2, 3, 4, 5, 6\n")
+        with pytest.raises(ValueError) as exc:
+            check_mapper_capacity(str(asm), TinyMapper())
+        assert "exceeds" in str(exc.value)
+
+    def test_check_mapper_capacity_passes_for_mmc3(self):
+        from main import check_mapper_capacity
+        from mappers.mmc3 import MMC3Mapper
+        asm = self.temp_dir / "small.asm"
+        asm.write_text(".byte 1, 2, 3\n")
+        # Should not raise (3 bytes << 512KB).
+        check_mapper_capacity(str(asm), MMC3Mapper())
+
+    # --- #6: validation gate fails on boot-fatal defects ---
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('main.CA65Exporter')
+    @patch('main.NESEmulatorCore')
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
+    def test_validation_gate_fails_on_bad_vectors(
+        self, mock_parse, mock_assign, mock_emulator_class,
+        mock_exporter_class, mock_builder_class, mock_compile
+    ):
+        mock_parse.return_value = {"events": {"0": [{"frame": 0, "note": 60}]}, "metadata": {}}
+        mock_assign.return_value = {"pulse1": [{"frame": 0, "note": 60}]}
+        mock_emulator = Mock()
+        mock_emulator.process_all_tracks.return_value = {"pulse1": {"0": {"note": 60, "volume": 15}}}
+        mock_emulator_class.return_value = mock_emulator
+        mock_exporter_class.return_value = Mock()
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        def create_rom(project_path, rom_path):
+            rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
+            return True
+        mock_compile.side_effect = create_rom
+
+        # A GOOD-health ROM that nonetheless has invalid reset vectors must still
+        # fail the gate (#6) — the bug was that only "ERROR" blocked.
+        bad = Mock()
+        bad.overall_health = "GOOD"
+        bad.reset_vectors_valid = False
+        bad.apu_pattern_count = 5
+        bad.issues = ["Invalid reset vectors"]
+        mock_diag = Mock()
+        mock_diag.diagnose_rom.return_value = bad
+
+        args = Namespace(input=str(self.test_midi), output=str(self.output_rom),
+                         verbose=False, no_patterns=True, skip_validation=False)
+        with patch('debug.rom_diagnostics.ROMDiagnostics', return_value=mock_diag):
+            with pytest.raises(SystemExit) as exc:
+                run_full_pipeline(args)
+            assert exc.value.code == 1
+
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('main.CA65Exporter')
+    @patch('main.NESEmulatorCore')
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
+    def test_validation_gate_fails_on_no_apu_init(
+        self, mock_parse, mock_assign, mock_emulator_class,
+        mock_exporter_class, mock_builder_class, mock_compile
+    ):
+        mock_parse.return_value = {"events": {"0": [{"frame": 0, "note": 60}]}, "metadata": {}}
+        mock_assign.return_value = {"pulse1": [{"frame": 0, "note": 60}]}
+        mock_emulator = Mock()
+        mock_emulator.process_all_tracks.return_value = {"pulse1": {"0": {"note": 60, "volume": 15}}}
+        mock_emulator_class.return_value = mock_emulator
+        mock_exporter_class.return_value = Mock()
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        def create_rom(project_path, rom_path):
+            rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
+            return True
+        mock_compile.side_effect = create_rom
+
+        bad = Mock()
+        bad.overall_health = "GOOD"
+        bad.reset_vectors_valid = True
+        bad.apu_pattern_count = 0  # no APU init
+        bad.issues = ["No APU initialization"]
+        mock_diag = Mock()
+        mock_diag.diagnose_rom.return_value = bad
+
+        args = Namespace(input=str(self.test_midi), output=str(self.output_rom),
+                         verbose=False, no_patterns=True, skip_validation=False)
+        with patch('debug.rom_diagnostics.ROMDiagnostics', return_value=mock_diag):
+            with pytest.raises(SystemExit) as exc:
+                run_full_pipeline(args)
+            assert exc.value.code == 1
+
+    # --- #10: fallback truncation surfaces a prominent warning ---
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('main.CA65Exporter')
+    @patch('main.NESEmulatorCore')
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
+    def test_fallback_truncation_warns_incomplete(
+        self, mock_parse, mock_assign, mock_emulator_class,
+        mock_exporter_class, mock_builder_class, mock_compile
+    ):
+        many = {str(i): {"note": 60, "volume": 15} for i in range(3000)}
+        mock_parse.return_value = {"events": {"0": [{"frame": i, "note": 60} for i in range(3000)]}, "metadata": {}}
+        mock_assign.return_value = {"pulse1": [{"frame": i, "note": 60} for i in range(3000)]}
+        mock_emulator = Mock()
+        mock_emulator.process_all_tracks.return_value = {"pulse1": many}
+        mock_emulator_class.return_value = mock_emulator
+        mock_exporter_class.return_value = Mock()
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        def create_rom(project_path, rom_path):
+            rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
+            return True
+        mock_compile.side_effect = create_rom
+
+        args = Namespace(input=str(self.test_midi), output=str(self.output_rom),
+                         verbose=False, no_patterns=False, skip_validation=True)
+
+        with patch('tracker.pattern_detector_parallel.ParallelPatternDetector') as mock_parallel:
+            mock_parallel.side_effect = Exception("forced fallback")
+            with patch('tracker.pattern_detector.EnhancedPatternDetector') as mock_fb:
+                fb = Mock()
+                fb.detect_patterns.return_value = {'patterns': {}, 'references': {}, 'stats': {'compression_ratio': 1.0}}
+                mock_fb.return_value = fb
+                with patch('builtins.print') as mock_print:
+                    run_full_pipeline(args)
+                    out = " ".join(str(c[0][0]) for c in mock_print.call_args_list if c[0])
+                    # 3000 events sampled to 2000 in the fallback -> incomplete warning + banner.
+                    assert "INCOMPLETE" in out
+                    assert "WARNING" in out
 
 
 if __name__ == "__main__":
