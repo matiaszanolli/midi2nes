@@ -248,18 +248,28 @@ def arrange_for_nes(
             'control': 0x81,  # Triangle linear counter
         }
 
-    # Convert noise
+    # Convert noise. Match the canonical process_all_tracks contract (#9, #84):
+    # the exporters read the 4-bit period from `note` (low nibble) and the mode
+    # bit from `control` bit 6 — there is no `period` key. Period 0 is the
+    # bytecode rest sentinel, so floor an active hit at 1; floor volume likewise
+    # so a hit is never silent.
     for frame, data in frames['noise'].items():
+        period = max(1, data['period'] & 0x0F)
+        volume = max(1, min(15, data['volume']))
+        mode = data.get('mode', 0) & 1
         output['noise'][frame] = {
-            'period': data['period'],
-            'volume': data['volume'],
-            'control': 0x30 | data['volume'],
+            'note': period,
+            'control': mode << 6,
+            'volume': volume,
         }
 
-    # DPCM (simplified)
+    # Convert DPCM. The exporters gate emission on `volume` and recover the
+    # sample id from `note` = sample_id + 1 (note 0 is the rest sentinel) — they
+    # never read a `sample` key (#84).
     for frame, data in frames['dpcm'].items():
         output['dpcm'][frame] = {
-            'sample': data['sample'],
+            'note': min(95, data['sample'] + 1),
+            'volume': 15,
         }
 
     return output
