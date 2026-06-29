@@ -705,5 +705,38 @@ class TestMainDefaultBehavior:
             assert args.verbose == True
 
 
+class TestCC65WrapperProbes:
+    """Regression (#14): --version probes use the resolved path and get_version
+    guards its subprocess runs."""
+
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_version_probe_uses_resolved_path(self, mock_which, mock_run):
+        from compiler.cc65_wrapper import CC65Wrapper
+        mock_which.side_effect = ["/opt/cc65/bin/ca65", "/opt/cc65/bin/ld65"]
+        mock_run.return_value = MagicMock(returncode=0, stdout="V2.18", stderr="")
+
+        CC65Wrapper().check_toolchain()
+
+        probed = [c.args[0][0] for c in mock_run.call_args_list]
+        assert probed == ["/opt/cc65/bin/ca65", "/opt/cc65/bin/ld65"], \
+            "probes must invoke the shutil.which-resolved paths, not bare names"
+
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_get_version_guards_filenotfound(self, mock_which, mock_run):
+        from compiler.cc65_wrapper import CC65Wrapper
+        from core.exceptions import ToolchainError
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
+        # check_toolchain probes pass, then the get_version run vanishes.
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="ca65 V2.18", stderr=""),
+            MagicMock(returncode=0, stdout="ld65 V2.18", stderr=""),
+            FileNotFoundError(),  # ca65 disappeared before get_version probe
+        ]
+        with pytest.raises(ToolchainError):
+            CC65Wrapper().get_version()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

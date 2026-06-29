@@ -38,12 +38,35 @@ class TestCA65Export(unittest.TestCase):
         self.assertEqual(self.exporter.midi_note_to_timer_value(120), 0)  # Too high
 
     def test_midi_note_to_timer_value_floors_at_8(self):
-        # Regression (NH-06 / #27): the top NOTE_TABLE_NTSC entries are 7, which
-        # silences pulse/triangle (t < 8). In-range notes must floor at 8.
+        # Regression (NH-06 / #27): the highest in-range timer values are < 8,
+        # which silences pulse/triangle (t < 8). NES_NOTE_TABLE floors at 8.
         self.assertGreaterEqual(self.exporter.midi_note_to_timer_value(118), 8)
         self.assertGreaterEqual(self.exporter.midi_note_to_timer_value(119), 8)
         # Out-of-range still returns the 0 "rest" sentinel.
         self.assertEqual(self.exporter.midi_note_to_timer_value(120), 0)
+
+    def test_base_timer_matches_pitch_table(self):
+        # Regression (NH-03 / #16): the exporter base timer and the frame pitch
+        # must be on the same scale (fCPU/16 pulse table). A4 = 253, C4 = 426.
+        from nes.pitch_table import NES_NOTE_TABLE
+        self.assertEqual(self.exporter.midi_note_to_timer_value(69), 253)  # A4
+        self.assertEqual(self.exporter.midi_note_to_timer_value(60), 426)  # C4
+        for note in range(24, 120):
+            self.assertEqual(self.exporter.midi_note_to_timer_value(note),
+                             NES_NOTE_TABLE[note])
+
+    def test_pitch_offset_is_zero_for_unbent_notes(self):
+        # Regression (NH-03 / #16): bytecode pitch offset = frame_pitch - base_timer.
+        # When the frame pitch equals the table value (no bend), the offset must
+        # be 0 so bytecode-mode playback pitch == direct-mode pitch.
+        from nes.pitch_table import PitchProcessor
+        pp = PitchProcessor()
+        for note in range(24, 108):
+            base = self.exporter.midi_note_to_timer_value(note)
+            frame_pitch = pp.get_channel_pitch(note, 'pulse1')
+            offset = max(-128, min(127, frame_pitch - base))
+            self.assertEqual(offset, 0,
+                             f"note {note}: frame {frame_pitch} vs base {base}")
 
     def test_dmc_level_clamped_to_7bit(self):
         # Regression (NH-05 / #24): $4011 is a 7-bit register; an out-of-range

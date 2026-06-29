@@ -2,6 +2,7 @@ import json
 import math
 from pathlib import Path
 from exporter.base_exporter import BaseExporter
+from nes.pitch_table import NES_NOTE_TABLE
 
 # NES APU register addresses
 APU_PULSE1_CTRL = 0x4000
@@ -29,19 +30,11 @@ APU_DMC_LEN = 0x4013
 
 APU_STATUS = 0x4015
 
-# NES note frequency table (NTSC)
-# These are timer values for the APU pulse/triangle channels
-NOTE_TABLE_NTSC = [
-    # C    C#   D    D#   E    F    F#   G    G#   A    A#   B
-    1712, 1616, 1525, 1440, 1357, 1281, 1209, 1141, 1077, 1017, 961, 907,  # Octave 1
-    856,  808,  762,  720,  678,  640,  604,  570,  538,  508,  480, 453,   # Octave 2
-    428,  404,  381,  360,  339,  320,  302,  285,  269,  254,  240, 226,   # Octave 3
-    214,  202,  190,  180,  170,  160,  151,  143,  135,  127,  120, 113,   # Octave 4
-    107,  101,  95,   90,   85,   80,   76,   71,   67,   64,   60,  57,    # Octave 5
-    53,   50,   48,   45,   42,   40,   38,   36,   34,   32,   30,  28,    # Octave 6
-    27,   25,   24,   22,   21,   20,   19,   18,   17,   16,   15,  14,    # Octave 7
-    13,   13,   12,   11,   11,   10,   9,    9,    8,    8,    7,   7      # Octave 8
-]
+# Pitch timer values come from the single authoritative NES_NOTE_TABLE in
+# nes/pitch_table.py (fCPU/16 formula). The exporter must NOT keep its own
+# divergent table: the bytecode pitch offset is `frame_pitch - base_timer`, and
+# the frame pitch is produced from NES_NOTE_TABLE too, so any scale mismatch
+# corrupts the played note (#16).
 
 # Noise period table
 NOISE_PERIODS = [4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068]
@@ -54,9 +47,10 @@ class CA65Exporter(BaseExporter):
     def midi_note_to_timer_value(self, midi_note):
         if midi_note < 24 or midi_note > 119:  # Valid range for NES
             return 0
-        # Floor at 8: t < 8 silences pulse/triangle, and the top NOTE_TABLE_NTSC
-        # entries are 7 (APU_PULSE_REFERENCE §3/§7).
-        return max(8, NOTE_TABLE_NTSC[midi_note - 24])
+        # Use the shared NES_NOTE_TABLE so this base timer is on the same scale
+        # as the frame `pitch` it is differenced against (#16). NES_NOTE_TABLE
+        # already floors at 8 (t < 8 silences pulse/triangle) and clamps to 11-bit.
+        return NES_NOTE_TABLE[midi_note]
 
     def export_direct_frames(self, frames, output_path, standalone=True):
         """Export frames data directly using efficient lookup tables"""
@@ -700,45 +694,24 @@ class CA65Exporter(BaseExporter):
         lines.append('.export instrument_table')
         lines.append('')
         
-        # Write Pitch Lookup Tables
+        # Write Pitch Lookup Tables. Generated from the single authoritative
+        # NES_NOTE_TABLE so the runtime base period matches the base_timer the
+        # pitch offset was computed against (#16) — keeping them as separate
+        # hardcoded copies is exactly how they drifted an octave apart.
+        def _emit_period_table(label, byte_of):
+            lines.append(f'{label}:')
+            for row_start in range(0, 128, 8):
+                row = ', '.join(
+                    f'${byte_of(NES_NOTE_TABLE[n]):02x}'
+                    for n in range(row_start, row_start + 8)
+                )
+                lines.append(f'  .byte {row}')
+            lines.append('')
+
         lines.append('; The 128-byte Pitch Lookup Tables')
-        lines.append('ntsc_period_low:')
-        lines.append('  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff')
-        lines.append('  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff')
-        lines.append('  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff')
-        lines.append('  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff')
-        lines.append('  .byte $ff, $f1, $7f, $13, $ad, $4d, $f3, $9d')
-        lines.append('  .byte $4c, $00, $b8, $74, $34, $f8, $bf, $89')
-        lines.append('  .byte $56, $26, $f9, $ce, $a6, $80, $5c, $3a')
-        lines.append('  .byte $1a, $fb, $df, $c4, $ab, $93, $7c, $67')
-        lines.append('  .byte $52, $3f, $2d, $1c, $0c, $fd, $ef, $e1')
-        lines.append('  .byte $d5, $c9, $bd, $b3, $a9, $9f, $96, $8e')
-        lines.append('  .byte $86, $7e, $77, $70, $6a, $64, $5e, $59')
-        lines.append('  .byte $54, $4f, $4b, $46, $42, $3f, $3b, $38')
-        lines.append('  .byte $34, $31, $2f, $2c, $29, $27, $25, $23')
-        lines.append('  .byte $21, $1f, $1d, $1b, $1a, $18, $17, $15')
-        lines.append('  .byte $14, $13, $12, $11, $10, $0f, $0e, $0d')
-        lines.append('  .byte $0c, $0c, $0b, $0a, $0a, $09, $08, $08')
-        lines.append('')
-        lines.append('ntsc_period_high:')
-        lines.append('  .byte $07, $07, $07, $07, $07, $07, $07, $07')
-        lines.append('  .byte $07, $07, $07, $07, $07, $07, $07, $07')
-        lines.append('  .byte $07, $07, $07, $07, $07, $07, $07, $07')
-        lines.append('  .byte $07, $07, $07, $07, $07, $07, $07, $07')
-        lines.append('  .byte $07, $07, $07, $07, $06, $06, $05, $05')
-        lines.append('  .byte $05, $05, $04, $04, $04, $03, $03, $03')
-        lines.append('  .byte $03, $03, $02, $02, $02, $02, $02, $02')
-        lines.append('  .byte $02, $01, $01, $01, $01, $01, $01, $01')
-        lines.append('  .byte $01, $01, $01, $01, $01, $00, $00, $00')
-        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
-        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
-        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
-        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
-        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
-        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
-        lines.append('  .byte $00, $00, $00, $00, $00, $00, $00, $00')
-        lines.append('')
-        
+        _emit_period_table('ntsc_period_low', lambda p: p & 0xFF)
+        _emit_period_table('ntsc_period_high', lambda p: (p >> 8) & 0xFF)
+
         def optimize_macro(seq):
             return tuple(self._compress_macro(seq))
 
