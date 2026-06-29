@@ -4,10 +4,9 @@ import time
 from typing import List, Dict, Tuple, Any, Optional
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-import numpy as np
 from tqdm import tqdm
 from tracker.tempo_map import EnhancedTempoMap
-from tracker.pattern_detector import PatternCompressor
+from tracker.pattern_detector import PatternCompressor, sample_events_for_detection
 
 class ParallelPatternDetector:
     """
@@ -44,20 +43,18 @@ class ParallelPatternDetector:
         if not valid_events:
             return self._empty_result()
         
+        # Handle large sequences using the shared large-file policy (#21) so the
+        # default path and the `detect-patterns` subcommand sample identically.
+        original_count = len(valid_events)
+        valid_events, was_sampled = sample_events_for_detection(valid_events)
+        if was_sampled:
+            print(f"⚠️  Large sequence ({original_count} events), sampling to "
+                  f"{len(valid_events)} ({len(valid_events)/original_count*100:.1f}%, lossy)")
+            print(f"   ✅ Sampled {len(valid_events)} events preserving temporal distribution")
+
         # Convert to sequence for processing
         sequence = [(e['note'], e['volume']) for e in valid_events]
-        
-        # Handle large sequences - increase limit and provide better sampling
-        MAX_EVENTS = 15000  # Increased significantly for better music preservation
-        if len(sequence) > MAX_EVENTS:
-            print(f"⚠️  Large sequence ({len(sequence)} events), using optimized sampling for {MAX_EVENTS} events")
-            print(f"   Original events: {len(sequence)}, Will sample: {MAX_EVENTS} ({MAX_EVENTS/len(sequence)*100:.1f}%)")
-            # Smart sampling: take events from throughout the sequence to preserve structure
-            indices = np.linspace(0, len(sequence)-1, MAX_EVENTS, dtype=int)
-            sequence = [sequence[i] for i in indices]
-            valid_events = [valid_events[i] for i in indices]
-            print(f"   ✅ Sampled {len(sequence)} events preserving temporal distribution")
-        
+
         # Split work into chunks for parallel processing
         patterns = self._detect_patterns_parallel(sequence, valid_events)
         

@@ -626,6 +626,51 @@ class TestPatternSimilarity(unittest.TestCase):
         self.assertEqual(variations[1]['volume_change'], -20, "Should detect volume change")
 
 
+class TestLargeFilePolicy(unittest.TestCase):
+    """Both pattern-detection entry points must apply the same large-file
+    sampling policy so a big input cannot hang the bare subcommand while the
+    default path survives via sampling (#21)."""
+
+    def test_small_input_is_not_sampled(self):
+        from tracker.pattern_detector import sample_events_for_detection
+        events = [{'frame': i, 'note': 60, 'volume': 100} for i in range(100)]
+        out, was_sampled = sample_events_for_detection(events)
+        self.assertFalse(was_sampled)
+        self.assertEqual(out, events)
+
+    def test_large_input_is_downsampled_uniformly(self):
+        from tracker.pattern_detector import (
+            sample_events_for_detection, MAX_PATTERN_EVENTS)
+        events = [{'frame': i, 'note': 60, 'volume': 100}
+                  for i in range(MAX_PATTERN_EVENTS + 5000)]
+        out, was_sampled = sample_events_for_detection(events)
+        self.assertTrue(was_sampled)
+        self.assertEqual(len(out), MAX_PATTERN_EVENTS)
+        # Uniform sampling preserves the endpoints (temporal distribution),
+        # unlike head-truncation which would drop the entire tail.
+        self.assertEqual(out[0], events[0])
+        self.assertEqual(out[-1], events[-1])
+
+    def test_custom_cap_is_honored(self):
+        from tracker.pattern_detector import sample_events_for_detection
+        events = [{'frame': i, 'note': 60, 'volume': 100} for i in range(5000)]
+        out, was_sampled = sample_events_for_detection(events, 2000)
+        self.assertTrue(was_sampled)
+        self.assertEqual(len(out), 2000)
+
+    def test_both_entry_points_share_the_sampler(self):
+        import inspect
+        import main
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+
+        sub = inspect.getsource(main.run_detect_patterns)
+        par = inspect.getsource(ParallelPatternDetector.detect_patterns)
+        self.assertIn('sample_events_for_detection', sub,
+                      "detect-patterns subcommand must apply the shared sampler")
+        self.assertIn('sample_events_for_detection', par,
+                      "parallel default path must apply the shared sampler")
+
+
 class TestPatternParameterConsistency(unittest.TestCase):
     """Both pattern-detection entry points (the `detect-patterns` subcommand and
     the default full pipeline) must use identical length bounds so their JSON
