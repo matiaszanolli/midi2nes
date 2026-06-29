@@ -1,5 +1,39 @@
 import os
 import json
+from pathlib import Path
+
+# Name of the sample root that `generate_dpcm_index` scans. Entries in
+# dpcm_index.json store `filename` relative to this folder (e.g. a bare
+# "Kick.dmc"), so consumers must re-join it against this root to locate the
+# real file — see resolve_dpcm_sample_path below.
+DPCM_ROOT_DIRNAME = "dmc"
+
+
+def resolve_dpcm_sample_path(filename, index_path):
+    """Resolve a dpcm_index.json `filename` entry to an existing file.
+
+    Index entries are stored relative to the scanned ``dmc/`` root (see
+    ``generate_dpcm_index``), so a bare name only resolves once re-joined with
+    that root. Resolution order, first hit wins:
+
+    1. an absolute path that exists (future-proofing for absolute indexes);
+    2. the path as-is relative to the current working directory (back-compat);
+    3. ``<index_dir>/dmc/<filename>`` — the shipped layout;
+    4. ``<index_dir>/<filename>``.
+
+    Returns a ``Path`` to an existing file, or ``None`` if nothing resolved.
+    """
+    index_dir = Path(index_path).resolve().parent
+    candidates = [
+        Path(filename),
+        index_dir / DPCM_ROOT_DIRNAME / filename,
+        index_dir / filename,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
 
 def generate_dpcm_index(dmc_folder, output_json):
     index = {}
