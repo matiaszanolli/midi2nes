@@ -72,6 +72,10 @@ def parse_midi_to_frames(midi_path):
                         "note": note,
                         "volume": velocity,
                         "type": msg_type,
+                        # Retain the MIDI channel so downstream stages can detect
+                        # GM percussion (channel 10 / index 9). Without it the
+                        # arranger can only guess drums from the track name (#85).
+                        "channel": msg.channel,
                         "tempo": tempo_map.get_tempo_at_tick(current_tick)
                     })
                 except Exception:
