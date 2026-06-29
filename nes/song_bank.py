@@ -24,6 +24,16 @@ class SongMetadata:
         return True
 
 class SongBank:
+    """In-memory, JSON-backed collection of parsed songs.
+
+    Scope: storage and analysis only. A SongBank parses MIDI files into
+    segments (events/patterns/frames), assigns them to virtual banks, and
+    estimates sizes — but it does NOT compile to a ``.nes``. There is currently
+    no song-bank -> ROM route; the ``song`` CLI subcommands manage the JSON bank
+    only. Multi-song ROM builds are tracked as a planned feature in
+    docs/ROADMAP.md.
+    """
+
     def __init__(self):
         self.songs = {}
         self.current_bank = 0
