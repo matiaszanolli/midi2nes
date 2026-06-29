@@ -121,7 +121,8 @@ class TestEndToEndPipeline:
         args = MagicMock()
         args.input = str(parsed_path)
         args.output = str(output_path)
-        
+        args.dpcm_index = None  # use the default DPCM index (#13: flag now honored)
+
         main.run_map(args)
         
         assert output_path.exists()

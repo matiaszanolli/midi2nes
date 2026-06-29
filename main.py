@@ -45,7 +45,8 @@ def run_parse(args):
 
 def run_map(args):
     midi_data = json.loads(Path(args.input).read_text())
-    dpcm_index_path = 'dpcm_index.json'
+    # Honor --dpcm-index instead of silently using the default (#13).
+    dpcm_index_path = getattr(args, 'dpcm_index', None) or 'dpcm_index.json'
     # Extract just the events from the parsed data
     mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
     Path(args.output).write_text(json.dumps(mapped, indent=2))
@@ -539,7 +540,8 @@ def main():
     p_map = subparsers.add_parser('map', help='Map parsed MIDI to NES channels')
     p_map.add_argument('input')
     p_map.add_argument('output')
-    p_map.add_argument('--config', help='Path to drum mapper configuration file')
+    # NOTE: drum-mapper --config is not consumed by assign_tracks_to_nes_channels,
+    # so it was dropped here rather than left as a silently-ignored flag (#13).
     p_map.add_argument('--dpcm-index', help='Path to DPCM sample index')
     p_map.set_defaults(func=run_map)
 

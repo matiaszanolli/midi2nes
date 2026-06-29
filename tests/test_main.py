@@ -143,6 +143,25 @@ class TestRunMap:
         
         mock_print.assert_called_once_with(f"[OK] Mapped tracks -> {args.output}")
     
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('builtins.print')
+    def test_run_map_honors_dpcm_index(self, mock_print, mock_assign):
+        """Regression (#13): --dpcm-index must be passed to the mapper, not the default."""
+        mock_assign.return_value = {"channel_0": []}
+        args = Namespace(input=str(self.test_input), output=str(self.test_output),
+                         dpcm_index='custom_dpcm.json')
+
+        run_map(args)
+
+        mock_assign.assert_called_once_with({"0": [{"frame": 0, "note": 60}]}, 'custom_dpcm.json')
+
+    def test_map_parser_has_no_silent_config_flag(self):
+        """Regression (#13): the unused --config flag was dropped from `map`."""
+        from main import main as main_entry
+        with patch('sys.argv', ['main.py', 'map', '--config', 'x.yaml', 'i.json', 'o.json']):
+            with pytest.raises(SystemExit):
+                main_entry()
+
     def test_run_map_invalid_json(self):
         """Test mapping with invalid JSON input."""
         self.test_input.write_text("invalid json")

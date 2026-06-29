@@ -2,7 +2,7 @@ import json
 import math
 from pathlib import Path
 from exporter.base_exporter import BaseExporter
-from nes.pitch_table import NES_NOTE_TABLE
+from nes.pitch_table import NES_NOTE_TABLE, NES_TRIANGLE_TABLE
 
 # NES APU register addresses
 APU_PULSE1_CTRL = 0x4000
@@ -44,12 +44,16 @@ class CA65Exporter(BaseExporter):
     def __init__(self):
         super().__init__()
         
-    def midi_note_to_timer_value(self, midi_note):
+    def midi_note_to_timer_value(self, midi_note, channel=None):
         if midi_note < 24 or midi_note > 119:  # Valid range for NES
             return 0
-        # Use the shared NES_NOTE_TABLE so this base timer is on the same scale
-        # as the frame `pitch` it is differenced against (#16). NES_NOTE_TABLE
-        # already floors at 8 (t < 8 silences pulse/triangle) and clamps to 11-bit.
+        # Use the shared per-channel table so this base timer is on the same
+        # scale as the frame `pitch` it is differenced against (#16, #12).
+        # Triangle uses the /32 table (an octave lower for the same timer), so
+        # mixing it with the pulse base would clamp the offset and corrupt the
+        # bass. Both tables already floor at 8 and clamp to 11-bit.
+        if channel == 'triangle':
+            return NES_TRIANGLE_TABLE[midi_note]
         return NES_NOTE_TABLE[midi_note]
 
     def export_direct_frames(self, frames, output_path, standalone=True):
@@ -691,26 +695,31 @@ class CA65Exporter(BaseExporter):
         # Export symbols needed by the audio engine
         lines.append('.export pulse1_sequence, pulse2_sequence, triangle_sequence, noise_sequence, dpcm_sequence')
         lines.append('.export ntsc_period_low, ntsc_period_high')
+        lines.append('.export triangle_period_low, triangle_period_high')
         lines.append('.export instrument_table')
         lines.append('')
-        
+
         # Write Pitch Lookup Tables. Generated from the single authoritative
-        # NES_NOTE_TABLE so the runtime base period matches the base_timer the
-        # pitch offset was computed against (#16) — keeping them as separate
-        # hardcoded copies is exactly how they drifted an octave apart.
-        def _emit_period_table(label, byte_of):
+        # per-channel tables so the runtime base period matches the base_timer
+        # the pitch offset was computed against (#16) — keeping them as separate
+        # hardcoded copies is exactly how they drifted an octave apart. The
+        # triangle channel needs its own /32 table or it plays an octave low (#12).
+        def _emit_period_table(label, table, byte_of):
             lines.append(f'{label}:')
             for row_start in range(0, 128, 8):
                 row = ', '.join(
-                    f'${byte_of(NES_NOTE_TABLE[n]):02x}'
+                    f'${byte_of(table[n]):02x}'
                     for n in range(row_start, row_start + 8)
                 )
                 lines.append(f'  .byte {row}')
             lines.append('')
 
-        lines.append('; The 128-byte Pitch Lookup Tables')
-        _emit_period_table('ntsc_period_low', lambda p: p & 0xFF)
-        _emit_period_table('ntsc_period_high', lambda p: (p >> 8) & 0xFF)
+        lines.append('; The 128-byte Pitch Lookup Tables (pulse: /16)')
+        _emit_period_table('ntsc_period_low', NES_NOTE_TABLE, lambda p: p & 0xFF)
+        _emit_period_table('ntsc_period_high', NES_NOTE_TABLE, lambda p: (p >> 8) & 0xFF)
+        lines.append('; Triangle Pitch Lookup Tables (/32 — an octave below pulse for the same timer)')
+        _emit_period_table('triangle_period_low', NES_TRIANGLE_TABLE, lambda p: p & 0xFF)
+        _emit_period_table('triangle_period_high', NES_TRIANGLE_TABLE, lambda p: (p >> 8) & 0xFF)
 
         def optimize_macro(seq):
             return tuple(self._compress_macro(seq))
@@ -803,7 +812,7 @@ class CA65Exporter(BaseExporter):
                         
                     current_note = note
                     if note > 0:
-                        base_timer = self.midi_note_to_timer_value(note)
+                        base_timer = self.midi_note_to_timer_value(note, channel)
                         pitch_val = frame_data.get('pitch', base_timer) if frame_data else base_timer
                         pitch_offset = max(-128, min(127, pitch_val - base_timer)) & 0xFF
                         arp_val = frame_data.get('arp', 0) & 0xFF

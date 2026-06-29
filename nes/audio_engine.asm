@@ -3,6 +3,9 @@
 ; ---------------------------------------------------------------------------
 .import pulse1_sequence, pulse2_sequence, triangle_sequence, noise_sequence, dpcm_sequence
 .import ntsc_period_low, ntsc_period_high
+; Triangle has its own /32 period table; the pulse table would play it an
+; octave low (#12).
+.import triangle_period_low, triangle_period_high
 .import dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table
 .import instrument_table
 .import fetch_sequence_byte
@@ -437,18 +440,18 @@ audio_update:
     lda temp_pitch
     bne @tri_pitch_mod
     ; Fast path: No pitch bend, avoid 16-bit math
-    lda ntsc_period_low, y
+    lda triangle_period_low, y
     sta $400A
-    lda ntsc_period_high, y
+    lda triangle_period_high, y
     ora #$08
     sta $400B
     jmp @next_channel
 @tri_pitch_mod:
-    lda ntsc_period_low, y
+    lda triangle_period_low, y
     clc
     adc temp_pitch
     sta $400A
-    lda ntsc_period_high, y
+    lda triangle_period_high, y
     adc temp_pitch_hi
     ora #$08
     sta $400B

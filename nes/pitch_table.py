@@ -1,9 +1,14 @@
 """
 NES Pitch Table Generator and Constants
 
-The NES APU uses timer values to generate different pitches. The timer value is inversely 
-proportional to the frequency. For the pulse and triangle channels, the formula is:
-    timer_value = CPU_CLOCK_RATE / (16 * frequency) - 1
+The NES APU uses timer values to generate different pitches. The timer value is
+inversely proportional to the frequency, but the divider differs per channel:
+    pulse:    frequency = CPU_CLOCK_RATE / (16 * (timer + 1))
+    triangle: frequency = CPU_CLOCK_RATE / (32 * (timer + 1))
+
+So for the same timer the triangle sounds one octave below a pulse, and the
+triangle needs its own table built with divider 32 (docs/APU_TRIANGLE_REFERENCE.md
+§3, docs/APU_PITCH_TABLE_REFERENCE.md §1).
 
 Where:
 - CPU_CLOCK_RATE is 1,789,773 Hz (NTSC)
@@ -13,29 +18,38 @@ Where:
 # NES CPU Clock Rate (NTSC)
 CPU_CLOCK_RATE = 1789773
 
-def generate_note_table():
-    """Generate a complete NES pitch table for all MIDI notes."""
+# APU timer dividers per channel family.
+PULSE_DIVIDER = 16
+TRIANGLE_DIVIDER = 32
+
+def generate_note_table(divider=PULSE_DIVIDER):
+    """Generate a complete NES pitch table for all MIDI notes.
+
+    ``divider`` selects the channel family: 16 for pulse, 32 for triangle
+    (triangle plays an octave lower than pulse for the same timer).
+    """
     # Standard MIDI note frequencies (A4 = 440Hz)
     def midi_to_freq(note):
         return 440 * (2 ** ((note - 69) / 12))
-    
+
     note_table = {}
-    
+
     # Generate for full MIDI range (0-127)
     for midi_note in range(128):
         freq = midi_to_freq(midi_note)
         # Calculate timer value
-        timer = int(CPU_CLOCK_RATE / (16 * freq) - 1)
+        timer = int(CPU_CLOCK_RATE / (divider * freq) - 1)
         # Clamp to the audible 11-bit range. The lower bound is 8, NOT 0:
         # pulse/triangle are silenced whenever timer t < 8 (APU_PULSE_REFERENCE
         # §3/§7), so the highest MIDI notes must floor at 8 instead of muting.
         timer = max(8, min(timer, 0x07FF))
         note_table[midi_note] = timer
-    
+
     return note_table
 
-# Pre-calculated note table
-NES_NOTE_TABLE = generate_note_table()
+# Pre-calculated note tables (pulse uses /16, triangle uses /32).
+NES_NOTE_TABLE = generate_note_table(PULSE_DIVIDER)
+NES_TRIANGLE_TABLE = generate_note_table(TRIANGLE_DIVIDER)
 
 # Channel-specific note ranges
 CHANNEL_RANGES = {
@@ -71,37 +85,26 @@ class PitchProcessor:
             "noise": (24, 60)     # C1 to C4
         }
         
-        # Generate the note table using the CPU clock rate
-        self.note_table = self._generate_note_table()
-        
-    def _generate_note_table(self):
-        """Generate a complete NES pitch table for all MIDI notes."""
-        CPU_CLOCK_RATE = 1789773  # NTSC
-        
-        def midi_to_freq(note):
-            return 440 * (2 ** ((note - 69) / 12))
-        
-        note_table = {}
-        for midi_note in range(128):
-            freq = midi_to_freq(midi_note)
-            timer = int(CPU_CLOCK_RATE / (16 * freq) - 1)
-            # Lower bound is 8 (not 0): t < 8 silences pulse/triangle.
-            timer = max(8, min(timer, 0x07FF))
-            note_table[midi_note] = timer
-        
-        return note_table
-        
+        # Per-channel pitch tables from the single source of truth: pulse uses
+        # the /16 table, triangle the /32 table (an octave lower for the same
+        # timer, so it needs distinct periods to play the intended note).
+        self.note_table = NES_NOTE_TABLE
+        self.triangle_table = NES_TRIANGLE_TABLE
+
     def get_channel_pitch(self, midi_note, channel_type):
         """Convert MIDI note to NES pitch value with channel-specific limitations."""
         if channel_type not in self.channel_ranges:
             return 0
-            
+
         min_note, max_note = self.channel_ranges[channel_type]
         midi_note = max(min_note, min(midi_note, max_note))
-        
+
         if channel_type == "noise":
             return self._get_noise_period(midi_note)
-            
+
+        if channel_type == "triangle":
+            return self.triangle_table[midi_note]
+
         return self.note_table[midi_note]
         
     def _get_noise_period(self, midi_note):
