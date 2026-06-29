@@ -690,8 +690,11 @@ def main():
                 global_args.extend([arg])
                 i += 1
             elif arg.startswith('-'):
-                # Skip unknown options for now
-                i += 1
+                # Reject unknown/typo flags instead of silently dropping them —
+                # a swallowed --no-patterns/--arranger produces a different ROM (#8).
+                print(f"Error: Unknown option: {arg}", file=sys.stderr)
+                print("Run 'midi2nes --help' for available options.", file=sys.stderr)
+                sys.exit(2)
             else:
                 remaining_args.append(arg)
                 i += 1
