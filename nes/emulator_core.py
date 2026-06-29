@@ -86,20 +86,47 @@ class NESEmulatorCore:
                     default_duty=duty
                 )
             elif channel_name == 'noise':
-                noise_frames = {
-                    e['frame']: {
-                        "noise_mode": 0,  # white noise
-                        "volume": 15 if e.get('velocity', e.get('volume', 0)) > 0 else 0
-                    } for e in events
-                }
+                # Noise frames must carry the data the exporters turn into APU
+                # writes (#9): `note` = 4-bit period index ($400E low nibble),
+                # mode bit folded into `control` bit 6 (the engine reads it as
+                # the duty/mode bit), and a scaled `volume`. Drum hits are sparse
+                # single-frame triggers so the channel re-fires once, then decays
+                # via the length counter.
+                noise_frames = {}
+                for e in events:
+                    velocity = e.get('velocity', e.get('volume', 0))
+                    if velocity <= 0:
+                        continue
+                    # Period index 0 is the bytecode rest sentinel, so floor an
+                    # active hit at 1 (loses only the very highest noise pitch).
+                    period = max(1, self.midi_to_nes_pitch(e['note'], 'noise'))
+                    mode = e.get('noise_mode', 0) & 1
+                    v_clamped = min(127, max(0, velocity))
+                    volume = max(1, int(15 * math.pow(v_clamped / 127.0, 1.5)))
+                    noise_frames[e['frame']] = {
+                        "note": period,
+                        "control": mode << 6,
+                        "volume": volume,
+                    }
                 processed[channel_name] = noise_frames
             elif channel_name == 'dpcm':
-                dpcm_frames = {
-                    e['frame']: {
-                        "sample_id": e.get('sample_id', 0),
-                        "volume": 15 if e.get('velocity', e.get('volume', 0)) > 0 else 0
-                    } for e in events
-                }
+                # DPCM frames carry `note` = sample_id + 1 (the engine recovers
+                # sample_id as note-1 and uses it to index the sample tables);
+                # note 0 stays the rest sentinel (#9). A single-frame trigger
+                # starts the sample, which then plays to completion via DMA.
+                dpcm_frames = {}
+                for e in events:
+                    velocity = e.get('velocity', e.get('volume', 0))
+                    if velocity <= 0:
+                        continue
+                    sample_id = e.get('sample_id', 0)
+                    frame = {
+                        "note": min(95, sample_id + 1),
+                        "volume": 15,
+                    }
+                    if 'dmc_level' in e:
+                        frame["dmc_level"] = max(0, min(127, e['dmc_level']))
+                    dpcm_frames[e['frame']] = frame
                 processed[channel_name] = dpcm_frames
 
         return processed

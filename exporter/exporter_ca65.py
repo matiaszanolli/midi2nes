@@ -100,6 +100,8 @@ class CA65Exporter(BaseExporter):
         lines.append('last_pulse1_note: .res 1')
         lines.append('last_pulse2_note: .res 1')
         lines.append('last_triangle_note: .res 1')
+        lines.append('last_noise_note: .res 1')
+        lines.append('last_dpcm_note: .res 1')
         lines.append('')
 
         # Get all channels and find maximum frame
@@ -201,9 +203,59 @@ class CA65Exporter(BaseExporter):
                 lines.append(f'    .byte {", ".join(chunk)}')
             lines.append('')
 
+        def _emit_byte_table(label, values):
+            lines.append(f'{label}:')
+            for i in range(0, len(values), 16):
+                lines.append(f'    .byte {", ".join(values[i:i+16])}')
+
+        # Noise frame tables (#9). note = 4-bit period index (0 = rest/change
+        # sentinel); ctrl = $400C byte ($30 | volume); reg = $400E byte
+        # (mode bit 7 | period). Drum hits are sparse, so empty frames are rests.
+        has_noise = 'noise' in all_channels
+        if has_noise:
+            channel_data = all_channels['noise']
+            n_note, n_ctrl, n_reg = [], [], []
+            for frame_num in range(max_frame + 1):
+                fd = channel_data.get(frame_num, channel_data.get(str(frame_num)))
+                if not fd or fd.get('volume', 0) == 0:
+                    n_note.append('$00'); n_ctrl.append('$00'); n_reg.append('$00')
+                    continue
+                period = fd.get('note', 0) & 0x0F
+                mode = (fd.get('control', 0) >> 6) & 0x01
+                vol = fd.get('volume', 0) & 0x0F
+                n_note.append(f'${period:02X}')
+                n_ctrl.append(f'${0x30 | vol:02X}')
+                n_reg.append(f'${(mode << 7) | period:02X}')
+            lines.append('; NOISE Frame Data Tables')
+            _emit_byte_table('noise_note', n_note)
+            _emit_byte_table('noise_ctrl', n_ctrl)
+            _emit_byte_table('noise_reg', n_reg)
+            lines.append('')
+
+        # DPCM frame tables (#9). note = sample_id + 1 (0 = rest/change sentinel).
+        # The trigger reuses the packer/engine sample tables (dpcm_*_table).
+        has_dpcm = 'dpcm' in all_channels
+        if has_dpcm:
+            channel_data = all_channels['dpcm']
+            d_note = []
+            for frame_num in range(max_frame + 1):
+                fd = channel_data.get(frame_num, channel_data.get(str(frame_num)))
+                if not fd or fd.get('volume', 0) == 0:
+                    d_note.append('$00')
+                    continue
+                d_note.append(f'${fd.get("note", 0) & 0xFF:02X}')
+            lines.append('; DPCM Frame Data Tables')
+            _emit_byte_table('dpcm_note', d_note)
+            lines.append('')
+
         # Code segment with efficient playback routine
         lines.append('.segment "CODE"')
         lines.append('')
+        if has_dpcm:
+            # Sample parameter tables come from the DPCM packer (or the project
+            # builder's stubs), exactly as the bytecode engine consumes them.
+            lines.append('.import dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table')
+            lines.append('')
 
         # Add reset routine ONLY if standalone
         if standalone:
@@ -323,6 +375,20 @@ class CA65Exporter(BaseExporter):
             lines.extend([
                 '    ; === TRIANGLE CHANNEL ===',
                 '    jsr play_triangle',
+                ''
+            ])
+
+        if has_noise:
+            lines.extend([
+                '    ; === NOISE CHANNEL ===',
+                '    jsr play_noise',
+                ''
+            ])
+
+        if has_dpcm:
+            lines.extend([
+                '    ; === DPCM CHANNEL ===',
+                '    jsr play_dpcm',
                 ''
             ])
 
@@ -538,6 +604,102 @@ class CA65Exporter(BaseExporter):
                 '    rts',
                 '    ',
                 '@sustain:',
+                '    rts',
+                '.endproc',
+                ''
+            ])
+
+        if has_noise:
+            lines.extend([
+                '.proc play_noise',
+                '    ; Index noise_note[frame_counter]',
+                '    lda #<noise_note',
+                '    clc',
+                '    adc frame_counter',
+                '    sta temp_ptr',
+                '    lda #>noise_note',
+                '    adc frame_counter+1',
+                '    sta temp_ptr+1',
+                '    ldy #0',
+                '    lda (temp_ptr),y',
+                '    cmp last_noise_note',
+                '    beq @done            ; unchanged - let length counter decay',
+                '    sta last_noise_note',
+                '    beq @silence         ; note 0 -> silence',
+                '    ; New hit - write $400C from noise_ctrl',
+                '    lda #<noise_ctrl',
+                '    clc',
+                '    adc frame_counter',
+                '    sta temp_ptr',
+                '    lda #>noise_ctrl',
+                '    adc frame_counter+1',
+                '    sta temp_ptr+1',
+                '    lda (temp_ptr),y',
+                '    sta $400C',
+                '    ; $400E from noise_reg (mode bit 7 | period)',
+                '    lda #<noise_reg',
+                '    clc',
+                '    adc frame_counter',
+                '    sta temp_ptr',
+                '    lda #>noise_reg',
+                '    adc frame_counter+1',
+                '    sta temp_ptr+1',
+                '    lda (temp_ptr),y',
+                '    sta $400E',
+                '    lda #$08             ; length counter load (resets envelope)',
+                '    sta $400F',
+                '@done:',
+                '    rts',
+                '@silence:',
+                '    lda #$30             ; constant volume 0 - silence noise',
+                '    sta $400C',
+                '    rts',
+                '.endproc',
+                ''
+            ])
+
+        if has_dpcm:
+            # Mirrors audio_engine.asm @write_dpcm: trigger a one-shot sample on
+            # a new note (sample_id = note-1), reusing the packer sample tables.
+            lines.extend([
+                '.proc play_dpcm',
+                '    ; Index dpcm_note[frame_counter]',
+                '    lda #<dpcm_note',
+                '    clc',
+                '    adc frame_counter',
+                '    sta temp_ptr',
+                '    lda #>dpcm_note',
+                '    adc frame_counter+1',
+                '    sta temp_ptr+1',
+                '    ldy #0',
+                '    lda (temp_ptr),y',
+                '    cmp last_dpcm_note',
+                '    beq @done            ; unchanged - sample already triggered',
+                '    sta last_dpcm_note',
+                '    beq @done            ; note 0 -> nothing to trigger',
+                '    ; New sample: sample_id = note - 1',
+                '    sec',
+                '    sbc #1',
+                '    tay',
+                '    ; Stop DPCM to reset the byte counter',
+                '    lda #$0F',
+                '    sta $4015',
+                '    ; MMC3: swap DPCM sample bank into $C000 (R6)',
+                '    lda #$46',
+                '    sta $8000',
+                '    lda dpcm_bank_table,y',
+                '    sta $8001',
+                '    ; Load sample parameters',
+                '    lda dpcm_pitch_table,y',
+                '    sta $4010',
+                '    lda dpcm_addr_table,y',
+                '    sta $4012',
+                '    lda dpcm_len_table,y',
+                '    sta $4013',
+                '    ; Trigger playback (enable DMC, bit 4)',
+                '    lda #$1F',
+                '    sta $4015',
+                '@done:',
                 '    rts',
                 '.endproc',
                 ''
