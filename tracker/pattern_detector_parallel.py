@@ -87,36 +87,38 @@ class ParallelPatternDetector:
         ]
     
     def _detect_patterns_parallel(self, sequence: List[Tuple], valid_events: List[Dict]) -> Dict:
-        """Detect patterns using parallel processing"""
-        
-        # Create work chunks by pattern length
-        work_chunks = []
-        for length in range(self.min_pattern_length, 
-                          min(self.max_pattern_length, len(sequence)) + 1):
-            # Split pattern search by length ranges to distribute work
-            chunk_size = max(1, (len(sequence) - length + 1) // self.max_workers)
-            
-            for start_offset in range(0, len(sequence) - length + 1, chunk_size):
-                end_offset = min(start_offset + chunk_size, len(sequence) - length + 1)
-                work_chunks.append({
-                    'sequence': sequence,
-                    'events': valid_events,
-                    'pattern_length': length,
-                    'start_offset': start_offset,
-                    'end_offset': end_offset,
-                    'min_pattern_length': self.min_pattern_length
-                })
-        
+        """Detect patterns using parallel processing.
+
+        Each worker handles ONE pattern length over the whole sequence using the
+        O(n) hash-grouping pass in `_collect_length_candidates`, so total work is
+        O(n·L) instead of the old per-start O(n²·L) rescan. The sequence and
+        events are shipped to each worker process ONCE via the pool `initializer`
+        rather than embedded in every chunk dict — the previous code pickled the
+        full sequence ~(lengths × workers) times per detection run (#114)."""
+
+        # One chunk per pattern length; the heavy data travels via initargs below.
+        work_chunks = [
+            {'pattern_length': length}
+            for length in range(self.min_pattern_length,
+                                min(self.max_pattern_length, len(sequence)) + 1)
+        ]
+        if not work_chunks:
+            return {}
+
         print(f"🔧 Created {len(work_chunks)} work chunks for parallel processing")
-        
+
         # Process chunks in parallel
         all_candidate_patterns = []
-        
+
         try:
-            with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            with ProcessPoolExecutor(
+                max_workers=self.max_workers,
+                initializer=_init_pattern_worker,
+                initargs=(sequence, valid_events),
+            ) as executor:
                 # Submit all work chunks
                 future_to_chunk = {
-                    executor.submit(_detect_patterns_worker, chunk): chunk 
+                    executor.submit(_detect_patterns_worker, chunk): chunk
                     for chunk in work_chunks
                 }
                 
@@ -144,29 +146,20 @@ class ParallelPatternDetector:
         return self._select_best_patterns(all_candidate_patterns)
     
     def _detect_patterns_serial(self, sequence: List[Tuple], valid_events: List[Dict]) -> Dict:
-        """Fallback serial pattern detection"""
+        """Fallback serial pattern detection.
+
+        Shares the same O(n·L) grouping helper as the parallel workers so the
+        in-process fallback yields equivalent patterns to the parallel path
+        (the old fallback used a different forward-only match scan)."""
         print("🔄 Using serial pattern detection")
-        
+
         candidate_patterns = []
-        
-        for length in range(self.min_pattern_length, 
+        for length in range(self.min_pattern_length,
                           min(self.max_pattern_length, len(sequence)) + 1):
-            for start in range(len(sequence) - length + 1):
-                pattern = tuple(sequence[start:start + length])
-                matches = self._find_pattern_matches(sequence, pattern, start)
-                
-                if len(matches) >= 3:  # Minimum 3 occurrences
-                    score = self._score_pattern(length, len(matches), 0)
-                    if score > 0:
-                        candidate_patterns.append({
-                            'start': start,
-                            'length': length,
-                            'pattern': pattern,
-                            'positions': matches,
-                            'score': score,
-                            'events': [valid_events[i] for i in range(start, start + length)]
-                        })
-        
+            candidate_patterns.extend(
+                _collect_length_candidates(sequence, valid_events, length)
+            )
+
         return self._select_best_patterns(candidate_patterns)
     
     def _select_best_patterns(self, candidate_patterns: List[Dict]) -> Dict:
@@ -198,41 +191,7 @@ class ParallelPatternDetector:
                 used_positions.update(pattern_positions)
         
         return patterns
-    
-    def _find_pattern_matches(self, sequence: List, pattern: Tuple, start_pos: int) -> List[int]:
-        """Find all occurrences of a pattern in the sequence"""
-        matches = [start_pos]
-        pattern_len = len(pattern)
-        
-        pos = start_pos + 1
-        while pos <= len(sequence) - pattern_len:
-            current = tuple(sequence[pos:pos + pattern_len])
-            if current == pattern:
-                matches.append(pos)
-                pos += pattern_len  # Skip to avoid overlaps
-            else:
-                pos += 1
-        
-        return matches
-    
-    def _score_pattern(self, length: int, exact_count: int, variation_count: int) -> float:
-        """Score pattern based on compression benefit"""
-        total_count = exact_count + variation_count
-        
-        if total_count < 3:
-            return -1
-        
-        # Base score: compression benefit
-        compression_benefit = length * (total_count - 1)
-        storage_cost = length + total_count
-        net_benefit = compression_benefit - storage_cost
-        
-        # Bonuses
-        length_bonus = length * 2.0 if length >= 4 else length
-        frequency_bonus = total_count * 0.5 if total_count >= 4 else 0
-        
-        return net_benefit + length_bonus + frequency_bonus
-    
+
     def _get_variation_summary(self, patterns: Dict) -> Dict:
         """Generate summary of pattern variations"""
         return {
@@ -253,62 +212,94 @@ class ParallelPatternDetector:
         }
 
 
-def _detect_patterns_worker(work_chunk: Dict) -> List[Dict]:
-    """
-    Worker function for parallel pattern detection.
-    This runs in a separate process.
-    """
-    sequence = work_chunk['sequence']
-    events = work_chunk['events']
-    pattern_length = work_chunk['pattern_length']
-    start_offset = work_chunk['start_offset']
-    end_offset = work_chunk['end_offset']
-    min_pattern_length = work_chunk['min_pattern_length']
-    
+# Shared, read-only data for the worker processes. The sequence and events are
+# stashed here ONCE per worker via the pool initializer (see ProcessPoolExecutor
+# initargs) instead of being pickled into every per-length work chunk (#114).
+_WORKER_SEQUENCE: Optional[List[Tuple]] = None
+_WORKER_EVENTS: Optional[List[Dict]] = None
+
+
+def _init_pattern_worker(sequence: List[Tuple], events: List[Dict]) -> None:
+    """ProcessPoolExecutor initializer: stash the shared sequence/events as module
+    globals so each worker invocation reuses them instead of re-shipping them."""
+    global _WORKER_SEQUENCE, _WORKER_EVENTS
+    _WORKER_SEQUENCE = sequence
+    _WORKER_EVENTS = events
+
+
+def _collect_length_candidates(sequence: List[Tuple], events: List[Dict],
+                               pattern_length: int) -> List[Dict]:
+    """Find every repeated pattern of `pattern_length` in O(n) instead of O(n²).
+
+    A single linear pass buckets each window's start position by window value.
+    For each bucket the greedy non-overlapping match list is derived directly
+    from the ascending positions — equivalent to the old "scan from pos 0, jump
+    pattern_len on a match" rescan, but without re-scanning the whole sequence
+    for every start. Emitting one candidate per distinct window (anchored at its
+    first occurrence) matches the old per-start output because duplicate starts
+    of the same window collapsed onto that first occurrence in
+    `_select_best_patterns` anyway."""
+    n = len(sequence)
+    if pattern_length > n:
+        return []
+
+    # Single linear pass: bucket each window's start position by window value.
+    groups: Dict[Tuple, List[int]] = {}
+    for start in range(n - pattern_length + 1):
+        window = tuple(sequence[start:start + pattern_length])
+        groups.setdefault(window, []).append(start)
+
     candidate_patterns = []
-    
-    # Search for patterns in this chunk
-    for start in range(start_offset, end_offset):
-        if start + pattern_length > len(sequence):
-            break
-            
-        pattern = tuple(sequence[start:start + pattern_length])
-        
-        # Find all matches for this pattern
+    for window, positions in groups.items():
+        # Fewer than 3 occurrences can never yield 3 non-overlapping matches.
+        if len(positions) < 3:
+            continue
+
+        # Greedy non-overlapping selection over ascending positions: take a
+        # position whenever it starts at/after the previous match's end. This
+        # reproduces the old scan-and-skip-`pattern_len` match list exactly.
         matches = []
-        pattern_len = len(pattern)
-        pos = 0
-        
-        while pos <= len(sequence) - pattern_len:
-            current = tuple(sequence[pos:pos + pattern_len])
-            if current == pattern:
+        next_free = -1
+        for pos in positions:
+            if pos >= next_free:
                 matches.append(pos)
-                pos += pattern_len  # Skip to avoid overlaps
-            else:
-                pos += 1
-        
-        # Score the pattern
-        if len(matches) >= 3:  # Minimum 3 occurrences
-            total_count = len(matches)
-            compression_benefit = pattern_length * (total_count - 1)
-            storage_cost = pattern_length + total_count
-            net_benefit = compression_benefit - storage_cost
-            
-            length_bonus = pattern_length * 2.0 if pattern_length >= 4 else pattern_length
-            frequency_bonus = total_count * 0.5 if total_count >= 4 else 0
-            score = net_benefit + length_bonus + frequency_bonus
-            
-            if score > 0:
-                candidate_patterns.append({
-                    'start': start,
-                    'length': pattern_length,
-                    'pattern': pattern,
-                    'positions': matches,
-                    'score': score,
-                    'events': [events[i] for i in range(start, start + pattern_length)]
-                })
-    
+                next_free = pos + pattern_length
+
+        if len(matches) < 3:  # Minimum 3 non-overlapping occurrences
+            continue
+
+        total_count = len(matches)
+        compression_benefit = pattern_length * (total_count - 1)
+        storage_cost = pattern_length + total_count
+        net_benefit = compression_benefit - storage_cost
+
+        length_bonus = pattern_length * 2.0 if pattern_length >= 4 else pattern_length
+        frequency_bonus = total_count * 0.5 if total_count >= 4 else 0
+        score = net_benefit + length_bonus + frequency_bonus
+
+        if score > 0:
+            anchor = matches[0]
+            candidate_patterns.append({
+                'start': anchor,
+                'length': pattern_length,
+                'pattern': window,
+                'positions': matches,
+                'score': score,
+                'events': [events[i] for i in range(anchor, anchor + pattern_length)]
+            })
+
     return candidate_patterns
+
+
+def _detect_patterns_worker(work_chunk: Dict) -> List[Dict]:
+    """Worker entry point: detect all patterns of one length over the shared
+    sequence stashed by `_init_pattern_worker`. Runs in a separate process."""
+    sequence = _WORKER_SEQUENCE
+    events = _WORKER_EVENTS
+    if sequence is None or events is None:
+        # Defensive: only happens if invoked outside the initialised pool.
+        return []
+    return _collect_length_candidates(sequence, events, work_chunk['pattern_length'])
 
 
 class ThreadedPatternDetector:

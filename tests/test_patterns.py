@@ -723,3 +723,109 @@ class TestPatternParameterConsistency(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestParallelPatternEquivalence(unittest.TestCase):
+    """Regression tests for the O(n) hash-grouping pattern matcher (#114).
+
+    The old worker rescanned the whole sequence for every start (O(n²·L)) and
+    shipped the full sequence in every chunk. The rewrite must yield the same
+    patterns and must NOT embed the sequence in the work chunks."""
+
+    @staticmethod
+    def _old_worker_for_length(sequence, length):
+        """Reference: the original whole-sequence greedy rescan, collapsed to one
+        entry per distinct window (which is how duplicates resolved downstream)."""
+        n = len(sequence)
+        result = {}
+        for start in range(n - length + 1):
+            pattern = tuple(sequence[start:start + length])
+            if pattern in result:
+                continue
+            matches = []
+            pos = 0
+            while pos <= n - length:
+                if tuple(sequence[pos:pos + length]) == pattern:
+                    matches.append(pos)
+                    pos += length
+                else:
+                    pos += 1
+            if len(matches) >= 3:
+                tc = len(matches)
+                score = (length * (tc - 1) - (length + tc)
+                         + (length * 2.0 if length >= 4 else length)
+                         + (tc * 0.5 if tc >= 4 else 0))
+                if score > 0:
+                    result[pattern] = (matches, score)
+        return result
+
+    def test_collect_length_candidates_matches_old_worker(self):
+        from tracker.pattern_detector_parallel import _collect_length_candidates
+        seq = [(60 + (i % 5), 100 - (i % 3)) for i in range(80)]
+        events = [{'note': a, 'volume': b, 'frame': i}
+                  for i, (a, b) in enumerate(seq)]
+        for length in range(3, 13):
+            new = {c['pattern']: (c['positions'], c['score'])
+                   for c in _collect_length_candidates(seq, events, length)}
+            old = self._old_worker_for_length(seq, length)
+            self.assertEqual(set(new), set(old),
+                             f"window set differs at length {length}")
+            for pattern in old:
+                self.assertEqual(new[pattern][0], old[pattern][0],
+                                 f"match positions differ for {pattern}")
+                self.assertAlmostEqual(new[pattern][1], old[pattern][1], places=9)
+
+    def test_detected_patterns_are_real_repeats(self):
+        """Every detected pattern's occurrences must reconstruct identical
+        content (round-trip integrity of the matcher output)."""
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        detector = ParallelPatternDetector(tempo_map, min_pattern_length=3,
+                                           max_pattern_length=12)
+        events = [{'frame': i, 'note': 60 + (i % 8), 'volume': 100 - (i % 4)}
+                  for i in range(400)]
+        sequence = [(e['note'], e['volume']) for e in events]
+        result = detector.detect_patterns(events)
+        self.assertGreater(len(result['patterns']), 0)
+        for pid, info in result['patterns'].items():
+            length = info['length']
+            positions = info['exact_matches']
+            ref = tuple(sequence[positions[0]:positions[0] + length])
+            for pos in positions:
+                self.assertEqual(tuple(sequence[pos:pos + length]), ref,
+                                 f"{pid} occurrence at {pos} is not a real repeat")
+
+    def test_serial_fallback_equivalent_to_parallel(self):
+        """The in-process serial fallback (used when the pool fails) must select
+        the same patterns as the parallel path."""
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        detector = ParallelPatternDetector(tempo_map, min_pattern_length=3,
+                                           max_pattern_length=12)
+        events = [{'frame': i, 'note': 60 + (i % 6), 'volume': 100}
+                  for i in range(120)]
+        sequence = [(e['note'], e['volume']) for e in events]
+        valid = detector._filter_valid_events(events)
+
+        parallel = detector._detect_patterns_parallel(sequence, valid)
+        serial = detector._detect_patterns_serial(sequence, valid)
+
+        def signature(patterns):
+            return sorted(tuple(p['exact_matches']) for p in patterns.values())
+
+        self.assertEqual(signature(parallel), signature(serial))
+
+    def test_work_chunks_do_not_embed_sequence(self):
+        """IPC-bloat guard: per-length chunks must carry only the length, never
+        the full sequence/events (those travel once via the pool initializer)."""
+        import inspect
+        from tracker import pattern_detector_parallel as pdp
+        src = inspect.getsource(pdp.ParallelPatternDetector._detect_patterns_parallel)
+        self.assertNotIn("'sequence': sequence", src)
+        self.assertNotIn("'events': valid_events", src)
+        self.assertIn('initializer=_init_pattern_worker', src)
+        self.assertIn('initargs=', src)
+
+
+if __name__ == '__main__':
+    unittest.main()
