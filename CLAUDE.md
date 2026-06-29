@@ -191,9 +191,9 @@ The full pipeline (`run_full_pipeline` in `main.py`) runs everything in a temp d
 - NES pitch tables are channel-specific (different for Pulse/Triangle)
 
 ### ROM Structure
-- Always use MMC1 mapper configuration
-- Header: 16 bytes iNES format
-- PRG-ROM: 128KB (8 banks × 16KB)
+- Default mapper is MMC3 (selected by `prepare`/`run_full_pipeline`); MMC1 and NROM are selectable via `MapperFactory`
+- Header: 16 bytes iNES format (mapper/PRG-size bytes come from the selected mapper's `generate_header_asm`)
+- PRG-ROM: MMC3 default is 512KB in 8KB banks (MMC1 is 128KB in 16KB banks; NROM is 32KB)
 - Reset vectors at $FFFA-$FFFF must point to valid code
 - NMI handler must call music update at 60Hz
 
@@ -263,5 +263,5 @@ External tools:
 - Maps tracks to NES channels with intelligent priority
 - Generates frame-accurate timing data
 - Exports real assembly code with pattern compression
-- Creates working MMC1 ROMs (128KB capacity)
+- Creates working MMC3 ROMs by default (512KB capacity; MMC1/NROM selectable)
 - Produces ROMs that play music correctly on emulators and hardware
