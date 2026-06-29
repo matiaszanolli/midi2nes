@@ -29,6 +29,7 @@ python main.py frames mapped.json frames.json       # Frame generation
 python main.py detect-patterns frames.json patterns.json  # Pattern detection
 python main.py export frames.json music.asm --format ca65 --patterns patterns.json
 python main.py prepare music.asm nes_project/       # Prepare NES project (default mapper: MMC3)
+python main.py compile nes_project/ output.nes      # Compile a prepared project to a ROM + validate (step-by-step parity with the full pipeline)
 
 # Other subcommands: `config init|validate`, `song add|list|remove` (JSON song-bank storage/analysis only — not compiled to ROM), `benchmark run|memory`
 ```
@@ -199,7 +200,12 @@ The full pipeline (`run_full_pipeline` in `main.py`) runs everything in a temp d
 
 ### Assembly Export
 - `CA65Exporter.export_tables_with_patterns()` generates music.asm
-- Uses pattern compression when pattern data provided
+- All emitted bytes derive from `frames`. The `patterns` arg is only a switch:
+  empty → direct frame tables (`export_direct_frames`); non-empty → MMC3
+  macro-bytecode serializer. The actual ROM-size win comes from macro/instrument
+  de-duplication in the bytecode path, NOT from the pattern detector's output.
+- The detector's `references` (and `patterns` contents) are analysis/metrics
+  only — `export_tables_with_patterns` does not consume `references` (#4).
 - Exports APU register writes ($4000-$4015)
 - Must be compatible with `NESProjectBuilder` expectations
 
