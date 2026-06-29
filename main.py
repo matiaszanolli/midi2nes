@@ -30,6 +30,12 @@ from benchmarks.performance_suite import PerformanceBenchmark
 from utils.profiling import get_memory_usage, log_memory_usage
 from compiler import compile_rom
 
+# Shared pattern-detection bounds. Both entry points (the `detect-patterns`
+# subcommand and the default full pipeline) must use identical parameters so
+# their `patterns`/`references` JSON artifacts agree for the same input (#19).
+PATTERN_MIN_LENGTH = 3
+PATTERN_MAX_LENGTH = 12
+
 def run_parse(args):
     # Use fast parser by default for better performance
     from tracker.parser_fast import parse_midi_to_frames as parse_fast
@@ -127,7 +133,8 @@ def run_detect_patterns(args):
     
     # Create tempo map and pattern detector
     tempo_map = EnhancedTempoMap(initial_tempo=500000)  # 120 BPM default
-    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3)
+    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH,
+                                       max_pattern_length=PATTERN_MAX_LENGTH)
     
     # Extract events from frames structure
     events = []
@@ -313,13 +320,13 @@ def run_full_pipeline(args):
                 # Use parallel pattern detection with position mapping fix
                 try:
                     from tracker.pattern_detector_parallel import ParallelPatternDetector
-                    detector = ParallelPatternDetector(tempo_map, min_pattern_length=3, max_pattern_length=12)
+                    detector = ParallelPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH)
                     print(f"  Using parallel pattern detection with {len(events):,} events")
                     pattern_result = detector.detect_patterns(events)
                 except Exception as e:
                     print(f"  Parallel detection failed, using fallback: {e}")
                     from tracker.pattern_detector import EnhancedPatternDetector
-                    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3, max_pattern_length=12)
+                    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH)
                     # For fallback, limit events more conservatively
                     if len(events) > 2000:
                         print(f"  Limiting to 2000 events for fallback performance")

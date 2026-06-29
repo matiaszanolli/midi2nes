@@ -402,7 +402,9 @@ class TestRunDetectPatterns:
         
         # Verify mocks were called correctly
         mock_tempo_class.assert_called_once_with(initial_tempo=500000)
-        mock_detector_class.assert_called_once_with(mock_tempo, min_pattern_length=3)
+        # Shared pattern bounds keep this path in sync with the full pipeline (#19).
+        mock_detector_class.assert_called_once_with(
+            mock_tempo, min_pattern_length=3, max_pattern_length=12)
         mock_detector.detect_patterns.assert_called_once()
         
         # Verify output file was created

@@ -349,6 +349,38 @@ class TestBuildScriptGeneration:
         content = build_script.read_text()
         assert '@echo off' in content or 'ca65' in content
 
+    def test_build_script_honors_selected_mapper(self, project_dir, minimal_music_asm):
+        """The generated build.sh must come from the selected mapper, not a
+        hardcoded MMC3 template (#18). MMC1 needs its vector fixup post-process."""
+        from mappers.mmc1 import MMC1Mapper
+
+        builder = NESProjectBuilder(str(project_dir))
+        builder.set_mapper(MMC1Mapper())
+        builder.prepare_project(str(minimal_music_asm))
+
+        build_script = project_dir / "build.sh" if os.name != 'nt' else project_dir / "build.bat"
+        content = build_script.read_text()
+
+        # MMC1 relocates the reset/NMI/IRQ vectors to file offset 0x2000A.
+        assert '0x2000A' in content
+        # Must match the mapper's own script byte-for-byte.
+        assert content == MMC1Mapper().generate_build_script(os.name == 'nt')
+
+    def test_mmc3_build_script_has_no_vector_fixup(self, project_dir, minimal_music_asm):
+        """MMC3 keeps the vectors in its fixed last bank, so the build script
+        must not carry an MMC1-style fixup (#18)."""
+        from mappers.mmc3 import MMC3Mapper
+
+        builder = NESProjectBuilder(str(project_dir))
+        builder.set_mapper(MMC3Mapper())
+        builder.prepare_project(str(minimal_music_asm))
+
+        build_script = project_dir / "build.sh" if os.name != 'nt' else project_dir / "build.bat"
+        content = build_script.read_text()
+
+        assert '0x2000A' not in content
+        assert content == MMC3Mapper().generate_build_script(os.name == 'nt')
+
 
 class TestDebugModeIntegration:
     """Test debug mode functionality."""

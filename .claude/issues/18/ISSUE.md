@@ -3,20 +3,13 @@
 **Severity:** HIGH · **Domain:** mappers · **Source:** AUDIT_MAPPERS_2026-06-28.md
 
 ## Description
-`prepare_project` unconditionally calls `_create_build_script_mmc3()`, which writes a hardcoded MMC3 `build.sh` with no post-process step. The generic `_create_build_script()` (which would call `mapper.generate_build_script()` and the MMC1 `generate_post_process_commands` vector relocation to file offset `0x2000A`) is defined but never invoked. An MMC1 project built via `build.sh` would link with vectors in the wrong place and brick on hardware. The MMC1 fixup offset (`0x1C010 + ($FFFA-$C000) = 0x2000A`) is correct — the bug is that it is unreachable.
+`prepare_project` unconditionally calls `_create_build_script_mmc3()`, which writes a hardcoded MMC3 `build.sh` with no post-process step. The generic `_create_build_script()` (which would call `mapper.generate_build_script()` and thus the MMC1 `generate_post_process_commands` that relocates reset/NMI/IRQ vectors to file offset `0x2000A`) is defined but never invoked.
 
 ## Evidence
-```
-project_builder.py:498   self._create_build_script_mmc3()   # always; ignores self.mapper
-project_builder.py:595   def _create_build_script(self):    # generic path: never called
-mmc1.py:116-120          generate_post_process_commands(...) # never reached
-```
-
-## Impact
-Any non-MMC3 mapper through `NESProjectBuilder` gets an MMC3 build script. For MMC1: missing vector relocation → brick if used. Latent trap; HIGH because pipeline currently always passes MMC3.
-
-## Related
-M-7, M-8. Hardware ref: `docs/MAPPER_MMC1_REFERENCE.md`.
+project_builder.py:498 self._create_build_script_mmc3()   # always; ignores self.mapper
+project_builder.py:595 def _create_build_script(self):    # generic path: never called
+project_builder.py:608 def _create_build_script_mmc3(self):
+mmc1.py:116-120 generate_post_process_commands(...) # vector fixup at 0x2000A: never reached
 
 ## Suggested Fix
-Call `self.mapper.generate_build_script(is_windows)`; fold `_create_build_script_mmc3` into `MMC3Mapper.generate_build_script`. Have `compiler/` run the mapper post-process too.
+Call `self.mapper.generate_build_script(is_windows)` so each mapper contributes its own script + post-process; delete or fold `_create_build_script_mmc3` into `MMC3Mapper.generate_build_script`.

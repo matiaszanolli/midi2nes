@@ -125,3 +125,31 @@ switch_dpcm_bank:
     sta $8001
     rts
 """
+
+    def generate_build_script(self, is_windows: bool = False) -> str:
+        """MMC3 builds with debug symbols (-g) and fails fast on toolchain errors.
+
+        MMC3 needs no vector fixup (the fixed last bank already holds the
+        vectors at $E000-$FFFF), so there is no post-process step.
+        """
+        if is_windows:
+            return (
+                "@echo off\n"
+                "echo Compiling MMC3 Audio Engine...\n"
+                "ca65 main.asm -g -o main.o\n"
+                "if %errorlevel% neq 0 exit /b %errorlevel%\n"
+                "ca65 music.asm -g -o music.o\n"
+                "if %errorlevel% neq 0 exit /b %errorlevel%\n"
+                "ld65 -C nes.cfg -o game.nes main.o music.o\n"
+                "if %errorlevel% neq 0 exit /b %errorlevel%\n"
+                "echo Done!\n"
+            )
+        return (
+            "#!/bin/bash\n"
+            "set -e\n"
+            "echo \"Compiling MMC3 Audio Engine...\"\n"
+            "ca65 main.asm -g -o main.o\n"
+            "ca65 music.asm -g -o music.o\n"
+            "ld65 -C nes.cfg -o game.nes main.o music.o\n"
+            "echo \"Done!\"\n"
+        )
