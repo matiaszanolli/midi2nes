@@ -626,5 +626,55 @@ class TestPatternSimilarity(unittest.TestCase):
         self.assertEqual(variations[1]['volume_change'], -20, "Should detect volume change")
 
 
+class TestPatternParameterConsistency(unittest.TestCase):
+    """Both pattern-detection entry points (the `detect-patterns` subcommand and
+    the default full pipeline) must use identical length bounds so their JSON
+    artifacts agree for the same input (#19)."""
+
+    def test_shared_constants_match_detector_defaults(self):
+        import main
+        self.assertEqual(main.PATTERN_MIN_LENGTH, 3)
+        self.assertEqual(main.PATTERN_MAX_LENGTH, 12)
+
+    def test_both_entry_points_use_shared_constants(self):
+        import inspect
+        import main
+
+        src_detect = inspect.getsource(main.run_detect_patterns)
+        src_pipeline = inspect.getsource(main.run_full_pipeline)
+
+        for src, name in ((src_detect, 'run_detect_patterns'),
+                          (src_pipeline, 'run_full_pipeline')):
+            self.assertIn('PATTERN_MIN_LENGTH', src,
+                          f"{name} must use the shared min-length constant")
+            self.assertIn('PATTERN_MAX_LENGTH', src,
+                          f"{name} must use the shared max-length constant")
+            # No divergent hardcoded literals left behind.
+            self.assertNotIn('max_pattern_length=12', src,
+                             f"{name} must not hardcode max_pattern_length")
+            self.assertNotIn('min_pattern_length=3', src,
+                             f"{name} must not hardcode min_pattern_length")
+
+    def test_detectors_agree_for_same_input(self):
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        import main
+
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        events = [
+            {'frame': i, 'note': 60 + (i % 3) * 4, 'volume': 100}
+            for i in range(24)
+        ]
+
+        enhanced = EnhancedPatternDetector(
+            tempo_map, min_pattern_length=main.PATTERN_MIN_LENGTH,
+            max_pattern_length=main.PATTERN_MAX_LENGTH)
+        parallel = ParallelPatternDetector(
+            tempo_map, min_pattern_length=main.PATTERN_MIN_LENGTH,
+            max_pattern_length=main.PATTERN_MAX_LENGTH)
+
+        self.assertEqual(enhanced.min_pattern_length, parallel.min_pattern_length)
+        self.assertEqual(enhanced.max_pattern_length, parallel.max_pattern_length)
+
+
 if __name__ == '__main__':
     unittest.main()
