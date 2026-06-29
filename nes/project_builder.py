@@ -526,7 +526,7 @@ read_joypad_once:
             main_content += '\n.include "audio_engine.asm"\n'
             
         (self.project_path / "main.asm").write_text(main_content)
-        self._create_build_script_mmc3()
+        self._create_build_script()
 
         return True
 
@@ -645,21 +645,6 @@ irq:
             # Make the script executable on Unix-like systems
             script_path.chmod(script_path.stat().st_mode | 0o755)
             
-    def _create_build_script_mmc3(self):
-        """Creates a build script specifically for the MMC3 Macro Engine."""
-        is_windows = os.name == 'nt'
-        script_name = "build.bat" if is_windows else "build.sh"
-        script_path = self.project_path / script_name
-        
-        if is_windows:
-            script = "@echo off\necho Compiling MMC3 Audio Engine...\nca65 main.asm -g -o main.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o game.nes main.o music.o\nif %errorlevel% neq 0 exit /b %errorlevel%\necho Done!\n"
-        else:
-            script = "#!/bin/bash\nset -e\necho \"Compiling MMC3 Audio Engine...\"\nca65 main.asm -g -o main.o\nca65 music.asm -g -o music.o\nld65 -C nes.cfg -o game.nes main.o music.o\necho \"Done!\"\n"
-            
-        script_path.write_text(script)
-        if not is_windows:
-            script_path.chmod(script_path.stat().st_mode | 0o755)
-
     # Legacy methods for backwards compatibility
     @property
     def use_mmc1(self) -> bool:

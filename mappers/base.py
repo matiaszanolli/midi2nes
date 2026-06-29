@@ -107,10 +107,14 @@ class BaseMapper(ABC):
         if is_windows:
             script = "@echo off\n"
             script += "ca65 main.asm -o main.o\n"
+            script += "if %errorlevel% neq 0 exit /b %errorlevel%\n"
             script += "ca65 music.asm -o music.o\n"
+            script += "if %errorlevel% neq 0 exit /b %errorlevel%\n"
             script += "ld65 -C nes.cfg main.o music.o -o game.nes\n"
+            script += "if %errorlevel% neq 0 exit /b %errorlevel%\n"
         else:
             script = "#!/bin/bash\n"
+            script += "set -e\n"
             script += "ca65 main.asm -o main.o\n"
             script += "ca65 music.asm -o music.o\n"
             script += "ld65 -C nes.cfg main.o music.o -o game.nes\n"
