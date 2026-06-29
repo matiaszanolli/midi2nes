@@ -51,10 +51,12 @@ class CC65Wrapper:
         if not self._ld65_path:
             raise ToolchainError("ld65")
 
-        # Verify they actually work
+        # Verify they actually work. Probe via the resolved paths (not the bare
+        # command name) so we exercise the exact binary shutil.which found,
+        # avoiding a TOCTOU/PATH divergence (#14).
         try:
             result = subprocess.run(
-                ["ca65", "--version"],
+                [self._ca65_path, "--version"],
                 capture_output=True,
                 text=True,
             )
@@ -65,7 +67,7 @@ class CC65Wrapper:
 
         try:
             result = subprocess.run(
-                ["ld65", "--version"],
+                [self._ld65_path, "--version"],
                 capture_output=True,
                 text=True,
             )
@@ -85,16 +87,25 @@ class CC65Wrapper:
         """
         self.check_toolchain()
 
-        ca65_result = subprocess.run(
-            ["ca65", "--version"],
-            capture_output=True,
-            text=True,
-        )
-        ld65_result = subprocess.run(
-            ["ld65", "--version"],
-            capture_output=True,
-            text=True,
-        )
+        # Use the resolved paths and guard the runs so a binary that vanishes
+        # between check_toolchain() and here surfaces ToolchainError, not a raw
+        # FileNotFoundError (#14).
+        try:
+            ca65_result = subprocess.run(
+                [self._ca65_path, "--version"],
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            raise ToolchainError("ca65")
+        try:
+            ld65_result = subprocess.run(
+                [self._ld65_path, "--version"],
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            raise ToolchainError("ld65")
 
         return (
             ca65_result.stdout.strip() or ca65_result.stderr.strip(),
