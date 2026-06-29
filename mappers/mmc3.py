@@ -1,3 +1,5 @@
+from typing import Dict, List
+
 from .base import BaseMapper
 
 
@@ -6,6 +8,16 @@ class MMC3Mapper(BaseMapper):
     MMC3 Mapper implementation (iNES Mapper 004).
     Designed to support 512KB ROMs with large DPCM drum libraries.
     """
+
+    # PRG layout constants — the single source of truth for both the linker
+    # config emitted by generate_linker_config and the capacity pre-flight in
+    # validate_segment_sizes, so the two cannot drift (#126, #127).
+    SWAP_BANK_COUNT = 60          # PRG_BANK_00..59, shared by BANK_NN and DPCM_NN
+    PRG_WINDOW_SIZE = 0x2000      # 8 KB swap/window bank ($2000)
+    PRG_FIX_SIZE = 0x1FFA         # $E000-$FFF9 fixed bank (engine + direct tables + CODE)
+    # Conservative slice of the fixed bank the audio engine itself occupies, so
+    # the direct-export table budget is approximate (ld65 is the exact backstop).
+    FIXED_BANK_ENGINE_RESERVE = 2048
 
     @property
     def mapper_number(self) -> int:
@@ -45,15 +57,16 @@ class MMC3Mapper(BaseMapper):
 
         # Generate Banks 0-59 (DPCM and Padding)
         # All mapped to $C000 so their addresses resolve correctly for the APU!
-        for i in range(60):
-            lines.append(f'    PRG_BANK_{i:02d}: start = $C000,  size = $2000, type = ro, file = %O, fill = yes, fillval = $FF;')
+        win = f'${self.PRG_WINDOW_SIZE:04X}'
+        for i in range(self.SWAP_BANK_COUNT):
+            lines.append(f'    PRG_BANK_{i:02d}: start = $C000,  size = {win}, type = ro, file = %O, fill = yes, fillval = $FF;')
 
         # Last 4 banks mapped into CPU space on boot (Banks 60-63)
         lines.extend([
-            '    PRG_80:  start = $8000,  size = $2000, type = ro, file = %O, fill = yes, fillval = $FF;',
-            '    PRG_A0:  start = $A000,  size = $2000, type = ro, file = %O, fill = yes, fillval = $FF;',
-            '    PRG_C0:  start = $C000,  size = $2000, type = ro, file = %O, fill = yes, fillval = $FF;',
-            '    PRG_FIX: start = $E000,  size = $1FFA, type = ro, file = %O, fill = yes, fillval = $FF;',
+            f'    PRG_80:  start = $8000,  size = {win}, type = ro, file = %O, fill = yes, fillval = $FF;',
+            f'    PRG_A0:  start = $A000,  size = {win}, type = ro, file = %O, fill = yes, fillval = $FF;',
+            f'    PRG_C0:  start = $C000,  size = {win}, type = ro, file = %O, fill = yes, fillval = $FF;',
+            f'    PRG_FIX: start = $E000,  size = ${self.PRG_FIX_SIZE:04X}, type = ro, file = %O, fill = yes, fillval = $FF;',
             '    VECTORS: start = $FFFA,  size = $0006, type = ro, file = %O, fill = yes;',
             '}',
             '',
@@ -72,7 +85,7 @@ class MMC3Mapper(BaseMapper):
         # BANK_NN holds the per-channel sequence bytecode; fetch_sequence_byte
         # swaps the bank into the $A000 (R7) window and translates the pointer,
         # so a BANK_NN linked into PRG_BANK_NN (PRG-pool bank N) resolves correctly.
-        for i in range(60):
+        for i in range(self.SWAP_BANK_COUNT):
             lines.append(f'    DPCM_{i:02d}:   load = PRG_BANK_{i:02d}, type = ro, optional = yes;')
             lines.append(f'    BANK_{i:02d}:   load = PRG_BANK_{i:02d}, type = ro, optional = yes;')
 
@@ -153,3 +166,56 @@ switch_dpcm_bank:
             "ld65 -C nes.cfg -o game.nes main.o music.o\n"
             "echo \"Done!\"\n"
         )
+
+    def validate_segment_sizes(self, segment_sizes: Dict[str, int]) -> List[str]:
+        """Size each music.asm segment against the MMC3 region it loads into.
+
+        Unlike the flat base check, MMC3 spreads data across distinct regions
+        (see generate_linker_config): the direct-export frame tables (RODATA) and
+        any music CODE share the 8 KB fixed bank PRG_FIX; the instrument/macro
+        tables live in the fixed $8000 window (CODE_8000 -> PRG_80); and the
+        sequence bytecode (BANK_NN) and DPCM (DPCM_NN) share the 60-bank swap
+        pool. A single 510 KB ceiling is only meaningful for the banked path, so
+        checking the total (the old behavior) let an oversized direct export
+        through to a raw ld65 PRG_FIX overflow (#126).
+        """
+        errors: List[str] = []
+
+        # PRG_FIX holds the engine plus the direct tables (RODATA) and music CODE.
+        fixed_budget = self.PRG_FIX_SIZE - self.FIXED_BANK_ENGINE_RESERVE
+        fixed_used = segment_sizes.get('RODATA', 0) + segment_sizes.get('CODE', 0)
+        if fixed_used > fixed_budget:
+            errors.append(
+                f"fixed-bank data ({fixed_used:,} bytes of CODE+RODATA) exceeds the MMC3 "
+                f"PRG_FIX budget (~{fixed_budget:,} bytes). The direct (--no-patterns) export "
+                f"packs frame tables into the 8 KB fixed bank — enable pattern compression or "
+                f"shorten the song."
+            )
+
+        code_8000 = segment_sizes.get('CODE_8000', 0)
+        if code_8000 > self.PRG_WINDOW_SIZE:
+            errors.append(
+                f"instrument/macro tables (CODE_8000, {code_8000:,} bytes) exceed the MMC3 "
+                f"$8000 window ({self.PRG_WINDOW_SIZE:,} bytes)."
+            )
+
+        # BANK_NN (sequence bytecode) and DPCM_NN both load into the PRG_BANK pool.
+        max_bank = -1
+        for seg, size in segment_sizes.items():
+            if not seg or not (seg.startswith('BANK_') or seg.startswith('DPCM_')):
+                continue
+            if size > self.PRG_WINDOW_SIZE:
+                errors.append(f"segment {seg} ({size:,} bytes) exceeds the 8 KB bank size "
+                              f"({self.PRG_WINDOW_SIZE:,} bytes).")
+            try:
+                max_bank = max(max_bank, int(seg.rsplit('_', 1)[1]))
+            except (IndexError, ValueError):
+                pass
+        if max_bank >= self.SWAP_BANK_COUNT:
+            errors.append(
+                f"music data needs bank {max_bank}, but MMC3 defines only {self.SWAP_BANK_COUNT} "
+                f"swap banks (BANK_00..{self.SWAP_BANK_COUNT - 1}). The sequence/DPCM data is too "
+                f"large for MMC3."
+            )
+
+        return errors

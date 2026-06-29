@@ -134,6 +134,26 @@ class TestCA65Export(unittest.TestCase):
             if test_output.exists():
                 test_output.unlink()
 
+    def test_bytecode_export_caps_sequence_bank_count(self):
+        # Regression (MAP-2 / #127): the macro-bytecode serializer must refuse to
+        # roll past the last MMC3 swap bank (BANK_00..59) instead of emitting a
+        # .segment ld65 has no MEMORY region for. Patch the bank count down so a
+        # modest song overflows, and assert a clear exporter error.
+        from unittest.mock import patch
+        from mappers.mmc3 import MMC3Mapper
+        frames = {'pulse1': {str(i): {'note': 60 + (i % 24), 'volume': 8 + (i % 7)}
+                             for i in range(6000)}}
+        patterns = {'p0': {'events': [{'note': 60, 'volume': 15}]}}
+        out = Path("test_bankcap.asm")
+        try:
+            with patch.object(MMC3Mapper, 'SWAP_BANK_COUNT', 1):
+                with self.assertRaises(ValueError) as ctx:
+                    self.exporter.export_tables_with_patterns(frames, patterns, {}, str(out))
+            self.assertIn("bank budget", str(ctx.exception).lower())
+        finally:
+            if out.exists():
+                out.unlink()
+
     def test_dmc_level_clamped_to_7bit(self):
         # Regression (NH-05 / #24): $4011 is a 7-bit register; an out-of-range
         # dmc_level must be masked to 0-127 so CMD_DMC_LEVEL never sets bit 7 or
