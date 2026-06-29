@@ -104,6 +104,84 @@ def check_mapper_capacity(music_asm_path, mapper):
     return data_size
 
 
+def _restore_backup(output_rom, backup_path):
+    """Restore a pre-build backup ROM over the (now-invalid) output."""
+    if backup_path and Path(backup_path).exists():
+        print(f"  💊 Restoring backup ROM: {Path(backup_path).name} → {Path(output_rom).name}")
+        shutil.copy2(backup_path, output_rom)
+        print(f"  ✅ Original ROM restored from backup")
+
+
+def validate_rom(output_rom, backup_path=None, verbose=False):
+    """Post-build ROM validation shared by the full pipeline and the `compile`
+    subcommand (#15) so step-by-step ROMs get the same gate as the default path.
+
+    Returns True if the ROM is bootable. On a boot-fatal defect (invalid
+    $FFFA-$FFFF vectors or no APU init) it restores the backup and returns False
+    (#6). Non-fatal health issues are warned but pass. A diagnostics failure is
+    warned (verbose) and treated as non-blocking, matching prior behavior.
+    """
+    try:
+        from debug.rom_diagnostics import ROMDiagnostics
+        rom_result = ROMDiagnostics(verbose=False).diagnose_rom(str(output_rom))
+    except Exception as e:
+        if verbose:
+            print(f"  Warning: ROM validation failed: {e}")
+        return True
+
+    fatal_defects = []
+    if not rom_result.reset_vectors_valid:
+        fatal_defects.append("invalid reset/NMI/IRQ vectors ($FFFA-$FFFF)")
+    if rom_result.apu_pattern_count == 0:
+        fatal_defects.append("no APU initialization code found")
+    if fatal_defects:
+        print("[ERROR] ROM validation failed - unbootable ROM:")
+        for defect in fatal_defects:
+            print(f"    - {defect}")
+        _restore_backup(output_rom, backup_path)
+        return False
+
+    if rom_result.overall_health not in ["HEALTHY", "GOOD"]:
+        print(f"⚠️  ROM health check: {rom_result.overall_health}")
+        print(f"  Issues found: {len(rom_result.issues)}")
+        for issue in rom_result.issues[:3]:
+            print(f"    - {issue}")
+        if rom_result.overall_health == "ERROR":
+            print("[ERROR] ROM validation failed - ROM is invalid")
+            _restore_backup(output_rom, backup_path)
+            return False
+    else:
+        print(f"  ✓ ROM Health: {rom_result.overall_health}")
+        print(f"  ✓ APU Patterns: {rom_result.apu_pattern_count}")
+        print(f"  ✓ Assembly Score: {rom_result.assembly_code_score}/220")
+    return True
+
+
+def run_compile(args):
+    """Compile a prepared NES project to a ROM and validate it (#15).
+
+    Gives the step-by-step path the same compile + post-build validation the
+    full pipeline runs, instead of stopping at `prepare` and building by hand.
+    """
+    project_path = Path(args.input)
+    output_rom = Path(args.output)
+    if not project_path.is_dir():
+        print(f"[ERROR] Prepared project directory not found: {project_path}")
+        sys.exit(1)
+
+    print(f"Compiling NES ROM from {project_path} ...")
+    if not compile_rom(project_path, output_rom):
+        print("[ERROR] ROM compilation failed")
+        sys.exit(1)
+
+    if not getattr(args, 'skip_validation', False):
+        print("Validating ROM...")
+        if not validate_rom(output_rom, verbose=getattr(args, 'verbose', False)):
+            sys.exit(1)
+
+    print(f"[OK] Compiled ROM -> {output_rom}")
+
+
 def run_prepare(args):
     from mappers.mmc3 import MMC3Mapper
     mapper = MMC3Mapper()
@@ -113,12 +191,24 @@ def run_prepare(args):
         print(f"[ERROR] {e}")
         sys.exit(1)
     builder = NESProjectBuilder(args.output, mapper=mapper)
-    if builder.prepare_project(args.input):
-        print(f" Prepared NES project -> {args.output}")
-        print(" Ready for CC65 compilation!")
-        print(" To build:")
-        print(f" 1. cd {args.output}")
-        print(" 2. ./build.sh  (or build.bat on Windows)")
+    # prepare_project may raise (bad path/permissions) or return falsy; either
+    # way surface a clean nonzero exit instead of an uncaught traceback or a
+    # silent exit 0 on failure (#15).
+    try:
+        prepared = builder.prepare_project(args.input)
+    except Exception as e:
+        print(f"[ERROR] Failed to prepare NES project: {e}")
+        sys.exit(1)
+    if not prepared:
+        print("[ERROR] Failed to prepare NES project")
+        sys.exit(1)
+    print(f" Prepared NES project -> {args.output}")
+    print(" Ready for CC65 compilation!")
+    print(" To build:")
+    print(f" 1. cd {args.output}")
+    print(" 2. ./build.sh  (or build.bat on Windows)")
+    print(" Or compile + validate in one step: python main.py compile "
+          f"{args.output} <output.nes>")
 
 def run_export(args):
     """Export function supporting multiple formats with pattern compression"""
@@ -423,26 +513,16 @@ def run_full_pipeline(args):
             print("[5/7] Exporting to CA65 assembly...")
             music_asm = temp_path / "music.asm"
             
-            # Convert pattern references format for CA65 exporter
-            # From: {'pattern_id': [positions]} 
-            # To: {'frame_str': ('pattern_id', offset)}
-            # IMPORTANT: Map pattern positions back to actual frame numbers
-            ca65_references = {}
-            for pattern_id, positions in pattern_result['references'].items():
-                for i, position in enumerate(positions):
-                    # Map event position to actual frame number
-                    if position < len(events):
-                        actual_frame = events[position]['frame']
-                        ca65_references[str(actual_frame)] = (pattern_id, i)
-                    else:
-                        # Fallback if position is out of range
-                        ca65_references[str(position)] = (pattern_id, i)
-
+            # The CA65 exporter emits every byte from `frames`; the detector's
+            # pattern `references` are analysis/metrics only and are never read by
+            # export_tables_with_patterns (#4). `patterns` truthiness merely
+            # selects the macro-bytecode serializer over direct export, so pass an
+            # empty references dict rather than building a table nothing consumes.
             exporter = CA65Exporter()
             exporter.export_tables_with_patterns(
                 frames,
                 pattern_result['patterns'],
-                ca65_references,
+                {},
                 str(music_asm),
                 standalone=False  # We'll create our own project structure
             )
@@ -530,62 +610,13 @@ def run_full_pipeline(args):
 
                 sys.exit(1)
 
-            # Step 8: Validate ROM (NEW - Critical for catching ROM validity issues)
+            # Step 8: Validate ROM — shared with the `compile` subcommand (#15)
+            # so step-by-step ROMs get the same boot-fatal gate (#6).
             skip_validation = hasattr(args, 'skip_validation') and args.skip_validation
             if not skip_validation:
                 print("[8/8] Validating ROM...")
-                try:
-                    from debug.rom_diagnostics import ROMDiagnostics
-
-                    diagnostics = ROMDiagnostics(verbose=False)
-                    rom_result = diagnostics.diagnose_rom(str(output_rom))
-
-                    # Hard-fail gate for boot-fatal defects (#6). overall_health
-                    # is only "ERROR" for an unreadable file, so a successfully
-                    # linked ROM with bad $FFFA-$FFFF vectors or no APU init would
-                    # otherwise land FAIR/POOR and still ship as SUCCESS — yet it
-                    # crashes the CPU on hardware. Treat these as fatal regardless
-                    # of the health tier.
-                    fatal_defects = []
-                    if not rom_result.reset_vectors_valid:
-                        fatal_defects.append("invalid reset/NMI/IRQ vectors ($FFFA-$FFFF)")
-                    if rom_result.apu_pattern_count == 0:
-                        fatal_defects.append("no APU initialization code found")
-                    if fatal_defects:
-                        print("[ERROR] ROM validation failed - unbootable ROM:")
-                        for defect in fatal_defects:
-                            print(f"    - {defect}")
-                        if backup_path and backup_path.exists():
-                            print(f"  💊 Restoring backup ROM: {backup_path.name} → {output_rom.name}")
-                            shutil.copy2(backup_path, output_rom)
-                            print(f"  ✅ Original ROM restored from backup")
-                        sys.exit(1)
-
-                    if rom_result.overall_health not in ["HEALTHY", "GOOD"]:
-                        print(f"⚠️  ROM health check: {rom_result.overall_health}")
-                        print(f"  Issues found: {len(rom_result.issues)}")
-                        for issue in rom_result.issues[:3]:
-                            print(f"    - {issue}")
-
-                        if rom_result.overall_health == "ERROR":
-                            print("[ERROR] ROM validation failed - ROM is invalid")
-
-                            # Restore backup if validation failed
-                            if backup_path and backup_path.exists():
-                                print(f"  💊 Restoring backup ROM: {backup_path.name} → {output_rom.name}")
-                                shutil.copy2(backup_path, output_rom)
-                                print(f"  ✅ Original ROM restored from backup")
-
-                            sys.exit(1)
-                    else:
-                        print(f"  ✓ ROM Health: {rom_result.overall_health}")
-                        print(f"  ✓ APU Patterns: {rom_result.apu_pattern_count}")
-                        print(f"  ✓ Assembly Score: {rom_result.assembly_code_score}/220")
-                except Exception as e:
-                    if args.verbose:
-                        print(f"  Warning: ROM validation failed: {str(e)}")
-                    # Don't exit on validation error, just warn
-                    pass
+                if not validate_rom(output_rom, backup_path, verbose=getattr(args, 'verbose', False)):
+                    sys.exit(1)
 
             # Success!
             rom_size = output_rom.stat().st_size
@@ -681,6 +712,15 @@ def main():
     p_prepare.add_argument('output', help='Output project directory')
     p_prepare.set_defaults(func=run_prepare)
 
+    # `compile` gives the step-by-step path the same compile + validation gate as
+    # the full pipeline, instead of stopping at `prepare` (#15).
+    p_compile = subparsers.add_parser('compile', help='Compile a prepared NES project to a ROM and validate it')
+    p_compile.add_argument('input', help='Prepared NES project directory')
+    p_compile.add_argument('output', help='Output .nes ROM path')
+    p_compile.add_argument('--skip-validation', action='store_true', help='Skip post-compile ROM validation')
+    p_compile.add_argument('--verbose', '-v', action='store_true', help='Verbose validation output')
+    p_compile.set_defaults(func=run_compile)
+
     # Song bank management commands
     p_song = subparsers.add_parser(
         'song',
@@ -727,7 +767,7 @@ def main():
     import sys
     
     # Check if first argument (if any) is a subcommand
-    subcommands = ['parse', 'map', 'config', 'frames', 'detect-patterns', 'export', 'prepare', 'song', 'benchmark']
+    subcommands = ['parse', 'map', 'config', 'frames', 'detect-patterns', 'export', 'prepare', 'compile', 'song', 'benchmark']
     
     # Handle special cases first
     if len(sys.argv) == 1:

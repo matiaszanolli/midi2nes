@@ -161,6 +161,26 @@ class TestCA65Export(unittest.TestCase):
             if test_output.exists():
                 test_output.unlink()
                 
+    def test_references_do_not_affect_output(self):
+        # Regression (F-01 / #4): export_tables_with_patterns never consumes
+        # `references` — output bytes derive only from frames+patterns. Two very
+        # different references dicts must produce byte-identical assembly.
+        out_a = Path("test_ref_a.asm")
+        out_b = Path("test_ref_b.asm")
+        try:
+            self.exporter.export_tables_with_patterns(
+                self.test_frames, self.test_patterns,
+                {'0': ('pattern_1', 0), '32': ('pattern_1', 1)}, out_a)
+            self.exporter.export_tables_with_patterns(
+                self.test_frames, self.test_patterns,
+                {}, out_b)  # empty references
+            self.assertEqual(out_a.read_text(), out_b.read_text(),
+                             "references must not change emitted bytes")
+        finally:
+            for p in (out_a, out_b):
+                if p.exists():
+                    p.unlink()
+
     def test_sweep_disabled_in_direct_init_paths(self):
         # Regression (NH-07 / #31): both direct-export init paths must disable the
         # pulse sweep units ($4001/$4005). Standalone emits a reset proc;

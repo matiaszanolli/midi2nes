@@ -830,10 +830,15 @@ class CA65Exporter(BaseExporter):
         return best_compression
 
     def export_tables_with_patterns(self, frames, patterns, references, output_path, standalone=True, mapper=None):
-        """Export with pattern compression - PROPERLY FIXED VERSION
+        """Export NES audio assembly from per-frame channel data.
 
-        Strategy: Expand pattern references back into full frame data, then use direct export.
-        This maintains pattern detection for analysis while avoiding complex playback logic.
+        All emitted bytes derive from ``frames``. ``patterns`` is used only as a
+        boolean switch: when empty, export the direct frame tables; when non-empty,
+        emit the MMC3 macro-bytecode serializer (whose compression comes from
+        macro/instrument de-duplication, not from the pattern detector). The
+        ``references`` argument is **not consumed** — the detector's pattern
+        references are analysis/metrics only and have no effect on output bytes
+        (#4). It is retained for call-site compatibility.
         """
         if not patterns:
             return self.export_direct_frames(frames, output_path, standalone, mapper)

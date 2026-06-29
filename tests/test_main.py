@@ -260,23 +260,23 @@ class TestRunPrepare:
         assert mock_builder_class.call_args[0][0] == str(self.test_output)
         mock_builder.prepare_project.assert_called_once_with(str(self.test_input))
         
-        # Check all print calls
-        assert mock_print.call_count == 5
+        # Check success print calls (now includes the `compile` hint line, #15)
+        assert mock_print.call_count == 6
         mock_print.assert_any_call(f" Prepared NES project -> {args.output}")
         mock_print.assert_any_call(" Ready for CC65 compilation!")
-    
+
     @patch('main.NESProjectBuilder')
     def test_run_prepare_failure(self, mock_builder_class):
-        """Test failed project preparation."""
+        """Test failed project preparation exits nonzero (#15), not exit 0 silently."""
         mock_builder = Mock()
         mock_builder.prepare_project.return_value = False
         mock_builder_class.return_value = mock_builder
-        
+
         args = Namespace(input=str(self.test_input), output=str(self.test_output))
-        
-        run_prepare(args)
-        
-        # Should not print success messages when preparation fails
+
+        with pytest.raises(SystemExit) as exc:
+            run_prepare(args)
+        assert exc.value.code == 1
         mock_builder_class.assert_called_once()
         assert mock_builder_class.call_args[0][0] == str(self.test_output)
 
