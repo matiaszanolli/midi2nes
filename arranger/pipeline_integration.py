@@ -104,12 +104,19 @@ def analyze_midi_events(
     for track_idx, (track_name, events) in enumerate(midi_events.items()):
         analyzer.set_track_name(track_idx, str(track_name))
 
-        # Check for drum track
-        if 'drum' in str(track_name).lower() or track_name == '9' or track_name == 9:
+        # Check for drum track. GM percussion lives on MIDI channel 10 (index 9),
+        # which parser_fast now preserves on each event (#85); fall back to the
+        # track-name heuristic for sources that don't carry channel info.
+        track_channel = next(
+            (e['channel'] for e in events if e.get('channel') is not None), None
+        )
+        if (track_channel == 9
+                or 'drum' in str(track_name).lower()
+                or track_name == '9' or track_name == 9):
             analyzer.mark_drum_track(track_idx)
 
         # Group note_on and note_off events
-        active_notes: Dict[int, Tuple[int, int]] = {}  # note -> (start_frame, velocity)
+        active_notes: Dict[int, Tuple[int, int, int]] = {}  # note -> (start_frame, velocity, channel)
         track_notes: List[NoteInfo] = []
         program = 0
 
@@ -117,32 +124,35 @@ def analyze_midi_events(
             frame = event.get('frame', 0)
             note = event.get('note', 60)
             velocity = event.get('velocity', event.get('volume', 100))
+            channel = event.get('channel', 0) or 0
 
             if velocity > 0:
                 # Note on
-                active_notes[note] = (frame, velocity)
+                active_notes[note] = (frame, velocity, channel)
             else:
                 # Note off
                 if note in active_notes:
-                    start_frame, start_vel = active_notes.pop(note)
+                    start_frame, start_vel, start_chan = active_notes.pop(note)
                     note_info = NoteInfo(
                         pitch=note,
                         velocity=start_vel,
                         start_frame=start_frame,
                         end_frame=frame,
+                        channel=start_chan,
                         program=program,
                     )
                     track_notes.append(note_info)
                     analyzer.add_note(track_idx, note_info)
 
         # Handle notes that never got a note-off (use default duration)
-        for note, (start_frame, velocity) in active_notes.items():
+        for note, (start_frame, velocity, channel) in active_notes.items():
             # Estimate end frame (e.g., 15 frames = 0.25 seconds)
             note_info = NoteInfo(
                 pitch=note,
                 velocity=velocity,
                 start_frame=start_frame,
                 end_frame=start_frame + 15,
+                channel=channel,
                 program=program,
             )
             track_notes.append(note_info)
