@@ -134,6 +134,62 @@ class TestCA65Export(unittest.TestCase):
             if test_output.exists():
                 test_output.unlink()
 
+    def test_encode_macro_offset_never_emits_control_bytes(self):
+        # Regression (EXP-01 / #77): a signed pitch/arp offset must never encode
+        # to $FE/$FF — those are the macro control bytes ($FF end, $FE loop) the
+        # engine and _compress_macro reserve. Every offset in the 8-bit signed
+        # range (and clamped out-of-range inputs) must map outside {$FE, $FF}.
+        for v in range(-128, 128):
+            b = self.exporter._encode_macro_offset(v)
+            self.assertNotIn(b, (0xFE, 0xFF), f"offset {v} -> reserved {b:#04x}")
+            self.assertTrue(0x00 <= b <= 0xFD)
+        self.assertNotIn(self.exporter._encode_macro_offset(200), (0xFE, 0xFF))
+        self.assertNotIn(self.exporter._encode_macro_offset(-200), (0xFE, 0xFF))
+        # The two colliding values snap to their nearest non-reserved neighbour;
+        # every other offset is left exactly as its two's-complement byte.
+        self.assertEqual(self.exporter._encode_macro_offset(-1), 0x00)   # was $FF
+        self.assertEqual(self.exporter._encode_macro_offset(-2), 0xFD)   # was $FE
+        self.assertEqual(self.exporter._encode_macro_offset(-3), 0xFD)
+        self.assertEqual(self.exporter._encode_macro_offset(0), 0x00)
+        self.assertEqual(self.exporter._encode_macro_offset(5), 0x05)
+        self.assertEqual(self.exporter._encode_macro_offset(127), 0x7F)
+        self.assertEqual(self.exporter._encode_macro_offset(-128), 0x80)
+
+    def test_pitch_macro_data_avoids_control_bytes(self):
+        # Regression (EXP-01 / #77): small downward pitch bends (offset -1, -2)
+        # used to encode to $FF/$FE *as data*, which the engine reads as
+        # end-of-macro / loop, truncating or desyncing the macro. Sustain a note
+        # across frames whose bends are -1, -2, -10 and assert the emitted pitch
+        # macro carries the snapped data ($00, $FD, $F6) with no in-band control
+        # byte before the trailing $FF terminator.
+        from nes.pitch_table import NES_NOTE_TABLE
+        note = 60
+        base = NES_NOTE_TABLE[note]
+        frames = {'pulse1': {
+            '0': {'note': note, 'volume': 15, 'pitch': base - 1},   # -> $FF (bug)
+            '1': {'note': note, 'volume': 15, 'pitch': base - 2},   # -> $FE (bug)
+            '2': {'note': note, 'volume': 15, 'pitch': base - 10},  # -> $F6 marker
+        }}
+        patterns = {'p0': {'events': [{'note': note, 'volume': 15}]}}
+        refs = {'0': ('p0', 0)}  # non-empty -> macro bytecode path
+        out = Path("test_pitch_ctrl.asm")
+        try:
+            self.exporter.export_tables_with_patterns(frames, patterns, refs, out)
+            output = out.read_text()
+            import re
+            rows = [[b.strip() for b in m.group(1).split(',')]
+                    for m in re.finditer(r'macro_pitch_\d+:\n    \.byte ([^\n]+)', output)]
+            ours = [r for r in rows if '$F6' in r]
+            self.assertTrue(ours, "expected a pitch macro carrying the $F6 marker")
+            row = ours[0]
+            self.assertEqual(row, ['$00', '$FD', '$F6', '$FF'])
+            # Everything before the trailing $FF terminator must be data-safe.
+            self.assertNotIn('$FE', row[:-1])
+            self.assertNotIn('$FF', row[:-1])
+        finally:
+            if out.exists():
+                out.unlink()
+
     def test_bytecode_export_caps_sequence_bank_count(self):
         # Regression (MAP-2 / #127): the macro-bytecode serializer must refuse to
         # roll past the last MMC3 swap bank (BANK_00..59) instead of emitting a

@@ -360,31 +360,16 @@ class TestRunExport:
         assert call_args[0][1] == {}  # empty patterns
         assert call_args[0][2] == {}  # empty references
     
-    @patch('main.NSFExporter')
-    @patch('builtins.print')
-    def test_run_export_nsf_format(self, mock_print, mock_exporter_class):
-        """Test NSF export format."""
-        mock_exporter = Mock()
-        mock_exporter_class.return_value = mock_exporter
-        
-        args = Namespace(
-            input=str(self.test_input),
-            output=str(self.test_output),
-            format="nsftxt",  # This should trigger NSF export
-            patterns=None
-        )
-        
-        run_export(args)
-        
-        mock_exporter_class.assert_called_once()
-        mock_exporter.export.assert_called_once()
-        
-        # Check arguments passed to NSF exporter
-        call_args = mock_exporter.export.call_args
-        assert call_args[1]['output_path'] == str(self.test_output)
-        assert call_args[1]['song_name'] == "MIDI2NES Export"
-        
-        mock_print.assert_called_once_with(f" Exported NSF -> {args.output}")
+    def test_export_rejects_nsf_format(self):
+        """Regression (#79): `--format nsf` used to be accepted by argparse but
+        dispatched on the impossible string "nsftxt", so it silently wrote
+        nothing. NSF is dropped from the choices until the exporter is real
+        (#81), so the parser must now reject it up front instead of no-oping."""
+        from main import main as main_entry
+        with patch('sys.argv', ['main.py', 'export', 'i.json', 'o.asm',
+                                 '--format', 'nsf']):
+            with pytest.raises(SystemExit):
+                main_entry()
 
 
 class TestRunDetectPatterns:

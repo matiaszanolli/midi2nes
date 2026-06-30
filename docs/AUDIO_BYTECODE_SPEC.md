@@ -40,6 +40,12 @@ Macros are lists of offsets or absolute values evaluated frame-by-frame.
 *   **Control Bytes in Macros:**
     *   `$FF`: End of macro (sustain last value).
     *   `$FE, <offset>`: Loop macro back to offset.
+*   **Reserved data values:** Because `$FF`/`$FE` are control bytes, signed
+    pitch/arp *data* offsets may never encode to them. The exporter snaps the two
+    colliding offsets to the nearest non-reserved byte — `-1` (`$FF`) → `0`
+    (`$00`) and `-2` (`$FE`) → `-3` (`$FD`) — so a small downward bend can never
+    be misread as an end/loop command mid-macro. For pitch these are period-unit
+    deltas, so the ≤1-unit nudge is sub-cent and inaudible. (#77)
 
 ---
 
