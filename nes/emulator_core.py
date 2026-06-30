@@ -120,8 +120,14 @@ class NESEmulatorCore:
                     if velocity <= 0:
                         continue
                     sample_id = e.get('sample_id', 0)
+                    # A DPCM sample_id is NOT a MIDI note, so it must not borrow
+                    # the 0-95 tone-note ceiling — that collapsed every id >= 94
+                    # to one wrong sample (#67). The real bound is the single-byte
+                    # frame `note` field: note = sample_id + 1 in [1, 255] (0 is the
+                    # rest sentinel), so sample_id addresses up to 254. The exporter
+                    # applies the same byte ceiling for the dpcm channel.
                     frame = {
-                        "note": min(95, sample_id + 1),
+                        "note": min(255, sample_id + 1),
                         "volume": 15,
                     }
                     if 'dmc_level' in e:

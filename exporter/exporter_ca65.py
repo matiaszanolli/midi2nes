@@ -704,8 +704,9 @@ class CA65Exporter(BaseExporter):
                 '    lda (temp_ptr),y',
                 '    cmp last_dpcm_note',
                 '    beq @done            ; unchanged - sample already triggered',
-                '    sta last_dpcm_note',
-                '    beq @done            ; note 0 -> nothing to trigger',
+                '    sta last_dpcm_note   ; NB: STA does not affect Z',
+                '    cmp #0               ; re-test the note (A still holds it); STA left the stale CMP flags (#66)',
+                '    beq @done            ; note 0 (rest) -> nothing to trigger, no dpcm_*_table[$FF] over-read',
                 '    ; New sample: sample_id = note - 1',
                 '    sec',
                 '    sbc #1',
@@ -978,9 +979,18 @@ class CA65Exporter(BaseExporter):
                 if frame_data and vol == 0:
                     note = 0
                     
-                if note > 95:
+                # The DPCM channel's `note` is sample_id + 1, not a MIDI note, so
+                # it is bounded only by the single-byte frame format (<= 255), not
+                # the 0-95 tone-note range — clamping it to 95 collapsed high-id
+                # drums to one wrong sample (#67). Tone channels keep the note
+                # ceiling. Either way `note` stays a single byte so the `${note:02X}`
+                # operand below can never widen past two hex digits.
+                if channel == 'dpcm':
+                    if note > 255:
+                        note = 255
+                elif note > 95:
                     note = 95
-                    
+
                 dmc_changed = False
                 if dmc_level is not None and dmc_level != current_dmc_level:
                     dmc_changed = True

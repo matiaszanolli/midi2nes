@@ -96,6 +96,62 @@ class TestNoiseDpcmReachAPU(unittest.TestCase):
         self.assertIn('sta $4013', content)   # DMC length
         self.assertIn('dpcm_note:', content)
 
+    def test_high_sample_id_not_clamped_to_note_95(self):
+        # Regression (D-04 / #67): a DPCM sample_id is not a MIDI note, so it must
+        # not borrow the 0-95 tone-note ceiling. sample_id 200 used to clamp to
+        # note 95 (sample_id 94) — a wrong drum. The bound is the single-byte
+        # frame note: note = sample_id + 1.
+        mapped = {'dpcm': [{'frame': 0, 'note': 36, 'velocity': 100, 'sample_id': 200}]}
+        frames = self.core.process_all_tracks(mapped)
+        self.assertEqual(frames['dpcm'][0]['note'], 201)   # not 95
+        # The byte format still caps at 255 so the emitted operand stays one byte.
+        big = {'dpcm': [{'frame': 0, 'note': 36, 'velocity': 100, 'sample_id': 9999}]}
+        self.assertEqual(self.core.process_all_tracks(big)['dpcm'][0]['note'], 255)
+
+    def test_bytecode_dpcm_high_note_survives_tone_note_still_clamped(self):
+        # Regression (D-04 / #67): the bytecode serializer's note clamp must be
+        # channel-aware — DPCM keeps its high sample-id note (bounded only by the
+        # byte format), while a tone channel still clamps to the 0-95 note range.
+        frames = {
+            'dpcm':   {'0': {'note': 201, 'volume': 15}},   # sample_id 200
+            'pulse1': {'0': {'note': 100, 'volume': 8}},    # tone note > 95
+        }
+        patterns = {'p0': {'events': [{'note': 10, 'volume': 8}], 'positions': [0]}}
+        refs = {'0': ('p0', 0)}
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            self.exporter.export_tables_with_patterns(frames, patterns, refs, out, standalone=False)
+            content = Path(out).read_text()
+        finally:
+            if os.path.exists(out):
+                os.remove(out)
+        dpcm_block = content.split('dpcm_sequence:')[1].split('\n\n')[0]
+        self.assertIn('Note 201', dpcm_block)   # not collapsed to 95
+        self.assertIn('$C9', dpcm_block)         # 201 emitted as a single byte
+        pulse_block = content.split('pulse1_sequence:')[1].split('_sequence:')[0]
+        self.assertIn('Note 95', pulse_block)    # tone note still clamped
+
+    def test_direct_play_dpcm_rest_guard_re_tests_note(self):
+        # Regression (D-03 / #66): the standalone play_dpcm rest guard tested the
+        # stale Z flag from `cmp last_dpcm_note` (STA does not affect Z), so a rest
+        # (note 0) that differs from the last note fell through to `sbc #1` -> y=$FF
+        # -> dpcm_*_table[$FF] over-read. The guard must re-set Z from the note.
+        mapped = {'dpcm': [{'frame': 0, 'note': 36, 'velocity': 100, 'sample_id': 1}]}
+        frames = self.core.process_all_tracks(mapped)
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            self.exporter.export_direct_frames(frames, out, standalone=True)
+            content = Path(out).read_text()
+        finally:
+            if os.path.exists(out):
+                os.remove(out)
+        proc = content.split('.proc play_dpcm')[1].split('.endproc')[0]
+        # Between storing last_dpcm_note and deriving sample_id (sbc #1), the note
+        # value must be re-tested so the rest (note 0) skips the trigger.
+        guard = proc[proc.index('sta last_dpcm_note'):proc.index('sbc #1')]
+        self.assertIn('cmp #0', guard)
+        self.assertIn('beq @done', guard)
+
 
 @unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")
 class TestTriangleControlByte(unittest.TestCase):
