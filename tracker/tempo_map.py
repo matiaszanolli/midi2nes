@@ -3,6 +3,7 @@ Enhanced TempoMap implementation for midi2nes
 Provides advanced tempo tracking, validation, and optimization features
 """
 
+import bisect
 import logging
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
@@ -85,55 +86,80 @@ class TempoMap:
         self.tempo_changes = [(0, initial_tempo)]
         self.ticks_per_beat = ticks_per_beat
         self._time_cache = {}
-        
+        # Lazily-built lookup index over the (sorted) tempo_changes:
+        # (tick_array, tempo_array, cumulative_ms_array, len). Invalidated to
+        # None whenever tempo_changes mutates. See _build_tempo_index (#113).
+        self._tempo_index = None
+
     def add_tempo_change(self, tick: int, tempo: int):
         """Add a tempo change at the specified tick"""
         self.tempo_changes.append((tick, tempo))
         self.tempo_changes.sort()
         self._time_cache = {}
-        
+        self._tempo_index = None
+
+    def _build_tempo_index(self):
+        """Precompute sorted tick boundaries and cumulative ms-from-tick-0 so
+        tempo / time lookups are O(log T) via bisect instead of O(T) (and the
+        per-tick frame calc O(log T) instead of O(T^2)). Rebuilt lazily after
+        any mutation of self.tempo_changes (#113)."""
+        changes = self.tempo_changes
+        n = len(changes)
+        ticks = [c[0] for c in changes]
+        tempos = [c[1] for c in changes]
+        cum_ms = [0.0] * n
+        total = np.float64(0)
+        for i in range(1, n):
+            seg_ticks = ticks[i] - ticks[i - 1]
+            # The segment [changes[i-1], changes[i]) runs at the previous tempo.
+            us_per_tick = np.float64(tempos[i - 1]) / self.ticks_per_beat
+            total = total + (seg_ticks * us_per_tick) / 1000.0
+            cum_ms[i] = float(total)
+        index = (ticks, tempos, cum_ms, n)
+        self._tempo_index = index
+        return index
+
+    def _get_tempo_index(self):
+        index = self._tempo_index
+        # Length guard is a cheap backstop in case a mutation site forgot to
+        # invalidate; explicit invalidation (set to None) is the primary path.
+        if index is None or index[3] != len(self.tempo_changes):
+            index = self._build_tempo_index()
+        return index
+
+    def _cumulative_ms(self, tick: int) -> float:
+        """Milliseconds from tick 0 to `tick`, using the precomputed index."""
+        ticks, tempos, cum_ms, _ = self._get_tempo_index()
+        i = bisect.bisect_right(ticks, tick) - 1
+        if i < 0:
+            i = 0
+        seg_ticks = tick - ticks[i]
+        us_per_tick = np.float64(tempos[i]) / self.ticks_per_beat
+        return cum_ms[i] + float((seg_ticks * us_per_tick) / 1000.0)
+
     def get_tempo_at_tick(self, tick: int) -> int:
-        """Get the active tempo at a specific tick"""
-        active_tempo = self.tempo_changes[0][1]
-        for change_tick, tempo in self.tempo_changes:
-            if change_tick <= tick:
-                active_tempo = tempo
-            else:
-                break
-        return active_tempo
-        
+        """Get the active tempo at a specific tick (O(log T) via bisect)."""
+        ticks, tempos, _, _ = self._get_tempo_index()
+        i = bisect.bisect_right(ticks, tick) - 1
+        if i < 0:
+            return tempos[0]
+        return tempos[i]
+
     def calculate_time_ms(self, start_tick: int, end_tick: int) -> float:
-        """Calculate time between ticks using numpy for better precision"""
+        """Calculate time between ticks using the cumulative-ms index.
+
+        time[start, end] == cumulative(end) - cumulative(start) because the
+        tempo segmentation is identical for both endpoints, so this is exact
+        and O(log T) instead of the old per-segment O(T^2) scan."""
         if (start_tick, end_tick) in self._time_cache:
             return self._time_cache[(start_tick, end_tick)]
 
         if start_tick == end_tick:
             return 0.0
 
-        # Convert to numpy float64 for better precision
-        total_time = np.float64(0)
-        current_tick = np.int64(start_tick)
-        end_tick = np.int64(end_tick)
-
-        while current_tick < end_tick:
-            current_tempo = self.get_tempo_at_tick(current_tick)
-            next_tempo_change = end_tick
-            
-            # Find next tempo change
-            for change_tick, _ in self.tempo_changes:
-                if change_tick > current_tick and change_tick < next_tempo_change:
-                    next_tempo_change = change_tick
-
-            # Calculate time for this segment
-            ticks = next_tempo_change - current_tick
-            us_per_tick = np.float64(current_tempo) / self.ticks_per_beat
-            segment_time = (ticks * us_per_tick) / 1000.0  # Convert to ms
-            total_time += segment_time
-            
-            current_tick = next_tempo_change
-
-        self._time_cache[(start_tick, end_tick)] = float(total_time)
-        return float(total_time)
+        result = self._cumulative_ms(end_tick) - self._cumulative_ms(start_tick)
+        self._time_cache[(start_tick, end_tick)] = result
+        return result
         
     def _ticks_to_ms(self, ticks: int, tempo_microseconds: int) -> float:
         """Convert ticks to milliseconds for a given tempo"""
@@ -221,6 +247,7 @@ class EnhancedTempoMap(TempoMap):
                 super().add_tempo_change(tick, tempo)
             self._time_cache = {}
             self._frame_cache = {}
+            self._tempo_index = None
             return
             
         # Create initial change
@@ -297,6 +324,7 @@ class EnhancedTempoMap(TempoMap):
         # Clear caches
         self._time_cache = {}
         self._frame_cache = {}
+        self._tempo_index = None
 
     def find_nearest_frame_aligned_tick(self, tick: int) -> int:
         """Find nearest frame-aligned tick"""
@@ -602,13 +630,15 @@ class EnhancedTempoMap(TempoMap):
             # 1. Clear any cached values
             self._time_cache = {}
             self._frame_cache = {}
-            
+            self._tempo_index = None
+
             # 2. Perform the alignment
             self._align_to_frames()
-                
+
         # Clear caches after optimization
         self._time_cache = {}
         self._frame_cache = {}
+        self._tempo_index = None
 
     def _find_frame_aligned_tick(self, target_time_ms: float) -> int:
         """Find tick that results in the target frame time using iterative approach"""

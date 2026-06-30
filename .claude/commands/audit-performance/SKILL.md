@@ -33,8 +33,10 @@ or LOW.
 - `parse_midi_to_frames` makes **two passes** over `mid.tracks` — one for `set_tempo`,
   one for notes. Verify neither pass re-parses per event (no nested scan of the track
   inside the per-message loop) and that `tempo_map.get_frame_for_tick` /
-  `get_tempo_at_tick` are O(1)-ish lookups, not a linear scan of all tempo changes per
-  note (that would make parsing O(notes × tempo_changes)).
+  `get_tempo_at_tick` are O(log T) lookups, not a linear scan of all tempo changes per
+  note (that would make parsing O(notes × tempo_changes)). Since #113 these are backed
+  by a lazily-built bisect index (`_build_tempo_index`) over the sorted `tempo_changes`,
+  with cumulative ms precomputed so `calculate_time_ms(0, tick)` is one bisect.
 - `parse_midi_to_frames_with_analysis` re-opens the file (`mido.MidiFile(midi_path)`)
   and **rebuilds the tempo map from scratch** after already parsing once — the comment
   literally says "could be cached from first pass". Redundant pass = real but bounded
