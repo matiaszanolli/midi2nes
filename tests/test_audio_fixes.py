@@ -629,5 +629,49 @@ class TestAssemblyCodeGeneration(unittest.TestCase):
                          f"{channel} should have @sustain label")
 
 
+class TestSameFrameNoteCollapse(unittest.TestCase):
+    """Regression (TEMPO-04 / #96): two note-ons that quantize to the same 60Hz
+    frame on a monophonic channel used to collapse — the later write silently
+    overwrote (and dropped) the earlier note. The collapse must now be a
+    deliberate, visible choice (loudest wins) rather than a silent last-write."""
+
+    def setUp(self):
+        self.core = NESEmulatorCore()
+
+    def _notes(self, frames):
+        return {f: d['note'] for f, d in frames.items()}
+
+    def test_louder_same_frame_note_wins_not_last(self):
+        # note 60 is louder than the later note 67, so it must survive; the old
+        # last-write-wins behaviour kept note 67 and dropped the louder note 60.
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            frames = self.core.compile_channel_to_frames(
+                [{'frame': 10, 'note': 60, 'volume': 120},
+                 {'frame': 10, 'note': 67, 'volume': 50}], 'pulse')
+        self.assertEqual(set(self._notes(frames).values()), {60})
+        # The drop is surfaced, not silent.
+        self.assertIn('dropped', buf.getvalue())
+
+    def test_distinct_frame_notes_unaffected(self):
+        # The collapse must not disturb notes on different frames: note 60 plays
+        # until note 67 starts at frame 12 (the normal truncation).
+        frames = self.core.compile_channel_to_frames(
+            [{'frame': 10, 'note': 60, 'volume': 100},
+             {'frame': 12, 'note': 67, 'volume': 100}], 'pulse')
+        self.assertEqual(self._notes(frames)[10], 60)
+        self.assertEqual(self._notes(frames)[11], 60)
+        self.assertEqual(self._notes(frames)[12], 67)
+
+    def test_collapse_applies_to_noise_channel(self):
+        # CHANNEL: the same collapse covers the noise branch of process_all_tracks,
+        # not just the tonal channels — two same-frame hits keep only one frame.
+        out = self.core.process_all_tracks(
+            {'noise': [{'frame': 5, 'note': 38, 'velocity': 40},
+                       {'frame': 5, 'note': 40, 'velocity': 90}]})
+        self.assertEqual(list(out['noise'].keys()), [5])
+
+
 if __name__ == '__main__':
     unittest.main()
