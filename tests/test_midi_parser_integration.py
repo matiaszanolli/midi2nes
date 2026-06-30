@@ -260,26 +260,26 @@ class TestMIDIParserIntegration(unittest.TestCase):
         expected_frame = 72
         self.assertEqual(note_event['frame'], expected_frame)
 
-    def test_invalid_tempo_handling(self):
-        """Test handling of invalid tempo changes"""
+    def test_fast_tempo_change_retained(self):
+        """Regression (TEMPO-02 / #94): a fast tempo (600 BPM) is a legitimate
+        tempo, not an error, so it must be retained rather than dropped by an
+        authoring-range cap. This test previously asserted the buggy behaviour —
+        the change was dropped and the note stayed at 120 BPM (frame 60)."""
         messages = [
-            MetaMessage('set_tempo', tempo=500000, time=0),  # 120 BPM
-            MetaMessage('set_tempo', tempo=100000, time=480),  # 600 BPM (invalid)
+            MetaMessage('set_tempo', tempo=500000, time=0),    # 120 BPM
+            MetaMessage('set_tempo', tempo=100000, time=480),  # 600 BPM (fast but valid)
             Message('note_on', note=60, velocity=64, time=480)
         ]
-        
-        midi_path = self.create_test_midi('invalid_tempo.mid', messages)
+
+        midi_path = self.create_test_midi('fast_tempo.mid', messages)
         result = parse_midi_to_frames(midi_path)
-        
-        # Get the first note event
+
         note_event = result['events']['track_0'][0]
-        
-        # Calculate expected frame:
-        # Since the second tempo change is invalid, it should be ignored
-        # 960 ticks at 120 BPM = 1000ms
-        # At 60fps, frame = 1000/16.67 ≈ 60 frames
-        expected_frame = 60
-        self.assertEqual(note_event['frame'], expected_frame)
+
+        # With the change retained: 0->480 at 120 BPM = 500ms, 480->960 at 600 BPM
+        # = 100ms, total 600ms. At 60fps, frame = 600/16.667 ≈ 36 (was 60 when the
+        # tempo was wrongly dropped).
+        self.assertEqual(note_event['frame'], 36)
 
 if __name__ == '__main__':
     unittest.main()

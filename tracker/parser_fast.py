@@ -13,13 +13,32 @@ def parse_midi_to_frames(midi_path):
     """
     mid = mido.MidiFile(midi_path)
 
-    # Initialize tempo map with minimal validation for performance
-    # CRITICAL: Use the MIDI file's ticks_per_beat for accurate timing
+    # SMPTE-division MIDI (division word bit 15 set) makes mido report
+    # ticks_per_beat as a negative value; zero is equally degenerate. Either
+    # makes us_per_tick <= 0 and yields negative frame indices that silently
+    # scramble the whole song (#93). Reject early with an actionable message
+    # rather than compiling garbage. (TempoMap.__init__ also guards this, but a
+    # parse-stage message points the user at the real cause.)
+    if mid.ticks_per_beat is None or mid.ticks_per_beat < 1:
+        raise ValueError(
+            f"Unsupported MIDI timing division: ticks_per_beat="
+            f"{mid.ticks_per_beat!r}. This file uses SMPTE frame/sub-frame "
+            f"timing; re-export it with metrical (PPQ) timing."
+        )
+
+    # Initialize tempo map with minimal validation for performance.
+    # CRITICAL: Use the MIDI file's ticks_per_beat for accurate timing.
+    # The tempo range is widened to the full musically-valid band and the
+    # change-ratio gate is disabled: those are authoring heuristics, not parse
+    # constraints, and the narrow 40-250 BPM / ratio-3.0 limits silently dropped
+    # legitimate largo/presto tempos and normal section-boundary jumps, leaving
+    # the song at the wrong tempo (#94).
     config = TempoValidationConfig(
-        min_tempo_bpm=40.0,
-        max_tempo_bpm=250.0,
+        min_tempo_bpm=1.0,
+        max_tempo_bpm=2000.0,
         min_duration_frames=2,
-        max_duration_frames=FRAME_RATE_HZ * 300  # Allow up to 5 minutes
+        max_duration_frames=FRAME_RATE_HZ * 300,  # Allow up to 5 minutes
+        max_tempo_change_ratio=float('inf')
     )
     tempo_map = EnhancedTempoMap(
         initial_tempo=500000,  # 120 BPM
@@ -27,10 +46,11 @@ def parse_midi_to_frames(midi_path):
         validation_config=config,
         optimization_strategy=None  # Disable expensive optimization
     )
-    
+
     track_events = defaultdict(list)
 
     # First pass: collect tempo changes efficiently
+    dropped_tempo_changes = 0
     for track in mid.tracks:
         current_tick = 0
         for msg in track:
@@ -44,8 +64,15 @@ def parse_midi_to_frames(midi_path):
                         TempoChangeType.IMMEDIATE
                     )
                 except TempoValidationError:
-                    # Skip invalid tempo changes silently for performance
+                    # With the widened config this should be rare; never drop a
+                    # tempo change silently (the song would play at the wrong
+                    # tempo from here on) — count it and warn after the pass (#94).
+                    dropped_tempo_changes += 1
                     continue
+
+    if dropped_tempo_changes:
+        print(f"Warning: dropped {dropped_tempo_changes} out-of-range tempo "
+              f"change(s); affected sections will play at the preceding tempo.")
 
     # Second pass: process notes efficiently
     for i, track in enumerate(mid.tracks):
@@ -103,19 +130,22 @@ def parse_midi_to_frames_with_analysis(midi_path):
     from tracker.loop_manager import EnhancedLoopManager
     from tracker.tempo_map import EnhancedTempoMap
     
-    # Create tempo map again (could be optimized with caching)
+    # Create tempo map again (could be optimized with caching). Same widened
+    # band / disabled ratio gate as the first pass so analysis sees the real
+    # tempos rather than the narrow 40-250 BPM subset (#94).
     config = TempoValidationConfig(
-        min_tempo_bpm=40.0,
-        max_tempo_bpm=250.0,
+        min_tempo_bpm=1.0,
+        max_tempo_bpm=2000.0,
         min_duration_frames=2,
-        max_duration_frames=FRAME_RATE_HZ * 300
+        max_duration_frames=FRAME_RATE_HZ * 300,
+        max_tempo_change_ratio=float('inf')
     )
     tempo_map = EnhancedTempoMap(
         initial_tempo=500000,
         validation_config=config,
         optimization_strategy=None
     )
-    
+
     # Rebuild tempo map (this could be cached from first pass)
     mid = mido.MidiFile(midi_path)
     for track in mid.tracks:

@@ -63,6 +63,61 @@ class TestParseMidiToFrames:
         mid.save(str(midi_path))
         return str(midi_path)
     
+    @staticmethod
+    def _us(bpm):
+        return int(round(60_000_000 / bpm))
+
+    def test_smpte_division_rejected(self):
+        # Regression (TEMPO-01 / #93): SMPTE-division MIDI makes mido report a
+        # negative ticks_per_beat, which produced negative frame indices. The
+        # parser must reject it up front instead of compiling garbage.
+        import struct
+        div = struct.pack('>h', -3200)  # division word bit 15 set => SMPTE
+        data = (b'MThd' + struct.pack('>I', 6) + struct.pack('>HH', 0, 1) + div +
+                b'MTrk' + struct.pack('>I', 4) + bytes([0x00, 0xFF, 0x2F, 0x00]))
+        path = self.temp_dir / "smpte.mid"
+        path.write_bytes(data)
+        with pytest.raises(ValueError):
+            parse_midi_to_frames(str(path))
+
+    def test_out_of_range_tempos_retained(self):
+        # Regression (TEMPO-02 / #94): a largo (30 BPM) and a fast (280 BPM)
+        # tempo are outside the old 40-250 band and were silently dropped, so the
+        # section kept the previous 120 BPM. They must now survive parsing.
+        for bpm in (30, 280):
+            tracks = [[
+                mido.MetaMessage('set_tempo', tempo=self._us(bpm), time=480),
+                mido.Message('note_on', channel=0, note=60, velocity=100, time=0),
+                mido.Message('note_off', channel=0, note=60, velocity=0, time=10),
+            ]]
+            path = self.create_test_midi(f"tempo_{bpm}.mid", tracks)
+            result = parse_midi_to_frames(path)
+            notes = [e for evs in result['events'].values()
+                     for e in evs if e['type'] == 'note_on']
+            assert notes, f"{bpm} BPM: expected a note_on"
+            assert notes[0]['tempo'] == self._us(bpm), (
+                f"{bpm} BPM tempo was dropped (got {notes[0]['tempo']}, "
+                f"expected {self._us(bpm)})")
+
+    def test_large_tempo_jump_retained(self):
+        # Regression (TEMPO-02 / #94): a normal section-boundary jump (200->60
+        # BPM, ratio 3.33) exceeded the old max_tempo_change_ratio of 3.0 and was
+        # dropped, leaving the section at 200 BPM. The ratio gate is an authoring
+        # heuristic, not a parse constraint, so the jump must be retained.
+        tracks = [[
+            mido.MetaMessage('set_tempo', tempo=self._us(200), time=480),
+            mido.MetaMessage('set_tempo', tempo=self._us(60), time=480),
+            mido.Message('note_on', channel=0, note=60, velocity=100, time=0),
+            mido.Message('note_off', channel=0, note=60, velocity=0, time=10),
+        ]]
+        path = self.create_test_midi("tempo_jump.mid", tracks)
+        result = parse_midi_to_frames(path)
+        notes = [e for evs in result['events'].values()
+                 for e in evs if e['type'] == 'note_on']
+        assert notes, "expected a note_on"
+        assert notes[0]['tempo'] == self._us(60), (
+            f"section-boundary tempo jump was dropped (got {notes[0]['tempo']})")
+
     def test_basic_midi_parsing(self):
         """Test basic MIDI file parsing"""
         midi_path = self.create_test_midi()
@@ -156,6 +211,7 @@ class TestParseMidiToFrames:
         # Create a mock MIDI file with invalid tempo
         with patch('mido.MidiFile') as mock_midi:
             mock_track = MagicMock()
+            mock_track.ticks_per_beat = 480  # valid metrical division (#93 guard)
             mock_track.tracks = [[
                 mido.MetaMessage('set_tempo', tempo=0, time=0),  # Invalid tempo
                 mido.Message('note_on', channel=0, note=60, velocity=64, time=0),
@@ -214,6 +270,7 @@ class TestParseMidiToFrames:
         """Test that problematic events are silently skipped"""
         with patch('mido.MidiFile') as mock_midi:
             mock_track = MagicMock()
+            mock_track.ticks_per_beat = 480  # valid metrical division (#93 guard)
             mock_track.tracks = [[
                 mido.Message('note_on', channel=0, note=60, velocity=64, time=0),
             ]]

@@ -10,11 +10,17 @@ from tracker.loop_manager import EnhancedLoopManager
 def parse_midi_to_frames(midi_path):
     mid = mido.MidiFile(midi_path)
     # Initialize with validation but NO optimization
+    # Full musically-valid tempo band with the change-ratio gate disabled: the
+    # narrow 40-250 BPM / ratio-3.0 limits are authoring heuristics, not parse
+    # constraints, and silently dropped legitimate largo/presto tempos and
+    # normal section-boundary jumps, leaving the song at the wrong tempo (#94,
+    # SIBLING of parser_fast).
     config = TempoValidationConfig(
-        min_tempo_bpm=40.0,
-        max_tempo_bpm=250.0,
+        min_tempo_bpm=1.0,
+        max_tempo_bpm=2000.0,
         min_duration_frames=2,
-        max_duration_frames=FRAME_RATE_HZ * 30  # 30 seconds
+        max_duration_frames=FRAME_RATE_HZ * 30,  # 30 seconds
+        max_tempo_change_ratio=float('inf')
     )
     tempo_map = EnhancedTempoMap(
         initial_tempo=500000,  # 120 BPM
