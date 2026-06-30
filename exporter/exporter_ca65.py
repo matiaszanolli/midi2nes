@@ -251,11 +251,13 @@ class CA65Exporter(BaseExporter):
         # Code segment with efficient playback routine
         lines.append('.segment "CODE"')
         lines.append('')
-        if has_dpcm:
-            # Sample parameter tables come from the DPCM packer (or the project
-            # builder's stubs), exactly as the bytecode engine consumes them.
-            lines.append('.import dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table')
-            lines.append('')
+        # NOTE: the DPCM sample tables (dpcm_bank_table/pitch/addr/len) are NOT
+        # imported here. They are appended to THIS music.asm by the DPCM packer
+        # (or stubbed by the project builder, which guarantees they exist), so the
+        # trigger code below references them as local labels. Importing a symbol
+        # the same module also defines is a ca65 "already an import" error — the
+        # collision that surfaced once DPCM actually packs (#140). The project
+        # builder adds the `.export` that makes them visible to other modules.
 
         # Add reset routine ONLY if standalone
         if standalone:

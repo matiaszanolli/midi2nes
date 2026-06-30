@@ -154,6 +154,25 @@ class TestCA65Export(unittest.TestCase):
             if out.exists():
                 out.unlink()
 
+    def test_direct_export_does_not_import_dpcm_tables(self):
+        # Regression (#140): the DPCM sample tables are defined in the same
+        # music.asm (the packer appends them, or the project builder stubs them),
+        # so the direct export must reference them as local labels. A leftover
+        # `.import dpcm_bank_table` collided with the packer's definition once
+        # DPCM actually packed ("Symbol ... is already an import").
+        frames = {'pulse1': {'0': {'note': 60, 'volume': 15}},
+                  'dpcm': {'0': {'note': 1, 'volume': 15}}}
+        out = Path("test_dpcm_noimport.asm")
+        try:
+            self.exporter.export_direct_frames(frames, str(out), standalone=False)
+            content = out.read_text()
+            self.assertNotIn('.import dpcm_bank_table', content)
+            # The trigger code still references the tables (as local labels).
+            self.assertIn('dpcm_bank_table', content)
+        finally:
+            if out.exists():
+                out.unlink()
+
     def test_dmc_level_clamped_to_7bit(self):
         # Regression (NH-05 / #24): $4011 is a 7-bit register; an out-of-range
         # dmc_level must be masked to 0-127 so CMD_DMC_LEVEL never sets bit 7 or

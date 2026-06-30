@@ -35,7 +35,23 @@ def resolve_dpcm_sample_path(filename, index_path):
     return None
 
 
-def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False):
+def used_dpcm_sample_ids(frames):
+    """Sample ids the DPCM channel of ``frames`` actually triggers.
+
+    DPCM frames encode the sample id as ``note = sample_id + 1`` (the engine
+    recovers ``sample_id = note - 1`` to index the lookup tables — #9/#65), so the
+    set a song references is exactly ``{note - 1 : note > 0}``. Used to pack only
+    the drums a song needs instead of the whole catalog (#140).
+    """
+    dpcm = frames.get('dpcm', {}) if frames else {}
+    return {
+        fd['note'] - 1
+        for fd in dpcm.values()
+        if isinstance(fd, dict) and fd.get('note', 0) > 0
+    }
+
+
+def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False, used_ids=None):
     """Resolve every entry in ``dpcm_index`` and add it to ``packer``.
 
     Shared by both DPCM packing call sites so the same robustness rules apply at
@@ -45,6 +61,11 @@ def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False):
       missing is skipped with an optional warning.
     - Samples longer than the NES 4081-byte DMC limit are truncated rather than
       raising, so one oversized sample never aborts the whole pack (#68).
+    - ``used_ids`` (a set of index ids): when given, only those samples are
+      packed, so a song ships just the drums it references rather than the whole
+      1923-sample catalog, which would overflow the 60-bank budget (#140). The
+      packer keeps absolute ids, so the positional tables stay aligned. ``None``
+      packs everything.
 
     Samples are added in ascending index-id order, matching the positional
     lookup tables the engine indexes by ``sample_id``. Returns
@@ -53,6 +74,8 @@ def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False):
     loaded = 0
     skipped = 0
     for sample in sorted(dpcm_index.values(), key=lambda s: int(s['id'])):
+        if used_ids is not None and int(sample['id']) not in used_ids:
+            continue
         sample_path = resolve_dpcm_sample_path(sample['filename'], index_path)
         if sample_path is None:
             skipped += 1
