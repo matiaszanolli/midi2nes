@@ -280,13 +280,20 @@ def run_export(args):
         # Pack DPCM samples for exported ASM
         try:
             from dpcm_sampler.dpcm_packer import DpcmPacker
-            from dpcm_sampler.generate_dpcm_index import load_dpcm_index_into_packer
+            from dpcm_sampler.generate_dpcm_index import (
+                load_dpcm_index_into_packer,
+                get_dpcm_sample_ids_from_frames,
+            )
             packer = DpcmPacker()
             dpcm_index_path = Path('dpcm_index.json')
             if dpcm_index_path.exists():
                 with open(dpcm_index_path, 'r') as f:
                     dpcm_index = json.load(f)
-                loaded_samples, _ = load_dpcm_index_into_packer(packer, dpcm_index, dpcm_index_path)
+                sample_ids = get_dpcm_sample_ids_from_frames(frames)
+                loaded_samples, _ = load_dpcm_index_into_packer(
+                    packer, dpcm_index, dpcm_index_path,
+                    sample_ids=sample_ids or None,
+                )
                 if loaded_samples == 0 and dpcm_index:
                     print(f" Warning: dpcm_index.json has {len(dpcm_index)} entries but none resolved to a file — DPCM tables will be empty (percussion silent).")
                 with open(args.output, 'a') as f:
@@ -557,7 +564,10 @@ def run_full_pipeline(args):
             print("[5.5/7] Packing DPCM samples...")
             try:
                 from dpcm_sampler.dpcm_packer import DpcmPacker
-                from dpcm_sampler.generate_dpcm_index import load_dpcm_index_into_packer
+                from dpcm_sampler.generate_dpcm_index import (
+                    load_dpcm_index_into_packer,
+                    get_dpcm_sample_ids_from_frames,
+                )
                 packer = DpcmPacker()
                 dpcm_index_path = Path('dpcm_index.json')
 
@@ -565,10 +575,12 @@ def run_full_pipeline(args):
                     with open(dpcm_index_path, 'r') as f:
                         dpcm_index = json.load(f)
 
-                    # Resolve + add every sample (truncating oversized ones, #68)
-                    # in ascending id order so they align with the engine's tables.
+                    # Only pack samples the song actually uses (#140).
+                    sample_ids = get_dpcm_sample_ids_from_frames(frames)
                     loaded_samples, _ = load_dpcm_index_into_packer(
-                        packer, dpcm_index, dpcm_index_path, verbose=args.verbose
+                        packer, dpcm_index, dpcm_index_path,
+                        sample_ids=sample_ids or None,
+                        verbose=args.verbose,
                     )
 
                     # Generate the lookup tables and binary includes, append to music.asm
