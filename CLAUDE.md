@@ -134,7 +134,7 @@ The full pipeline (`run_full_pipeline` in `main.py`) runs everything in a temp d
 
 - **`exporter/`** - Output format generators
   - `exporter_ca65.py` - CA65 assembly export with pattern compression
-  - `exporter_nsf.py` - NSF audio format
+  - `exporter_nsf.py` - NSF audio format — **not implemented**; `NSFExporter.export()` raises `NotImplementedError` (#81). `NSFHeader`/`NSFMacroPacker` are scaffolding for a future real implementation.
   - `exporter_famistudio.py` - FamiTracker export
 
 - **`dpcm_sampler/`** - Drum/sample processing

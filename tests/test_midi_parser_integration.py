@@ -169,16 +169,16 @@ class TestMIDIParserIntegration(unittest.TestCase):
         self.assertIn('patterns', pattern_data, "No patterns detected")
         self.assertIn('references', pattern_data, "No pattern references found")
         
-        # 6. Export to both formats
-        nsf_exporter = NSFExporter()
+        # 6. Export to the CA65 path. NSF export is explicitly unsupported
+        # (#81) — it must raise rather than write a non-playable file.
         ca65_exporter = CA65Exporter()
-        
         nsf_output = os.path.join(self.test_dir, "test_output.nsf")
         ca65_output = os.path.join(self.test_dir, "test_output.asm")
-        
-        nsf_result = nsf_exporter.export(frame_data, nsf_output)
-        self.assertTrue(os.path.exists(nsf_output), "NSF file not created")
-        
+
+        with self.assertRaises(NotImplementedError):
+            NSFExporter().export(frame_data, nsf_output)
+        self.assertFalse(os.path.exists(nsf_output), "NSF must not be written")
+
         ca65_result = ca65_exporter.export_tables_with_patterns(
             frame_data,
             pattern_data['patterns'],
@@ -186,9 +186,8 @@ class TestMIDIParserIntegration(unittest.TestCase):
             ca65_output
         )
         self.assertTrue(os.path.exists(ca65_output), "CA65 file not created")
-        
-        # 7. Verify binary output
-        self.verify_nsf_binary(nsf_output)
+
+        # 7. Verify CA65 output
         self.verify_ca65_assembly(ca65_output)
 
     # [Previous test methods remain unchanged]

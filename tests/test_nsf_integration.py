@@ -15,47 +15,19 @@ class TestNSFIntegration(unittest.TestCase):
         import shutil
         shutil.rmtree(self.temp_dir)
         
-    def test_nsf_header_generation(self):
-        """Test NSF header generation with various metadata"""
-        test_data = {
-            'title': 'Test Song',
-            'artist': 'Test Artist',
-            'copyright': '2024'
-        }
+    def test_nsf_export_unsupported(self):
+        """Regression (EXP-05 / #81): NSF export is not a playable NSF and is now
+        explicitly unsupported, so export_nsf must raise rather than write a file
+        whose header looks valid but whose body is JSON-as-data."""
         nsf_file = self.project_path / "test.nsf"
-        self.exporter.export_nsf(test_data, nsf_file)
-        
-        with open(nsf_file, 'rb') as f:
-            header = f.read(128)  # NSF header is 128 bytes
-            # Verify NSF magic number (5 bytes)
-            self.assertEqual(header[:5], b'NESM\x1a')
-            # Verify version number
-            self.assertEqual(header[5], 1)
-            # Verify number of songs
-            self.assertEqual(header[6], 1)
-            # Verify starting song
-            self.assertEqual(header[7], 1)
-            
-    def test_bank_switching(self):
-        """Test NSF bank switching configuration"""
-        large_data = {
-            'patterns': {f'pattern_{i}': {'data': [0] * 1024} for i in range(16)}
-        }
-        nsf_file = self.project_path / "large.nsf"
-        self.exporter.export_nsf(large_data, nsf_file)
-        
-        with open(nsf_file, 'rb') as f:
-            header = f.read(128)
-            # Verify bank switching is enabled
-            self.assertNotEqual(header[0x70:0x78], b'\x00' * 8)
-            
-    def test_load_address(self):
-        """Test NSF load address configuration"""
-        test_data = {'load_address': 0x8000}
-        nsf_file = self.project_path / "load.nsf"
-        self.exporter.export_nsf(test_data, nsf_file)
-        
-        with open(nsf_file, 'rb') as f:
-            header = f.read(128)
-            load_addr = int.from_bytes(header[0x08:0x0A], byteorder='little')
-            self.assertEqual(load_addr, 0x8000)
+        with self.assertRaises(NotImplementedError):
+            self.exporter.export_nsf({'title': 'Test Song', 'artist': 'A'}, nsf_file)
+        with self.assertRaises(NotImplementedError):
+            self.exporter.export_nsf({'patterns': {f'p{i}': {'data': [0]} for i in range(16)}}, nsf_file)
+        with self.assertRaises(NotImplementedError):
+            self.exporter.export_nsf({'load_address': 0x8000}, nsf_file)
+        self.assertFalse(nsf_file.exists())
+
+
+if __name__ == '__main__':
+    unittest.main()
