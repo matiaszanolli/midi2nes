@@ -435,7 +435,9 @@ class TestRunDetectPatterns:
         # Verify print calls
         assert mock_print.call_count == 2
         mock_print.assert_any_call(f" Detected patterns -> {args.output}")
-        mock_print.assert_any_call(" Compression ratio: 2.50")
+        # Regression (#17): compression_ratio is a percentage reduction, so it is
+        # printed with a `%` unit, never a bare number or an `x` multiplier.
+        mock_print.assert_any_call(" Compression ratio: 2.5% reduction")
     
     def test_run_detect_patterns_empty_frames(self):
         """Test pattern detection with empty frames."""

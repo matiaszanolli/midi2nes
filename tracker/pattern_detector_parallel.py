@@ -453,4 +453,4 @@ if __name__ == "__main__":
     result = parallel_detector.detect_patterns(test_events)
     
     print(f"Found {len(result['patterns'])} patterns")
-    print(f"Compression ratio: {result['stats']['compression_ratio']:.2f}")
+    print(f"Compression ratio: {result['stats']['compression_ratio']:.1f}% reduction")

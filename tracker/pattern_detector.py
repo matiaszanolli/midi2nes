@@ -757,7 +757,13 @@ class PatternCompressor:
         return hash(tuple((e['note'], e['volume']) for e in events))
     
     def calculate_compression_stats(self, original: Dict, compressed: Dict) -> Dict:
-        """Calculate compression statistics"""
+        """Calculate compression statistics.
+
+        NOTE: ``compression_ratio`` is a percentage *reduction* in [0, 100]
+        (``(original - compressed) / original * 100``), not a multiplier. Callers
+        must print it with a ``%`` label, never an ``x`` suffix — a 96% reduction
+        is not "96x" (#17).
+        """
         original_size = sum(
             len(p['events']) * len(p['positions']) 
             for p in original.values()

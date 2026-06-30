@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MIDI2NES is a high-performance MIDI to NES ROM compiler. It converts MIDI files into playable NES ROMs or generates audio data for homebrew NES games. The system features 120x faster parsing, multi-core pattern detection (95x compression), and complete NES ROM generation pipeline.
+MIDI2NES is a high-performance MIDI to NES ROM compiler. It converts MIDI files into playable NES ROMs or generates audio data for homebrew NES games. The system features 120x faster parsing, multi-core pattern detection (~95% data reduction), and complete NES ROM generation pipeline.
 
 ## Development Commands
 
@@ -168,7 +168,7 @@ The full pipeline (`run_full_pipeline` in `main.py`) runs everything in a temp d
 #### Pattern Detection & Compression
 - Uses `ParallelPatternDetector` for multi-core processing
 - Automatically detects CPU cores and distributes work
-- Achieves compression ratios up to 95.86x
+- Achieves up to ~95.86% pattern-data size reduction (a percentage reduction, not a multiplier — see `calculate_compression_stats`, #17)
 - Smart sampling for very large files (maintains quality)
 - Falls back gracefully if multiprocessing fails
 
