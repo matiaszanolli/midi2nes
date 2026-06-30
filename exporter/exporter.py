@@ -7,7 +7,9 @@ PATTERN_LEN = 64
 NOTE_TABLE = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-']
 
 def midi_note_to_ft(note):
-    octave = (note // 12) - 1
+    # FamiTracker only accepts octaves 0-7; low MIDI notes (0-11) gave octave -1
+    # and very high notes gave 8/9, which FamiTracker rejects (#82). Clamp.
+    octave = max(0, min(7, (note // 12) - 1))
     note_name = NOTE_TABLE[note % 12]
     return f"{note_name}{octave}"
 
@@ -34,12 +36,20 @@ def generate_famitracker_txt_with_patterns(frames_data, compressed_patterns, pat
             frame = pattern_index * rows_per_pattern + row
             frame_data = pattern_exporter.get_frame_data(frame)
             
+            empty_cell = "... .. .."
             if frame_data:
                 note_str = midi_note_to_ft(frame_data['note'])
-                vol = format(frame_data['volume'], 'X').rjust(2, '0')
-                lines.append(f"{row:02X} | {note_str} 00 {vol}")
+                vol = format(min(15, frame_data['volume']), 'X').rjust(2, '0')
+                first_cell = f"{note_str} 00 {vol}"
             else:
-                lines.append(f"{row:02X} | ... .. ..")
+                first_cell = empty_cell
+            # COLUMNS declares one effect column for each of the five 2A03
+            # channels, so every row must carry one cell per channel — emitting a
+            # single cell produced a malformed module (#82). The compressed source
+            # stream is mono, so the note lands on the first channel and the other
+            # four channels are empty.
+            cells = [first_cell] + [empty_cell] * 4
+            lines.append(f"{row:02X} | " + " | ".join(cells))
                 
         lines.append("")
     

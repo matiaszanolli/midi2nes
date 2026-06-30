@@ -30,6 +30,21 @@ class TestFamiStudioExport(unittest.TestCase):
         self.assertEqual(midi_note_to_famistudio(60), 'C-4')  # Middle C
         self.assertEqual(midi_note_to_famistudio(67), 'G-4')  # G4
         self.assertEqual(midi_note_to_famistudio(48), 'C-3')  # C3
+
+    def test_low_note_octave_clamped(self):
+        # Regression (EXP-06 / #82): low MIDI notes gave octave -1 (e.g. 'F--1'),
+        # which FamiStudio rejects. Octave must be clamped into 0-7.
+        self.assertEqual(midi_note_to_famistudio(5), 'F-0')    # was 'F--1'
+        self.assertEqual(midi_note_to_famistudio(0), 'C-0')    # was 'C--1'
+        self.assertEqual(midi_note_to_famistudio(119), 'B-7')  # high end clamps to 7
+
+    def test_dpcm_uses_note_field_without_keyerror(self):
+        # Regression (EXP-06 / #82): the frames dict encodes DPCM as note =
+        # sample_id + 1 (no 'sample_id' key), so reading event['sample_id'] raised
+        # KeyError. The exporter must recover sample_id from note.
+        frames = {'dpcm': {'0': {'note': 4, 'volume': 15}}}  # sample_id 3
+        output = generate_famistudio_txt(frames)  # must not raise
+        self.assertIn("C-4 3", output)
         
     def test_generate_famistudio_txt(self):
         output = generate_famistudio_txt(

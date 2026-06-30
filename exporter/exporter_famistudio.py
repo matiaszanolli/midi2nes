@@ -101,7 +101,14 @@ def generate_famistudio_txt(frames_data, project_name="MIDI2NES", author="", cop
                     volume = min(15, event['volume'])
                     current_pattern.append(f"F#4 {volume}")
                 elif channel == 'dpcm':
-                    sample_id = event['sample_id']
+                    # The frames dict the rest of the pipeline produces encodes
+                    # the DPCM trigger as `note = sample_id + 1`, not a raw
+                    # `sample_id` key, so reading event['sample_id'] raised
+                    # KeyError on real frames (#82). Prefer an explicit sample_id
+                    # if present, else recover it from note.
+                    sample_id = event.get('sample_id')
+                    if sample_id is None:
+                        sample_id = max(0, event.get('note', 1) - 1)
                     current_pattern.append(f"C-4 {sample_id}")
             else:
                 current_pattern.append("... ..")
@@ -158,7 +165,8 @@ def generate_famistudio_txt(frames_data, project_name="MIDI2NES", author="", cop
 def midi_note_to_famistudio(note):
     """Convert MIDI note to FamiStudio note format"""
     NOTE_NAMES = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-']
-    octave = (note // 12) - 1
+    # Clamp to FamiStudio's valid 0-7 octave range; low notes gave octave -1 (#82).
+    octave = max(0, min(7, (note // 12) - 1))
     note_name = NOTE_NAMES[note % 12]
     return f"{note_name}{octave}"
 
