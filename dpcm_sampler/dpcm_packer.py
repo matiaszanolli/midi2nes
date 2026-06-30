@@ -10,18 +10,30 @@ class DpcmPacker:
         self.sample_metadata = {}
         self.pending_samples = []
 
-    def add_sample(self, sample_id: str, file_path: str, pitch_rate: int = 15):
+    def add_sample(self, sample_id: str, file_path: str, pitch_rate: int = 15,
+                   truncate: bool = False):
         """Adds a sample to the packing queue, respecting NES 64-byte boundaries.
-        
+
         Args:
             sample_id: Unique identifier for the sample.
             file_path: Path to the raw .dmc file.
             pitch_rate: DPCM playback rate (0-15). Defaults to 15 (max pitch).
+            truncate: When True, a file longer than the NES DMC limit is clamped
+                to the first 4081 bytes (the maximum addressable length, L=255 ->
+                255*16+1) instead of raising. This keeps one oversized sample from
+                aborting the whole pack (#68); because the sample is truncated
+                rather than skipped, its lookup-table slot stays aligned with its
+                index id (the tables are positional — see generate_assembly).
         """
         size_bytes = os.path.getsize(file_path)
-        
+        incbin_size = None  # None => .incbin the whole file
+
         if size_bytes > 4081:
-            raise ValueError(f"Sample {sample_id} exceeds NES max length of 4081 bytes.")
+            if not truncate:
+                raise ValueError(f"Sample {sample_id} exceeds NES max length of 4081 bytes.")
+            # Clamp to the hardware maximum so the sample stays addressable.
+            size_bytes = 4081
+            incbin_size = 4081
 
         aligned_size = math.ceil(size_bytes / 64) * 64
 
@@ -30,7 +42,8 @@ class DpcmPacker:
             'path': file_path,
             'pitch': pitch_rate,
             'size': size_bytes,
-            'aligned_size': aligned_size
+            'aligned_size': aligned_size,
+            'incbin_size': incbin_size
         })
 
     def _pack_samples(self):
@@ -71,7 +84,8 @@ class DpcmPacker:
             "address_reg": dpcm_address_val,
             "length_reg": dpcm_length_val,
             "pitch_reg": dpcm_pitch_val,
-            "path": sample['path']
+            "path": sample['path'],
+            "incbin_size": sample.get('incbin_size')
         }
 
     def generate_assembly(self) -> str:
@@ -85,7 +99,13 @@ class DpcmPacker:
             for sample_id, path in samples:
                 asm_lines.append(f'    .align 64')
                 asm_lines.append(f'    dpcm_sample_{sample_id}:')
-                asm_lines.append(f'    .incbin "{path}"')
+                incbin_size = self.sample_metadata[sample_id].get('incbin_size')
+                if incbin_size is not None:
+                    # Bound the include so a truncated oversized sample emits
+                    # only its first 4081 bytes (#68).
+                    asm_lines.append(f'    .incbin "{path}", 0, {incbin_size}')
+                else:
+                    asm_lines.append(f'    .incbin "{path}"')
 
         asm_lines.append('\n.segment "RODATA"')
         asm_lines.append("; Lookup tables for DPCM triggers")

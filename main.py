@@ -252,22 +252,15 @@ def run_export(args):
         # Pack DPCM samples for exported ASM
         try:
             from dpcm_sampler.dpcm_packer import DpcmPacker
-            from dpcm_sampler.generate_dpcm_index import resolve_dpcm_sample_path
+            from dpcm_sampler.generate_dpcm_index import load_dpcm_index_into_packer
             packer = DpcmPacker()
             dpcm_index_path = Path('dpcm_index.json')
             if dpcm_index_path.exists():
                 with open(dpcm_index_path, 'r') as f:
                     dpcm_index = json.load(f)
-                sorted_samples = sorted(dpcm_index.values(), key=lambda x: x['id'])
-                loaded_samples = 0
-                for sample in sorted_samples:
-                    pitch_rate = sample.get('pitch', 15)
-                    sample_path = resolve_dpcm_sample_path(sample['filename'], dpcm_index_path)
-                    if sample_path is not None:
-                        packer.add_sample(str(sample['id']), str(sample_path.absolute()).replace('\\', '/'), pitch_rate)
-                        loaded_samples += 1
-                if loaded_samples == 0 and sorted_samples:
-                    print(f" Warning: dpcm_index.json has {len(sorted_samples)} entries but none resolved to a file — DPCM tables will be empty (percussion silent).")
+                loaded_samples, _ = load_dpcm_index_into_packer(packer, dpcm_index, dpcm_index_path)
+                if loaded_samples == 0 and dpcm_index:
+                    print(f" Warning: dpcm_index.json has {len(dpcm_index)} entries but none resolved to a file — DPCM tables will be empty (percussion silent).")
                 with open(args.output, 'a') as f:
                     f.write("\n\n" + packer.generate_assembly())
         except Exception as e:
@@ -536,31 +529,19 @@ def run_full_pipeline(args):
             print("[5.5/7] Packing DPCM samples...")
             try:
                 from dpcm_sampler.dpcm_packer import DpcmPacker
-                from dpcm_sampler.generate_dpcm_index import resolve_dpcm_sample_path
+                from dpcm_sampler.generate_dpcm_index import load_dpcm_index_into_packer
                 packer = DpcmPacker()
                 dpcm_index_path = Path('dpcm_index.json')
-                
+
                 if dpcm_index_path.exists():
                     with open(dpcm_index_path, 'r') as f:
                         dpcm_index = json.load(f)
-                        
-                    # Sort items by ID so they strictly align with the 6502 sequencer index order
-                    sorted_samples = sorted(dpcm_index.values(), key=lambda x: x['id'])
-                    
-                    loaded_samples = 0
-                    for sample in sorted_samples:
-                        pitch_rate = sample.get('pitch', 15)
-                        sample_path = resolve_dpcm_sample_path(sample['filename'], dpcm_index_path)
-                        if sample_path is not None:
-                            packer.add_sample(
-                                sample_id=str(sample['id']),
-                                file_path=str(sample_path.absolute()).replace('\\', '/'),
-                                pitch_rate=pitch_rate
-                            )
-                            loaded_samples += 1
-                        else:
-                            if args.verbose:
-                                print(f"  ⚠️ Warning: DPCM sample not found: {sample['filename']}")
+
+                    # Resolve + add every sample (truncating oversized ones, #68)
+                    # in ascending id order so they align with the engine's tables.
+                    loaded_samples, _ = load_dpcm_index_into_packer(
+                        packer, dpcm_index, dpcm_index_path, verbose=args.verbose
+                    )
 
                     # Generate the lookup tables and binary includes, append to music.asm
                     dpcm_asm = packer.generate_assembly()
@@ -569,8 +550,8 @@ def run_full_pipeline(args):
 
                     if loaded_samples > 0:
                         print(f"  ✓ Packed {loaded_samples} DPCM samples across {len(packer.banks)} banks")
-                    elif sorted_samples:
-                        print(f"  ⚠️ Warning: dpcm_index.json has {len(sorted_samples)} entries but none resolved to a file — DPCM tables will be empty (percussion silent).")
+                    elif dpcm_index:
+                        print(f"  ⚠️ Warning: dpcm_index.json has {len(dpcm_index)} entries but none resolved to a file — DPCM tables will be empty (percussion silent).")
                 else:
                     print("  ℹ️ No dpcm_index.json found, skipping DPCM packing.")
             except Exception as e:
