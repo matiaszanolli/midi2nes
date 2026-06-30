@@ -338,7 +338,7 @@ def run_detect_patterns(args):
     }
     Path(args.output).write_text(json.dumps(output, indent=2))
     print(f" Detected patterns -> {args.output}")
-    print(f" Compression ratio: {pattern_result['stats']['compression_ratio']:.2f}")
+    print(f" Compression ratio: {pattern_result['stats']['compression_ratio']:.1f}% reduction")
 
 def run_song_add(args):
     """Add a song to the song bank"""
@@ -649,7 +649,7 @@ def run_full_pipeline(args):
             print("\n" + "=" * 60)
             print(f"✅ SUCCESS! ROM created: {output_rom.name}")
             print(f"   ROM size: {rom_size:,} bytes ({rom_size / 1024:.1f} KB)")
-            print(f"   Compression ratio: {pattern_result['stats']['compression_ratio']:.2f}x")
+            print(f"   Compression ratio: {pattern_result['stats']['compression_ratio']:.1f}% reduction")
             print(f"   Total patterns detected: {len(pattern_result['patterns'])}")
             if pattern_loss_warning:
                 print(f"\n   ⚠️  INCOMPLETE OUTPUT: {pattern_loss_warning}")

@@ -105,6 +105,20 @@ class TestMainAsmGeneration:
         assert '$00' in content  # 0 CHR banks
         assert '$10' in content  # Mapper 1 (MMC1)
 
+    def test_mmc3_main_asm_has_single_header_segment(self, project_dir, minimal_music_asm):
+        """Regression (#22): the builder owns the one `.segment "HEADER"`, and the
+        mapper's generate_header_asm() returns bare bytes. MMC3 used to emit its
+        own `.segment "HEADER"` too, so main.asm carried two consecutive HEADER
+        segment directives. All mappers must follow the bare-bytes contract."""
+        from mappers.mmc3 import MMC3Mapper
+        builder = NESProjectBuilder(str(project_dir), mapper=MMC3Mapper())
+        builder.prepare_project(str(minimal_music_asm))
+
+        content = (project_dir / "main.asm").read_text()
+        assert content.count('.segment "HEADER"') == 1
+        assert '"NES", $1A' in content      # the header bytes still land
+        assert '$40' in content             # Mapper 4 (MMC3) flags byte
+
     def test_main_asm_has_reset_handler(self, project_dir, minimal_music_asm):
         """Test that main.asm defines reset handler."""
         builder = NESProjectBuilder(str(project_dir))

@@ -36,15 +36,16 @@ class MMC3Mapper(BaseMapper):
         return 8 * 1024  # MMC3 uses 8KB banks
 
     def generate_header_asm(self) -> str:
-        return """
-.segment "HEADER"
-    .byte "NES", $1A
+        # Bare iNES header bytes only — the caller (project builder / CA65
+        # exporter) owns the single `.segment "HEADER"`. Mirrors the NROM/MMC1
+        # contract; emitting our own .segment here double-declared the builder's
+        # segment (#22).
+        return """    .byte "NES", $1A
     .byte 32        ; 32 * 16KB = 512KB PRG
     .byte 0         ; 0 * 8KB CHR = CHR-RAM
     .byte $40       ; Mapper 4 (MMC3), horizontal mirroring
     .byte $00       ; NES 2.0 / Submapper / extended bits
-    .byte $00, $00, $00, $00, $00, $00, $00, $00
-"""
+    .byte $00, $00, $00, $00, $00, $00, $00, $00"""
 
     def generate_linker_config(self) -> str:
         lines = [

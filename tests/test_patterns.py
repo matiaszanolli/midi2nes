@@ -480,7 +480,10 @@ class TestPatternCompression(unittest.TestCase):
         # Compressed size: 2 patterns × 3 events = 6
         self.assertEqual(stats['original_size'], 12)
         self.assertEqual(stats['compressed_size'], 6)
-        self.assertGreater(stats['compression_ratio'], 0)
+        # Regression (#17): compression_ratio is a percentage *reduction*
+        # ((12-6)/12*100 = 50.0), not a multiplier (which would be 2.0). The
+        # unit must stay a percent so the `%`-labelled print sites are correct.
+        self.assertAlmostEqual(stats['compression_ratio'], 50.0)
 
     def test_pattern_with_volume_variations(self):
         """Test compression with same notes but different volumes"""
