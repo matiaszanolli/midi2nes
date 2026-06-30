@@ -19,7 +19,6 @@ from nes.emulator_core import NESEmulatorCore
 from arranger import arrange_for_nes
 from nes.project_builder import NESProjectBuilder
 from nes.song_bank import SongBank
-from exporter.exporter_nsf import NSFExporter
 from exporter.exporter_ca65 import CA65Exporter
 from exporter.exporter import generate_famitracker_txt_with_patterns
 from tracker.pattern_detector import EnhancedPatternDetector, sample_events_for_detection
@@ -247,19 +246,13 @@ def run_export(args):
     if args.patterns:
         pattern_data = json.loads(Path(args.patterns).read_text())
     
-    if args.format == "nsftxt":
-        # Create NSF exporter instance
-        exporter = NSFExporter()
-        
-        # Export with optional metadata
-        exporter.export(
-            frames_data=frames,
-            output_path=args.output,
-            song_name="MIDI2NES Export"  # You could add these as optional CLI arguments
-        )
-        print(f" Exported NSF -> {args.output}")
-    
-    elif args.format == "ca65":
+    # NOTE: `nsf` was removed from --format until the NSF exporter produces a
+    # playable file (#81/EXP-05). The old `if args.format == "nsftxt"` branch
+    # dispatched on a string argparse never allowed, so `--format nsf` silently
+    # wrote nothing (#79). With `ca65` the only choice, argparse now rejects an
+    # nsf request up front instead of no-oping; re-add the branch here when NSF
+    # is real.
+    if args.format == "ca65":
         # Always use CA65Exporter, with empty patterns if none provided
         if pattern_data:
             patterns = pattern_data['patterns']
@@ -735,7 +728,9 @@ def main():
     p_export = subparsers.add_parser('export', help='Export NES-ready files (ca65/FamiTracker)')
     p_export.add_argument('input')
     p_export.add_argument('output')
-    p_export.add_argument('--format', choices=['nsf', 'ca65'], default='ca65')
+    # `nsf` is intentionally absent until the NSF exporter is playable (#79/#81);
+    # offering it made `--format nsf` a silent no-op rather than a real export.
+    p_export.add_argument('--format', choices=['ca65'], default='ca65')
     p_export.add_argument('--patterns', help='Path to pattern data JSON (optional)')
     p_export.set_defaults(func=run_export)
 
