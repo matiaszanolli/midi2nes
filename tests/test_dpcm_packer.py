@@ -96,6 +96,55 @@ class TestDpcmPacker:
         # Truncated sample's length register is the hardware max ((4081-1)//16 = 255).
         assert packer.sample_metadata['1']['length_reg'] == 255
 
+    @patch('os.path.getsize')
+    def test_lookup_tables_are_positional_by_absolute_id(self, mock_getsize):
+        """Regression for #140: the engine indexes the lookup tables by absolute
+        sample id, so packing a sparse subset must emit a placeholder for every
+        unpacked id and keep each real entry at its id's offset. Only the
+        referenced sample binaries are included."""
+        mock_getsize.return_value = 1000  # len_reg = (1000-1)//16 = 62 = 0x3E
+        packer = DpcmPacker()
+        packer.add_sample('2', 'a.dmc')
+        packer.add_sample('5', 'b.dmc')
+        asm = packer.generate_assembly()
+
+        def row(label):
+            lines = asm.splitlines()
+            i = next(k for k, l in enumerate(lines) if l.startswith(label))
+            return [b.strip() for b in lines[i + 1].split('.byte')[1].split(',')]
+
+        len_row = row('dpcm_len_table:')
+        assert len(len_row) == 6                       # ids 0..5
+        assert len_row[2] == '$3E' and len_row[5] == '$3E'
+        assert len_row[0] == len_row[1] == len_row[3] == len_row[4] == '$00'
+        assert asm.count('.incbin') == 2               # only the two referenced binaries
+
+    def test_get_dpcm_sample_ids_from_frames(self):
+        """get_dpcm_sample_ids_from_frames recovers sample_id = note - 1 from DPCM frames."""
+        from dpcm_sampler.generate_dpcm_index import get_dpcm_sample_ids_from_frames
+        frames = {'dpcm': {'0': {'note': 3, 'volume': 15},
+                           '8': {'note': 6, 'volume': 15},
+                           '9': {'note': 0}}}              # rest sentinel ignored
+        assert get_dpcm_sample_ids_from_frames(frames) == {2, 5}
+        assert get_dpcm_sample_ids_from_frames({}) == set()
+        assert get_dpcm_sample_ids_from_frames({'dpcm': {}}) == set()
+
+    @patch('dpcm_sampler.generate_dpcm_index.resolve_dpcm_sample_path')
+    @patch('os.path.getsize')
+    def test_load_packs_only_referenced_sample_ids(self, mock_getsize, mock_resolve):
+        """Regression for #140: with sample_ids, only the referenced samples are
+        added to the packer (not the whole catalog)."""
+        from pathlib import Path
+        from dpcm_sampler.generate_dpcm_index import load_dpcm_index_into_packer
+        mock_getsize.return_value = 500
+        mock_resolve.side_effect = lambda fn, ip: Path(fn)
+        index = {f"s{i}": {"id": i, "filename": f"{i}.dmc"} for i in range(10)}
+        packer = DpcmPacker()
+        loaded, _ = load_dpcm_index_into_packer(
+            packer, index, "dpcm_index.json", sample_ids={2, 5, 7})
+        assert loaded == 3
+        assert {s['id'] for s in packer.pending_samples} == {'2', '5', '7'}
+
     def test_empty_packing_generates_safe_assembly(self):
         """Verify that packing 0 samples doesn't crash the assembly generation."""
         packer = DpcmPacker()

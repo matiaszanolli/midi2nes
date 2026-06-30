@@ -110,9 +110,8 @@ class DpcmPacker:
         asm_lines.append('\n.segment "RODATA"')
         asm_lines.append("; Lookup tables for DPCM triggers")
         
-        # Must order by integer ID for the 6502 engine to index correctly
         ordered_ids = sorted(self.sample_metadata.keys(), key=lambda x: int(x))
-        
+
         if not ordered_ids:
             # Provide dummy tables if no samples are loaded to prevent assembly errors
             asm_lines.append("dpcm_bank_table:\n    .byte $00")
@@ -120,18 +119,29 @@ class DpcmPacker:
             asm_lines.append("dpcm_addr_table:\n    .byte $00")
             asm_lines.append("dpcm_len_table:\n    .byte $00")
             return "\n".join(asm_lines)
-            
-        # Output all 4 lookup tables
+
+        # The engine indexes the lookup tables by absolute sample id (note - 1),
+        # so each table is POSITIONAL: entry N must hold sample N's registers.
+        # When a song ships only the samples it references (#140) the packed ids
+        # are sparse, so emit a placeholder ($00) for every id that isn't packed —
+        # those slots are never indexed (no frame references them) and exist only
+        # to keep the real entries at their id's offset. A full, dense catalog
+        # (ids 0..N) emits exactly one entry per id, as before.
+        max_id = int(ordered_ids[-1])
+
+        def _table(field):
+            return "    .byte " + ", ".join(
+                f"${self.sample_metadata[str(i)][field]:02X}" if str(i) in self.sample_metadata else "$00"
+                for i in range(max_id + 1)
+            )
+
         asm_lines.append("dpcm_bank_table:")
-        asm_lines.append("    .byte " + ", ".join(f"${self.sample_metadata[k]['bank']:02X}" for k in ordered_ids))
-        
+        asm_lines.append(_table('bank'))
         asm_lines.append("dpcm_pitch_table:")
-        asm_lines.append("    .byte " + ", ".join(f"${self.sample_metadata[k]['pitch_reg']:02X}" for k in ordered_ids))
-        
+        asm_lines.append(_table('pitch_reg'))
         asm_lines.append("dpcm_addr_table:")
-        asm_lines.append("    .byte " + ", ".join(f"${self.sample_metadata[k]['address_reg']:02X}" for k in ordered_ids))
-        
+        asm_lines.append(_table('address_reg'))
         asm_lines.append("dpcm_len_table:")
-        asm_lines.append("    .byte " + ", ".join(f"${self.sample_metadata[k]['length_reg']:02X}" for k in ordered_ids))
+        asm_lines.append(_table('length_reg'))
 
         return "\n".join(asm_lines)

@@ -289,13 +289,14 @@ def run_export(args):
             if dpcm_index_path.exists():
                 with open(dpcm_index_path, 'r') as f:
                     dpcm_index = json.load(f)
+                # Pack only the samples this song triggers, not the whole catalog (#140).
+                # Pass the set directly: an empty set means "pack nothing" (no DPCM
+                # in this song), not "pack everything".
                 sample_ids = get_dpcm_sample_ids_from_frames(frames)
                 loaded_samples, _ = load_dpcm_index_into_packer(
-                    packer, dpcm_index, dpcm_index_path,
-                    sample_ids=sample_ids or None,
-                )
-                if loaded_samples == 0 and dpcm_index:
-                    print(f" Warning: dpcm_index.json has {len(dpcm_index)} entries but none resolved to a file — DPCM tables will be empty (percussion silent).")
+                    packer, dpcm_index, dpcm_index_path, sample_ids=sample_ids)
+                if loaded_samples == 0 and sample_ids:
+                    print(f" Warning: this song references {len(sample_ids)} DPCM sample(s) but none resolved to a file — percussion will be silent.")
                 with open(args.output, 'a') as f:
                     f.write("\n\n" + packer.generate_assembly())
         except Exception as e:
@@ -575,12 +576,14 @@ def run_full_pipeline(args):
                     with open(dpcm_index_path, 'r') as f:
                         dpcm_index = json.load(f)
 
-                    # Only pack samples the song actually uses (#140).
+                    # Pack only the samples this song triggers (#140), truncating
+                    # oversized ones (#68), in ascending id order so they align
+                    # with the engine's positional tables. An empty set means
+                    # "pack nothing", so pass it through directly (not `or None`).
                     sample_ids = get_dpcm_sample_ids_from_frames(frames)
                     loaded_samples, _ = load_dpcm_index_into_packer(
-                        packer, dpcm_index, dpcm_index_path,
-                        sample_ids=sample_ids or None,
-                        verbose=args.verbose,
+                        packer, dpcm_index, dpcm_index_path, verbose=args.verbose,
+                        sample_ids=sample_ids
                     )
 
                     # Generate the lookup tables and binary includes, append to music.asm
@@ -590,8 +593,10 @@ def run_full_pipeline(args):
 
                     if loaded_samples > 0:
                         print(f"  ✓ Packed {loaded_samples} DPCM samples across {len(packer.banks)} banks")
-                    elif dpcm_index:
-                        print(f"  ⚠️ Warning: dpcm_index.json has {len(dpcm_index)} entries but none resolved to a file — DPCM tables will be empty (percussion silent).")
+                    elif sample_ids:
+                        print(f"  ⚠️ Warning: this song references {len(sample_ids)} DPCM sample(s) but none resolved to a file — percussion will be silent.")
+                    else:
+                        print("  ℹ️ No DPCM samples referenced by this song.")
                 else:
                     print("  ℹ️ No dpcm_index.json found, skipping DPCM packing.")
             except Exception as e:

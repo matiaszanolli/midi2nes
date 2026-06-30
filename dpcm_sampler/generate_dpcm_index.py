@@ -47,8 +47,10 @@ def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False,
     - Samples longer than the NES 4081-byte DMC limit are truncated rather than
       raising, so one oversized sample never aborts the whole pack (#68).
     - When ``sample_ids`` is provided (a set of ints or strings), only entries
-      whose ``id`` matches are loaded. This prevents packing the entire 1923-entry
-      shipped catalog for songs that only use a handful of samples (#140).
+      whose ``id`` matches are loaded — so a song ships just the drums it
+      references rather than the whole 1923-sample catalog, which would overflow
+      the 60-bank budget (#140). The packer keeps absolute ids, so the positional
+      lookup tables stay aligned. ``None`` packs everything.
 
     Samples are added in ascending index-id order, matching the positional
     lookup tables the engine indexes by ``sample_id``. Returns
