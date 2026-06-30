@@ -53,7 +53,7 @@ python main.py input.mid output.nes
 - **📈 Macro-driven ADSR volume envelopes** for pulse and noise channels
 - **🔄 Multiple duty cycle patterns** for rich sound
 - **🗜️ Advanced MMC3 bytecode engine** for massive compression
-- ** Multiple export formats** (CA65, NSF, FamiTracker)
+- ** Multiple export formats** (CA65, FamiTracker; NSF not yet implemented)
 
 ### Advanced Features
 - **🎹 Hardware Arpeggiation** for dynamic polyphonic voice allocation
@@ -192,7 +192,7 @@ The engine uses a sophisticated macro-driven bytecode to compress repeating musi
 ### Output Formats
 - **NES ROM** (.nes) - Ready-to-run NES ROM files
 - **CA65 Assembly** (.s) - For integration with NES projects
-- **NSF Audio** (.nsf) - NES Sound Format for music playback
+- **NSF Audio** (.nsf) - NES Sound Format — *not yet implemented (see #81); use the ROM/CA65 path*
 - **FamiTracker** (.txt) - Import into FamiTracker editor
 
 ## 📊 Performance Benchmarks

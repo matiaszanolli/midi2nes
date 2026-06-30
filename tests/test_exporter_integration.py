@@ -92,18 +92,16 @@ class TestExporterIntegration(unittest.TestCase):
             self.assertIn("instrument_table:", content)
             self.assertIn("pulse1_sequence:", content)
     
-    def test_nsf_export_with_compression(self):
-        """Test NSF export with compression"""
+    def test_nsf_export_unsupported(self):
+        """Regression (EXP-05 / #81): NSF export is not a playable NSF and is now
+        explicitly unsupported, so the exporter must raise rather than write a
+        garbage file."""
         output_path = os.path.join(self.temp_dir, "test.nsf")
         exporter = NSFExporter()
-        
-        exporter.export(self.test_frames, output_path, "Test Song")
-        
-        # Verify file exists and has correct format
-        self.assertTrue(os.path.exists(output_path))
-        with open(output_path, 'rb') as f:
-            header = f.read(128)
-            self.assertEqual(header[:5], b'NESM\x1a')
+
+        with self.assertRaises(NotImplementedError):
+            exporter.export(self.test_frames, output_path, "Test Song")
+        self.assertFalse(os.path.exists(output_path))
     
     def test_famistudio_export_with_compression(self):
         """Test FamiStudio export with compression"""

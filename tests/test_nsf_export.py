@@ -52,47 +52,20 @@ class TestNSFExport(unittest.TestCase):
         self.assertIn(b'Test Artist', packed)
         self.assertIn(b'Test Copyright', packed)
 
-    def test_nsf_export(self):
+    def test_nsf_export_unsupported(self):
+        # Regression (EXP-05 / #81): the NSF exporter emitted channel data as a
+        # JSON string and a play routine with wrong branch offsets - not a
+        # playable NSF. NSF export is now explicitly unsupported, so the public
+        # API must raise instead of writing a garbage file.
         exporter = NSFExporter()
-        exporter.export(
-            self.test_frames,
-            self.test_output,
-            song_name="Test Song",
-            artist="Test Artist",
-            copyright="Test Copyright"
-        )
-        
-        # Verify file exists
-        self.assertTrue(os.path.exists(self.test_output))
-        
-        # Verify file size
-        file_size = os.path.getsize(self.test_output)
-        self.assertGreater(file_size, 128)  # Should be larger than header
-        
-        # Read and verify header
-        with open(self.test_output, 'rb') as f:
-            header = f.read(128)
-            self.assertEqual(header[:5], b'NESM\x1a')
-            self.assertIn(b'Test Song', header)
-
-    def test_empty_frames(self):
-        exporter = NSFExporter()
-        exporter.export({}, self.test_output)
-        
-        # Verify file exists and has minimum size
-        self.assertTrue(os.path.exists(self.test_output))
-        self.assertGreater(os.path.getsize(self.test_output), 128)
-
-    def test_frame_conversion(self):
-        exporter = NSFExporter()
-        binary_data = exporter._convert_frames_to_binary(self.test_frames)
-        
-        # Verify we have data for all channels
-        self.assertEqual(len(binary_data), 5)
-        
-        # Verify each channel ends with marker
-        for channel_data in binary_data:
-            self.assertEqual(channel_data[-1], 0xFF)
+        with self.assertRaises(NotImplementedError):
+            exporter.export(self.test_frames, self.test_output, song_name="Test Song")
+        with self.assertRaises(NotImplementedError):
+            exporter.export({}, self.test_output)
+        with self.assertRaises(NotImplementedError):
+            exporter.export_nsf({'title': 'X'}, self.test_output)
+        # Nothing was written.
+        self.assertFalse(os.path.exists(self.test_output))
 
     def test_nsf_macro_packer_pointer_resolution(self):
         """Verify that NSFMacroPacker properly calculates absolute memory pointers"""
