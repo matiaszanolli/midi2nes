@@ -56,6 +56,33 @@ class CA65Exporter(BaseExporter):
             return NES_TRIANGLE_TABLE[midi_note]
         return NES_NOTE_TABLE[midi_note]
 
+    # $FF and $FE are reserved as macro *control* bytes: _compress_macro appends
+    # $FF (end/sustain) and [$FE, loop_start] (loop), and the engine's EVAL_MACRO
+    # reads the first $FF as end-of-macro. A signed pitch/arp offset spans the
+    # whole byte, so the offsets -1 (0xFF) and -2 (0xFE) would be misread as
+    # control codes mid-stream, truncating or desyncing the macro (#77). There is
+    # no spare byte in a full signed domain, so the encoder must keep those two
+    # values out of the data: snap each to its nearest non-reserved encoding.
+    MACRO_CTRL_END = 0xFF
+    MACRO_CTRL_LOOP = 0xFE
+
+    def _encode_macro_offset(self, value):
+        """Encode a signed pitch/arp offset to a macro data byte that can never
+        collide with the $FE/$FF control bytes (#77).
+
+        ``value`` is clamped to the 8-bit signed range, then the two colliding
+        encodings are snapped to the nearest representable, non-reserved byte:
+        -1 (0xFF) -> 0 and -2 (0xFE) -> -3 (0xFD). For pitch these are period-unit
+        deltas, so the <=1-unit nudge is sub-cent and inaudible; arp offsets are
+        semitone steps (and no current producer emits a negative arp).
+        """
+        byte = max(-128, min(127, int(value))) & 0xFF
+        if byte == self.MACRO_CTRL_END:      # -1 -> 0 (nearest non-reserved)
+            byte = 0x00
+        elif byte == self.MACRO_CTRL_LOOP:   # -2 -> -3 (nearest non-reserved)
+            byte = 0xFD
+        return byte
+
     def export_direct_frames(self, frames, output_path, standalone=True, mapper=None):
         """Export frames data directly using efficient lookup tables.
 
@@ -991,8 +1018,8 @@ class CA65Exporter(BaseExporter):
                     if note > 0:
                         base_timer = self.midi_note_to_timer_value(note, channel)
                         pitch_val = frame_data.get('pitch', base_timer) if frame_data else base_timer
-                        pitch_offset = max(-128, min(127, pitch_val - base_timer)) & 0xFF
-                        arp_val = frame_data.get('arp', 0) & 0xFF
+                        pitch_offset = self._encode_macro_offset(pitch_val - base_timer)
+                        arp_val = self._encode_macro_offset(frame_data.get('arp', 0))
                         current_event = {'note': note, 'dur': 1, 'vol_seq': [vol], 'duty_seq': [duty], 'pitch_seq': [pitch_offset], 'arp_seq': [arp_val]}
                     else:
                         current_event = {'note': 0, 'dur': 1}
@@ -1010,8 +1037,8 @@ class CA65Exporter(BaseExporter):
                             # every sustained triangle note (#78).
                             base_timer = self.midi_note_to_timer_value(note, channel)
                             pitch_val = frame_data.get('pitch', base_timer) if frame_data else base_timer
-                            pitch_offset = max(-128, min(127, pitch_val - base_timer)) & 0xFF
-                            arp_val = frame_data.get('arp', 0) & 0xFF
+                            pitch_offset = self._encode_macro_offset(pitch_val - base_timer)
+                            arp_val = self._encode_macro_offset(frame_data.get('arp', 0))
                             current_event['vol_seq'].append(vol)
                             current_event['duty_seq'].append(duty)
                             current_event['pitch_seq'].append(pitch_offset)
