@@ -1057,6 +1057,10 @@ class CA65Exporter(BaseExporter):
             lines.append('')
         
         # Bytecode generation for channels
+        from mappers.mmc3 import MMC3Mapper
+        # Highest swap-bank index the MMC3 linker config defines (BANK_00..N-1).
+        # Rolling past it would emit a .segment ld65 has no MEMORY region for (#127).
+        MAX_SEQUENCE_BANK = MMC3Mapper.SWAP_BANK_COUNT - 1
         current_bank = 0
         bytes_in_current_bank = 0
         BANK_SIZE_LIMIT = 8192 - 256  # 8KB minus a safety margin
@@ -1102,6 +1106,15 @@ class CA65Exporter(BaseExporter):
                 # Check if we need to switch banks
                 if bytes_in_current_bank + event_bytes + 4 > BANK_SIZE_LIMIT:
                     next_bank = current_bank + 1
+                    if next_bank > MAX_SEQUENCE_BANK:
+                        raise ValueError(
+                            f"Sequence bytecode exceeds the MMC3 "
+                            f"{MAX_SEQUENCE_BANK + 1}-bank budget "
+                            f"(~{(MAX_SEQUENCE_BANK + 1) * 8} KB): channel '{channel}' "
+                            f"needs bank {next_bank}, but the linker config defines only "
+                            f"BANK_00..BANK_{MAX_SEQUENCE_BANK:02d}. Shorten the song or "
+                            f"split it across songs."
+                        )
                     jump_label = f'{channel}_seq_bank_{next_bank:02d}'
                     lines.append(f'    .byte $FE, ${next_bank:02X}, <{jump_label}, >{jump_label} ; CMD_BANK_JUMP')
                     

@@ -59,49 +59,77 @@ def run_frames(args):
     Path(args.output).write_text(json.dumps(frames, indent=2))
     print(f" Generated frames -> {args.output}")
 
-def estimate_music_data_size(music_asm_path):
-    """Rough byte count of the ROM data music.asm emits (.byte/.word/.incbin).
+def estimate_segment_sizes(music_asm_path):
+    """ROM byte totals music.asm emits (.byte/.word/.incbin), keyed by the active
+    `.segment "NAME"`.
 
-    Used for a capacity pre-flight before linking (#11) so an oversized song
-    fails with a clear message naming the mapper budget instead of a raw ld65
-    region-overflow error. ld65 remains the exact backstop. .res lives in
-    RAM/ZP (not PRG ROM) and is ignored.
+    Per-segment rather than a single total because a banked mapper (MMC3)
+    distributes data across distinct PRG regions, and the binding limit is the
+    region each segment lands in, not the full PRG (#126, #127). ld65 remains the
+    exact backstop. .res lives in RAM/ZP (not PRG ROM) and is ignored. A bounded
+    `.incbin "f", 0, N` (a truncated DPCM sample, #68) counts N, not the file size.
     """
     import re
     music_path = Path(music_asm_path)
     if not music_path.exists():
-        return 0
-    total = 0
+        return {}
+    sizes = {}
+    current = None
     base_dir = music_path.parent
     for raw in music_path.read_text().splitlines():
         line = raw.split(';', 1)[0].strip()  # drop comments
         low = line.lower()
-        if low.startswith('.byte'):
-            total += len([t for t in line[5:].split(',') if t.strip()])
-        elif low.startswith('.word'):
-            total += 2 * len([t for t in line[5:].split(',') if t.strip()])
-        elif low.startswith('.incbin'):
+        if low.startswith('.segment'):
             m = re.search(r'"([^"]+)"', line)
             if m:
-                p = Path(m.group(1))
-                if not p.is_absolute():
-                    p = base_dir / p
-                if p.exists():
-                    total += p.stat().st_size
-    return total
+                current = m.group(1)
+            continue
+        n = 0
+        if low.startswith('.byte'):
+            n = len([t for t in line[5:].split(',') if t.strip()])
+        elif low.startswith('.word'):
+            n = 2 * len([t for t in line[5:].split(',') if t.strip()])
+        elif low.startswith('.incbin'):
+            bounded = re.search(r'"[^"]+"\s*,\s*\d+\s*,\s*(\d+)', line)
+            if bounded:
+                n = int(bounded.group(1))
+            else:
+                m = re.search(r'"([^"]+)"', line)
+                if m:
+                    p = Path(m.group(1))
+                    if not p.is_absolute():
+                        p = base_dir / p
+                    if p.exists():
+                        n = p.stat().st_size
+        if n:
+            sizes[current] = sizes.get(current, 0) + n
+    return sizes
+
+
+def estimate_music_data_size(music_asm_path):
+    """Total ROM data bytes music.asm emits (sum across all segments)."""
+    return sum(estimate_segment_sizes(music_asm_path).values())
 
 
 def check_mapper_capacity(music_asm_path, mapper):
-    """Pre-flight capacity gate (#11): abort before linking if the emitted music
-    data exceeds the selected mapper's PRG budget. Raises ValueError on overflow."""
-    data_size = estimate_music_data_size(music_asm_path)
-    if not mapper.can_fit_data(data_size):
+    """Pre-flight capacity gate (#11, #126, #127): abort before linking if the
+    emitted music data overflows any of the selected mapper's PRG regions.
+
+    Sizes each music.asm segment against the region the mapper's linker config
+    loads it into (a banked mapper has several binding regions, not one 510 KB
+    ceiling), so an oversized song fails with a clear budget message instead of a
+    raw ld65 region overflow. Raises ValueError listing every overflow. Returns
+    the total data size for logging.
+    """
+    segment_sizes = estimate_segment_sizes(music_asm_path)
+    errors = mapper.validate_segment_sizes(segment_sizes)
+    if errors:
+        detail = "\n".join(f"  - {e}" for e in errors)
         raise ValueError(
-            f"Music data ({data_size:,} bytes) exceeds {mapper.name} capacity "
-            f"({mapper.get_data_capacity():,} bytes). Shorten the song or DPCM "
-            f"samples, or select a larger mapper."
+            f"Music data does not fit the {mapper.name} PRG layout:\n{detail}\n"
+            f"Shorten the song or DPCM samples, or select a larger mapper."
         )
-    return data_size
+    return sum(segment_sizes.values())
 
 
 def _restore_backup(output_rom, backup_path):
@@ -574,8 +602,7 @@ def run_full_pipeline(args):
             # message before ld65 reports a raw region overflow.
             try:
                 data_size = check_mapper_capacity(str(music_asm), mapper)
-                print(f"  ✓ Music data {data_size:,} bytes fits {mapper.name} "
-                      f"({mapper.get_data_capacity():,} bytes)")
+                print(f"  ✓ Music data {data_size:,} bytes fits the {mapper.name} PRG regions")
             except ValueError as e:
                 print(f"[ERROR] {e}")
                 sys.exit(1)

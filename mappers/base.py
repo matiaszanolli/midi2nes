@@ -6,7 +6,7 @@ Each mapper generates its own header, linker config, and init code.
 """
 
 from abc import ABC, abstractmethod
-from typing import Tuple
+from typing import Dict, List, Tuple
 import os
 
 
@@ -157,6 +157,25 @@ class BaseMapper(ABC):
             True if data fits, False otherwise
         """
         return data_size <= self.get_data_capacity()
+
+    def validate_segment_sizes(self, segment_sizes: Dict[str, int]) -> List[str]:
+        """Check per-segment music.asm byte totals against this mapper's PRG layout.
+
+        ``segment_sizes`` maps a CA65 segment name (the active ``.segment``) to the
+        number of ROM bytes emitted into it. Returns a list of human-readable
+        overflow messages (empty when everything fits). The capacity pre-flight
+        uses this to fail before linking with a budget message naming the binding
+        region, instead of a raw ``ld65`` region-overflow (#126, #127).
+
+        The default treats all music data as one flat region (correct for NROM /
+        MMC1, which don't distribute data across swap banks). Banked mappers such
+        as MMC3 override this to size each segment against the region it loads into.
+        """
+        total = sum(segment_sizes.values())
+        if total > self.get_data_capacity():
+            return [f"music data ({total:,} bytes) exceeds {self.name} capacity "
+                    f"({self.get_data_capacity():,} bytes)"]
+        return []
 
     def __repr__(self) -> str:
         return f"{self.name}(mapper={self.mapper_number}, prg={self.prg_rom_size // 1024}KB)"

@@ -781,6 +781,12 @@ class TestPipelineSafetyGates:
             name = "Tiny"
             def can_fit_data(self, n): return n <= 4
             def get_data_capacity(self): return 4
+            def validate_segment_sizes(self, segment_sizes):
+                total = sum(segment_sizes.values())
+                if total > self.get_data_capacity():
+                    return [f"music data ({total} bytes) exceeds {self.name} "
+                            f"capacity ({self.get_data_capacity()} bytes)"]
+                return []
 
         asm = self.temp_dir / "big.asm"
         asm.write_text(".byte 1, 2, 3, 4, 5, 6\n")
@@ -795,6 +801,44 @@ class TestPipelineSafetyGates:
         asm.write_text(".byte 1, 2, 3\n")
         # Should not raise (3 bytes << 512KB).
         check_mapper_capacity(str(asm), MMC3Mapper())
+
+    def test_capacity_gate_rejects_oversized_direct_export(self):
+        """#126: direct-export tables land in the 8 KB PRG_FIX bank, not the full
+        510 KB PRG. A multi-KB RODATA must fail the pre-flight (naming PRG_FIX)
+        instead of being waved through to a raw ld65 region overflow."""
+        from main import check_mapper_capacity
+        from mappers.mmc3 import MMC3Mapper
+        asm = self.temp_dir / "big_direct.asm"
+        row = "    .byte " + ", ".join(["$00"] * 64) + "\n"
+        asm.write_text('.segment "RODATA"\n' + row * 200)  # ~12.8 KB of RODATA
+        with pytest.raises(ValueError) as exc:
+            check_mapper_capacity(str(asm), MMC3Mapper())
+        assert "PRG_FIX" in str(exc.value)
+
+    def test_capacity_gate_rejects_bank_overflow(self):
+        """#127: a BANK_60 segment has no MEMORY region in the MMC3 cfg (only
+        BANK_00..59). The gate must reject it pre-link with a bank-budget message."""
+        from main import check_mapper_capacity
+        from mappers.mmc3 import MMC3Mapper
+        asm = self.temp_dir / "overbank.asm"
+        asm.write_text('.segment "BANK_60"\n    .byte $01, $02\n')
+        with pytest.raises(ValueError) as exc:
+            check_mapper_capacity(str(asm), MMC3Mapper())
+        assert "bank 60" in str(exc.value)
+
+    def test_estimate_segment_sizes_buckets_and_honors_bounded_incbin(self):
+        """estimate_segment_sizes keys bytes by .segment and counts a bounded
+        `.incbin "f", 0, N` as N (the truncated DPCM length, #68), not the file."""
+        from main import estimate_segment_sizes
+        asm = self.temp_dir / "seg.asm"
+        asm.write_text(
+            '.segment "RODATA"\n    .byte 1, 2, 3\n'
+            '.segment "BANK_00"\n    .word 1, 2\n'        # 2 words = 4 bytes
+            '    .incbin "anything.dmc", 0, 4081\n'        # bounded -> 4081, file need not exist
+        )
+        sizes = estimate_segment_sizes(str(asm))
+        assert sizes["RODATA"] == 3
+        assert sizes["BANK_00"] == 4 + 4081
 
     # --- #6: validation gate fails on boot-fatal defects ---
     @patch('main.compile_rom')
