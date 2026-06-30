@@ -83,6 +83,18 @@ class TempoMap:
             initial_tempo: Microseconds per quarter note (500000 = 120 BPM)
             ticks_per_beat: MIDI ticks per quarter note
         """
+        # ticks_per_beat is the denominator of every tick->time conversion, so a
+        # non-positive value makes us_per_tick <= 0 and yields negative elapsed
+        # time / negative frame indices. mido reports a NEGATIVE ticks_per_beat
+        # for SMPTE-division MIDI headers, so guard the boundary here for every
+        # constructor rather than at each call site (#93).
+        if ticks_per_beat is None or ticks_per_beat < 1:
+            raise ValueError(
+                f"ticks_per_beat must be a positive integer (>= 1), got "
+                f"{ticks_per_beat!r}. A non-positive value typically comes from "
+                f"an SMPTE-division MIDI header (mido returns ticks_per_beat < 0 "
+                f"for SMPTE timing) and would produce negative frame indices."
+            )
         self.tempo_changes = [(0, initial_tempo)]
         self.ticks_per_beat = ticks_per_beat
         self._time_cache = {}
