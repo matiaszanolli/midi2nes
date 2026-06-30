@@ -35,23 +35,8 @@ def resolve_dpcm_sample_path(filename, index_path):
     return None
 
 
-def used_dpcm_sample_ids(frames):
-    """Sample ids the DPCM channel of ``frames`` actually triggers.
-
-    DPCM frames encode the sample id as ``note = sample_id + 1`` (the engine
-    recovers ``sample_id = note - 1`` to index the lookup tables — #9/#65), so the
-    set a song references is exactly ``{note - 1 : note > 0}``. Used to pack only
-    the drums a song needs instead of the whole catalog (#140).
-    """
-    dpcm = frames.get('dpcm', {}) if frames else {}
-    return {
-        fd['note'] - 1
-        for fd in dpcm.values()
-        if isinstance(fd, dict) and fd.get('note', 0) > 0
-    }
-
-
-def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False, used_ids=None):
+def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False,
+                                sample_ids=None):
     """Resolve every entry in ``dpcm_index`` and add it to ``packer``.
 
     Shared by both DPCM packing call sites so the same robustness rules apply at
@@ -61,11 +46,11 @@ def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False, u
       missing is skipped with an optional warning.
     - Samples longer than the NES 4081-byte DMC limit are truncated rather than
       raising, so one oversized sample never aborts the whole pack (#68).
-    - ``used_ids`` (a set of index ids): when given, only those samples are
-      packed, so a song ships just the drums it references rather than the whole
-      1923-sample catalog, which would overflow the 60-bank budget (#140). The
-      packer keeps absolute ids, so the positional tables stay aligned. ``None``
-      packs everything.
+    - When ``sample_ids`` is provided (a set of ints or strings), only entries
+      whose ``id`` matches are loaded — so a song ships just the drums it
+      references rather than the whole 1923-sample catalog, which would overflow
+      the 60-bank budget (#140). The packer keeps absolute ids, so the positional
+      lookup tables stay aligned. ``None`` packs everything.
 
     Samples are added in ascending index-id order, matching the positional
     lookup tables the engine indexes by ``sample_id``. Returns
@@ -74,7 +59,9 @@ def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False, u
     loaded = 0
     skipped = 0
     for sample in sorted(dpcm_index.values(), key=lambda s: int(s['id'])):
-        if used_ids is not None and int(sample['id']) not in used_ids:
+        sid = sample['id']
+        sid_int = int(sid) if not isinstance(sid, int) else sid
+        if sample_ids is not None and sid_int not in sample_ids:
             continue
         sample_path = resolve_dpcm_sample_path(sample['filename'], index_path)
         if sample_path is None:
@@ -83,7 +70,7 @@ def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False, u
                 print(f"  ⚠️ Warning: DPCM sample not found: {sample['filename']}")
             continue
         packer.add_sample(
-            str(sample['id']),
+            str(sid),
             str(sample_path.absolute()).replace('\\', '/'),
             sample.get('pitch', 15),
             truncate=True,
@@ -113,6 +100,22 @@ def generate_dpcm_index(dmc_folder, output_json):
         json.dump(index, f, indent=2)
 
     print(f"Indexed {len(index)} DPCM samples → {output_json}")
+
+
+def get_dpcm_sample_ids_from_frames(frames):
+    """Extract the set of DPCM sample IDs referenced in frame data.
+
+    Frame DPCM entries encode ``note = sample_id + 1`` (0 is the rest/change
+    sentinel).  Returns a ``set[int]`` of the sample IDs actually used, which
+    callers can pass to ``load_dpcm_index_into_packer(sample_ids=...)``.
+    """
+    ids = set()
+    for frame_data in frames.get('dpcm', {}).values():
+        note = frame_data.get('note', 0)
+        if note and int(note) > 0:
+            ids.add(int(note) - 1)
+    return ids
+
 
 if __name__ == "__main__":
     import sys

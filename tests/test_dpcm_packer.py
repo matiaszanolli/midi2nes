@@ -119,20 +119,20 @@ class TestDpcmPacker:
         assert len_row[0] == len_row[1] == len_row[3] == len_row[4] == '$00'
         assert asm.count('.incbin') == 2               # only the two referenced binaries
 
-    def test_used_dpcm_sample_ids_from_frames(self):
-        """used_dpcm_sample_ids recovers sample_id = note - 1 from DPCM frames."""
-        from dpcm_sampler.generate_dpcm_index import used_dpcm_sample_ids
+    def test_get_dpcm_sample_ids_from_frames(self):
+        """get_dpcm_sample_ids_from_frames recovers sample_id = note - 1 from DPCM frames."""
+        from dpcm_sampler.generate_dpcm_index import get_dpcm_sample_ids_from_frames
         frames = {'dpcm': {'0': {'note': 3, 'volume': 15},
                            '8': {'note': 6, 'volume': 15},
                            '9': {'note': 0}}}              # rest sentinel ignored
-        assert used_dpcm_sample_ids(frames) == {2, 5}
-        assert used_dpcm_sample_ids({}) == set()
-        assert used_dpcm_sample_ids({'dpcm': {}}) == set()
+        assert get_dpcm_sample_ids_from_frames(frames) == {2, 5}
+        assert get_dpcm_sample_ids_from_frames({}) == set()
+        assert get_dpcm_sample_ids_from_frames({'dpcm': {}}) == set()
 
     @patch('dpcm_sampler.generate_dpcm_index.resolve_dpcm_sample_path')
     @patch('os.path.getsize')
-    def test_load_packs_only_used_ids(self, mock_getsize, mock_resolve):
-        """Regression for #140: with used_ids, only the referenced samples are
+    def test_load_packs_only_referenced_sample_ids(self, mock_getsize, mock_resolve):
+        """Regression for #140: with sample_ids, only the referenced samples are
         added to the packer (not the whole catalog)."""
         from pathlib import Path
         from dpcm_sampler.generate_dpcm_index import load_dpcm_index_into_packer
@@ -141,7 +141,7 @@ class TestDpcmPacker:
         index = {f"s{i}": {"id": i, "filename": f"{i}.dmc"} for i in range(10)}
         packer = DpcmPacker()
         loaded, _ = load_dpcm_index_into_packer(
-            packer, index, "dpcm_index.json", used_ids={2, 5, 7})
+            packer, index, "dpcm_index.json", sample_ids={2, 5, 7})
         assert loaded == 3
         assert {s['id'] for s in packer.pending_samples} == {'2', '5', '7'}
 
