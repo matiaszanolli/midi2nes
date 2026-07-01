@@ -13,14 +13,49 @@ class NESEmulatorCore:
     def midi_to_nes_pitch(self, note, channel_type='pulse'):
         return self.pitch_processor.get_channel_pitch(note, channel_type)
 
+    @staticmethod
+    def _collapse_same_frame_events(events, channel_label):
+        """Collapse note-ons that quantize to the same 60Hz frame on one channel.
+
+        A NES channel is monophonic, so when several note-ons land on the same
+        frame only one can sound. The frame-build loops key by frame, so the later
+        write silently overwrote the earlier note and dropped it with no trace
+        (#96). Keep the loudest note for each frame (ties keep the later event)
+        and return ``(kept_events, dropped_count)`` so the caller can surface the
+        loss. The arranger avoids this collapse entirely by allocating/arpeggiating
+        polyphony across channels upstream.
+        """
+        note_ons = sorted(
+            (e for e in events if e.get('velocity', e.get('volume', 0)) > 0),
+            key=lambda e: e['frame'])
+        kept = []
+        dropped = 0
+        for e in note_ons:
+            vel = e.get('velocity', e.get('volume', 0))
+            if kept and kept[-1]['frame'] == e['frame']:
+                dropped += 1
+                prev_vel = kept[-1].get('velocity', kept[-1].get('volume', 0))
+                if vel > prev_vel:
+                    kept[-1] = e  # louder note wins; equal velocity keeps the later one
+            else:
+                kept.append(e)
+        if dropped:
+            print(f"Warning: {dropped} note(s) on {channel_label} dropped — "
+                  f"multiple notes quantized to the same 60Hz frame "
+                  f"(monophonic channel; use --arranger to arpeggiate polyphony).")
+        return kept, dropped
+
     def compile_channel_to_frames(self, events, channel_type='pulse', default_duty=2, sustain_frames=4):
         """
         Extend note-on events to simulate duration across frames with envelope processing.
         """
         frames = defaultdict(dict)
 
-        # Sort events by frame
-        events = sorted(events, key=lambda e: e['frame'])
+        # Collapse same-frame note-ons (mono channel) so a later note never
+        # silently overwrites an earlier one for the shared frames (#96). After
+        # this, every kept event has a unique frame, so the truncation guard
+        # below (next_event['frame'] > start_frame) always fires correctly.
+        events, _ = self._collapse_same_frame_events(events, channel_type)
         num_events = len(events)
 
         for i, event in enumerate(events):
@@ -93,6 +128,10 @@ class NESEmulatorCore:
                 # single-frame triggers so the channel re-fires once, then decays
                 # via the length counter.
                 noise_frames = {}
+                # Same monophonic same-frame collapse as the tonal channels (#96):
+                # keep one hit per frame and count the drops instead of letting the
+                # last write silently win.
+                events, _ = self._collapse_same_frame_events(events, 'noise')
                 for e in events:
                     velocity = e.get('velocity', e.get('volume', 0))
                     if velocity <= 0:
@@ -115,6 +154,9 @@ class NESEmulatorCore:
                 # note 0 stays the rest sentinel (#9). A single-frame trigger
                 # starts the sample, which then plays to completion via DMA.
                 dpcm_frames = {}
+                # Same monophonic same-frame collapse (#96): two drum hits on one
+                # frame can't both trigger, so keep the loudest and count the drop.
+                events, _ = self._collapse_same_frame_events(events, 'dpcm')
                 for e in events:
                     velocity = e.get('velocity', e.get('volume', 0))
                     if velocity <= 0:

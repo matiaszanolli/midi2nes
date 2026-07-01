@@ -33,10 +33,11 @@ class TestTempoMap(unittest.TestCase):
         self.assertEqual(self.tempo_map.ticks_per_beat, 480)
         
     def test_non_positive_ticks_per_beat_rejected(self):
-        # Regression (TEMPO-01 / #93): ticks_per_beat is the denominator of every
-        # tick->time conversion. mido reports it NEGATIVE for SMPTE-division MIDI;
-        # a non-positive value makes us_per_tick <= 0 and yields negative frame
-        # indices that scramble the whole song. Guard it at construction.
+        # Regression (TEMPO-01 / #93 and TEMPO-03 / #95): ticks_per_beat is the
+        # denominator of every tick->time conversion. A NEGATIVE value (mido
+        # reports it for SMPTE-division MIDI) yields negative frame indices (#93),
+        # and ZERO divides to inf and collapses every frame (#95). Both the 0 and
+        # negative cases must be rejected at construction.
         for bad in (-3200, 0, -1):
             with self.assertRaises(ValueError):
                 TempoMap(ticks_per_beat=bad)

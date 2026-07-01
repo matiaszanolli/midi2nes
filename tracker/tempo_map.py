@@ -84,10 +84,10 @@ class TempoMap:
             ticks_per_beat: MIDI ticks per quarter note
         """
         # ticks_per_beat is the denominator of every tick->time conversion, so a
-        # non-positive value makes us_per_tick <= 0 and yields negative elapsed
-        # time / negative frame indices. mido reports a NEGATIVE ticks_per_beat
-        # for SMPTE-division MIDI headers, so guard the boundary here for every
-        # constructor rather than at each call site (#93).
+        # non-positive value is invalid: a NEGATIVE value (mido reports it for
+        # SMPTE-division headers) yields negative frame indices (#93), and ZERO
+        # divides to inf and collapses every frame to a garbage index (#95). Guard
+        # both here for every constructor rather than at each call site.
         if ticks_per_beat is None or ticks_per_beat < 1:
             raise ValueError(
                 f"ticks_per_beat must be a positive integer (>= 1), got "
