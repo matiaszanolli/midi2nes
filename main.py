@@ -139,14 +139,14 @@ def _restore_backup(output_rom, backup_path):
         print(f"  ✅ Original ROM restored from backup")
 
 
-def validate_rom(output_rom, backup_path=None, verbose=False):
+def validate_rom(output_rom, verbose=False):
     """Post-build ROM validation shared by the full pipeline and the `compile`
     subcommand (#15) so step-by-step ROMs get the same gate as the default path.
 
     Returns True if the ROM is bootable. On a boot-fatal defect (invalid
-    $FFFA-$FFFF vectors or no APU init) it restores the backup and returns False
-    (#6). Non-fatal health issues are warned but pass. A diagnostics failure is
-    warned (verbose) and treated as non-blocking, matching prior behavior.
+    $FFFA-$FFFF vectors or no APU init) it returns False — the caller owns backup
+    restore (#26). Non-fatal health issues are warned but pass. A diagnostics
+    failure is warned (verbose) and treated as non-blocking, matching prior behavior.
     """
     try:
         from debug.rom_diagnostics import ROMDiagnostics
@@ -165,7 +165,6 @@ def validate_rom(output_rom, backup_path=None, verbose=False):
         print("[ERROR] ROM validation failed - unbootable ROM:")
         for defect in fatal_defects:
             print(f"    - {defect}")
-        _restore_backup(output_rom, backup_path)
         return False
 
     if rom_result.overall_health not in ["HEALTHY", "GOOD"]:
@@ -175,7 +174,6 @@ def validate_rom(output_rom, backup_path=None, verbose=False):
             print(f"    - {issue}")
         if rom_result.overall_health == "ERROR":
             print("[ERROR] ROM validation failed - ROM is invalid")
-            _restore_backup(output_rom, backup_path)
             return False
     else:
         print(f"  ✓ ROM Health: {rom_result.overall_health}")
@@ -439,9 +437,10 @@ def run_full_pipeline(args):
     print("=" * 60)
     
     # Create temporary directory for intermediate files
+    build_succeeded = False
     with tempfile.TemporaryDirectory(prefix="midi2nes_") as temp_dir:
         temp_path = Path(temp_dir)
-        
+
         try:
             # Step 1: Parse MIDI to frames (using fast parser)
             print("[1/7] Parsing MIDI file...")
@@ -627,22 +626,15 @@ def run_full_pipeline(args):
             print("[7/7] Compiling NES ROM...")
             if not compile_rom(project_path, output_rom):
                 print("[ERROR] ROM compilation failed")
-
-                # Restore backup if compilation failed
-                if backup_path and backup_path.exists():
-                    print(f"  💊 Restoring backup ROM: {backup_path.name} → {output_rom.name}")
-                    shutil.copy2(backup_path, output_rom)
-                    print(f"  ✅ Original ROM restored from backup")
-
-                sys.exit(1)
+                sys.exit(1)  # finally handles restore
 
             # Step 8: Validate ROM — shared with the `compile` subcommand (#15)
             # so step-by-step ROMs get the same boot-fatal gate (#6).
             skip_validation = hasattr(args, 'skip_validation') and args.skip_validation
             if not skip_validation:
                 print("[8/8] Validating ROM...")
-                if not validate_rom(output_rom, backup_path, verbose=getattr(args, 'verbose', False)):
-                    sys.exit(1)
+                if not validate_rom(output_rom, verbose=getattr(args, 'verbose', False)):
+                    sys.exit(1)  # finally handles restore
 
             # Success!
             rom_size = output_rom.stat().st_size
@@ -655,8 +647,9 @@ def run_full_pipeline(args):
                 print(f"\n   ⚠️  INCOMPLETE OUTPUT: {pattern_loss_warning}")
             print("\n🎮 Your NES ROM is ready to run on emulators or flash carts!")
 
-            # The new ROM is final and validated, so the safety backup is no
-            # longer needed. (On failure it is restored above and kept.)
+            # The new ROM is final and validated; mark success so the finally
+            # block does not attempt a restore, then drop the now-redundant backup.
+            build_succeeded = True
             if backup_path:
                 backup_path.unlink(missing_ok=True)
 
@@ -667,6 +660,12 @@ def run_full_pipeline(args):
                 print("\nFull traceback:")
                 traceback.print_exc()
             sys.exit(1)
+
+        finally:
+            # Single restore point that covers every failure path after backup
+            # creation: compile failure, prepare failure, top-level exception (#26).
+            if not build_succeeded:
+                _restore_backup(output_rom, backup_path)
 
 def main():
     parser = argparse.ArgumentParser(

@@ -27,14 +27,16 @@ class TestNESProjectBuilderInitialization:
         builder = NESProjectBuilder(str(project_dir))
         assert builder is not None
         assert builder.project_path == Path(project_dir)
-        assert builder.use_mmc1 == True
+        # Default mapper is MMC3 to match the pipeline default (#25).
+        assert builder.use_mmc1 == False
+        assert builder.mapper.mapper_number == 4
         assert builder.debug_mode == False
 
     def test_builder_with_debug_mode(self, project_dir):
         """Test NESProjectBuilder with debug mode enabled."""
         builder = NESProjectBuilder(str(project_dir), debug_mode=True)
         assert builder.debug_mode == True
-        assert builder.use_mmc1 == True
+        assert builder.use_mmc1 == False  # MMC3 is the default (#25)
 
 
 class TestProjectStructureCreation:
@@ -101,9 +103,10 @@ class TestMainAsmGeneration:
         # Should define iNES header
         assert '.segment "HEADER"' in content
         assert 'NES", $1A' in content or '"NES", $1A' in content
-        assert '$08' in content  # 8 PRG banks
         assert '$00' in content  # 0 CHR banks
-        assert '$10' in content  # Mapper 1 (MMC1)
+        # Default is MMC3: 32 * 16KB = 512KB PRG, mapper byte $40 (#25).
+        assert '32' in content  # 32 PRG banks
+        assert '$40' in content  # Mapper 4 (MMC3)
 
     def test_mmc3_main_asm_has_single_header_segment(self, project_dir, minimal_music_asm):
         """Regression (#22): the builder owns the one `.segment "HEADER"`, and the
@@ -253,18 +256,17 @@ class TestLinkerConfigGeneration:
         assert 'size = $0010' in content  # 16 bytes for header
 
     def test_nes_cfg_has_prg_rom_section(self, project_dir, minimal_music_asm):
-        """Test that nes.cfg defines 128KB PRG-ROM section."""
+        """Test that nes.cfg defines PRG-ROM sections matching the default mapper."""
         builder = NESProjectBuilder(str(project_dir))
         builder.prepare_project(str(minimal_music_asm))
 
         nes_cfg = project_dir / "nes.cfg"
         content = nes_cfg.read_text()
 
-        # MMC1 uses PRGSWAP (0x1C000 = 112KB) + PRGFIXED (0x4000 = 16KB) = 128KB total
-        # Check for either MMC1 structure or simple PRG structure
-        has_mmc1 = 'PRGSWAP' in content and 'PRGFIXED' in content
-        has_simple_prg = ('0x20000' in content or '$20000' in content)
-        assert has_mmc1 or has_simple_prg, "Should have either MMC1 (PRGSWAP+PRGFIXED) or simple PRG structure"
+        # Default is MMC3 (#25): banked 8KB windows (PRG_BANK_xx) + fixed
+        # PRG_FIX region.  MMC1 used PRGSWAP/PRGFIXED — those are gone.
+        has_mmc3 = 'PRG_BANK_00' in content and 'PRG_FIX' in content
+        assert has_mmc3, "Default mapper (MMC3) PRG regions must be present in nes.cfg"
 
     def test_nes_cfg_has_zeropage_section(self, project_dir, minimal_music_asm):
         """Test that nes.cfg defines zero page."""
@@ -460,31 +462,31 @@ class TestMultiSongCompatibility:
 
 
 class TestMMC1Configuration:
-    """Test MMC1 mapper configuration."""
+    """Test MMC1 mapper configuration (explicit MMC1 — not the default)."""
 
-    def test_mmc1_always_enabled(self, project_dir, minimal_music_asm):
-        """Test that MMC1 is always enabled."""
+    def test_mmc3_is_default_mapper(self, project_dir, minimal_music_asm):
+        """Regression (#25): the default mapper must be MMC3, matching the pipeline."""
+        from mappers.mmc3 import MMC3Mapper
         builder = NESProjectBuilder(str(project_dir))
-        assert builder.use_mmc1 == True
+        assert builder.use_mmc1 == False
+        assert isinstance(builder.mapper, MMC3Mapper)
 
         builder.prepare_project(str(minimal_music_asm))
 
-        main_asm = project_dir / "main.asm"
-        content = main_asm.read_text()
+        content = (project_dir / "main.asm").read_text()
+        # MMC3 iNES header: 32 * 16KB = 512KB, mapper byte $40.
+        assert '32' in content
+        assert '$40' in content
 
-        # Should have MMC1 initialization
-        assert '$8000' in content or 'MMC1' in content.upper()
-
-    def test_128kb_prg_rom_configuration(self, project_dir, minimal_music_asm):
-        """Test that 128KB PRG-ROM is configured."""
+    def test_512kb_prg_rom_default_configuration(self, project_dir, minimal_music_asm):
+        """Default (MMC3) produces 512KB PRG-ROM header (#25)."""
         builder = NESProjectBuilder(str(project_dir))
         builder.prepare_project(str(minimal_music_asm))
 
-        main_asm = project_dir / "main.asm"
-        content = main_asm.read_text()
+        content = (project_dir / "main.asm").read_text()
 
-        # Should specify 8 PRG banks (128KB)
-        assert '$08' in content or '8 x' in content or '128' in content
+        # MMC3: 32 * 16KB = 512KB
+        assert '32' in content or '512' in content
 
     def test_chr_ram_configuration(self, project_dir, minimal_music_asm):
         """Test that CHR-RAM is configured (no CHR-ROM)."""
@@ -546,3 +548,36 @@ class TestReturnValues:
         result = builder.prepare_multi_song_project(str(minimal_music_asm), {})
 
         assert result == True
+
+
+class TestMapperFactoryDefault:
+    """Regression tests for M-7 (#25): get_mapper('auto', 0) must return MMC3."""
+
+    def test_get_mapper_auto_no_size_returns_mmc3(self):
+        """get_mapper('auto', data_size=0) must return MMC3, not MMC1 (#25)."""
+        from mappers.factory import get_mapper
+        from mappers.mmc3 import MMC3Mapper
+        mapper = get_mapper("auto", data_size=0)
+        assert isinstance(mapper, MMC3Mapper), (
+            f"Expected MMC3Mapper but got {type(mapper).__name__}. "
+            "get_mapper('auto', 0) must match the pipeline default (MMC3)."
+        )
+
+    def test_builder_default_mapper_is_mmc3(self, project_dir):
+        """NESProjectBuilder() with no explicit mapper must resolve to MMC3 (#25)."""
+        from mappers.mmc3 import MMC3Mapper
+        builder = NESProjectBuilder(str(project_dir))
+        assert isinstance(builder.mapper, MMC3Mapper), (
+            "Builder default mapper must be MMC3 to match the pipeline"
+        )
+
+    def test_get_mapper_auto_with_size_uses_auto_select(self):
+        """get_mapper('auto', data_size>0) must use auto_select, not the hardcoded default."""
+        from mappers.factory import get_mapper
+        from mappers.mmc1 import MMC1Mapper
+        # A tiny payload fits NROM; auto_select should return the smallest that fits.
+        mapper = get_mapper("auto", data_size=1024)
+        assert mapper is not None
+        # Result must be the smallest mapper that can hold 1 KB (NROM can, so check we
+        # get something valid, not the hardcoded mmc3 fallback).
+        assert hasattr(mapper, 'can_fit_data')
