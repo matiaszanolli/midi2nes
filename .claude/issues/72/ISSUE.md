@@ -1,11 +1,5 @@
 # D-09: dmc_level is read but never produced by any stage (dead command path)
 
-Issue: #72 — https://github.com/matiaszanolli/midi2nes/issues/72
-Labels: bug, medium, dpcm
-Filed from: AUDIT_DPCM_2026-06-29.md
-
----
-
 **Severity:** MEDIUM · **Domain:** dpcm · **Source:** AUDIT_DPCM_2026-06-29.md
 
 ## Description
@@ -35,3 +29,4 @@ Either generate `dmc_level` for the `$4011` non-linear-mixer trick (`docs/APU_DM
 ## Completeness Checks
 - [ ] **DOC**: If behavior contradicted a `docs/*.md`, the doc was corrected
 - [ ] **TESTS**: A regression test pins the resolved behavior (path exercised or removed)
+

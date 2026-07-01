@@ -1,11 +1,5 @@
 # D-08: Index length/data/frequency always fall back to defaults — similarity/dedup inert
 
-Issue: #71 — https://github.com/matiaszanolli/midi2nes/issues/71
-Labels: bug, medium, dpcm
-Filed from: AUDIT_DPCM_2026-06-29.md
-
----
-
 **Severity:** MEDIUM · **Domain:** dpcm · **Source:** AUDIT_DPCM_2026-06-29.md
 
 ## Description
@@ -29,3 +23,4 @@ Either enrich the index with real `length`/`frequency` (and load `data` lazily),
 
 ## Completeness Checks
 - [ ] **TESTS**: A regression test pins this specific fix (similarity over real data)
+

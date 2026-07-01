@@ -106,12 +106,11 @@ The index is loaded in three places against two different shapes:
   (a sample bleeding past `$FFFF` plays garbage from `$8000`).
 
 ### Dimension 5: DMC level handling & DMA-timing implications
-- DMC output level (`$4011`) is emitted by the CA65 exporter
-  (`exporter/exporter_ca65.py`: `APU_DMC_LOAD = 0x4011`, the `dmc_level` plumbing
-  around lines 765–826, and the `CMD_DMC_LEVEL` byte `$87` near line 939). Verify
-  `dmc_level` is clamped to the 7-bit 0–127 range `$4011` accepts
-  (`docs/APU_DMC_REFERENCE.md`) — an out-of-range value emitted as
-  `${event["dmc_level"]:02X}` would corrupt the byte / wrap.
+- The DMC output level (`$4011`) `CMD_DMC_LEVEL` ($87) emitter path was removed as
+  dead (#72/D-09): no stage ever produced `dmc_level`, so the exporter branch was
+  unreachable. If it is re-added for the `$4011` non-linear-mixer trick
+  (`docs/APU_DMC_REFERENCE.md` §6), re-check the level is clamped to the 7-bit
+  0–127 range `$4011` accepts before emission.
 - Silence init: `docs/APU_DMC_REFERENCE.md` says init should write `$00` to `$4011`
   so the DMC counter doesn't muffle Triangle/Noise via the non-linear mixer. Confirm
   the generated init does this (`nes/mmc3_init.asm` writes `STA $4011`; check it is
@@ -183,7 +182,6 @@ The index is loaded in three places against two different shapes:
 - [ ] Is `length_reg = (size-1)//16` lossy for a sample not sized `16k+1`?
 - [ ] Converter truncates >4081 silently; packer raises — which path runs in the
       default pipeline, and can a too-long sample reach playback?
-- [ ] Is `dmc_level` clamped to 0–127 before `$4011`?
 - [ ] Can an evicted sample id be reused and mis-point a drum event?
 - [ ] Is the memory limit ever actually enforced given the two accounting methods?
 - [ ] When a real noise track exists, are drum noise-fallback hits discarded?

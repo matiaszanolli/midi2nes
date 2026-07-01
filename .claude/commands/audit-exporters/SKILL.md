@@ -108,8 +108,9 @@ labels. Hunt for values that can exceed a byte without clamping in
   loop control bytes colliding with real data values (a legitimate volume/pitch value of
   `0xFF`/`0xFE` would be read as End/Loop — confirm the value domains can't reach the
   control bytes).
-- `dmc_level` in `.byte $87, ${event["dmc_level"]:02X}` — confirm `dmc_level` is range-
-  checked to a DMC load value (`docs/APU_DMC_REFERENCE.md`, $4011 is 7-bit, 0–127).
+- The `CMD_DMC_LEVEL` ($87) emitter was removed as a dead path (#72/D-09): no stage
+  produced `dmc_level`. If it is ever re-added, confirm the emitted level is range-
+  checked to the 7-bit $4011 domain (`docs/APU_DMC_REFERENCE.md`, 0–127).
 - `pitch_offset` is masked `& 0xFF` after clamping to ±127 — verify the engine reads it
   as signed (a `& 0xFF` of a negative is fine only if the 6502 side treats it as two's
   complement; `docs/AUDIO_BYTECODE_SPEC.md` §2.3 says pitch macros are offsets).

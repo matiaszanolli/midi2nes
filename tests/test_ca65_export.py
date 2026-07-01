@@ -229,25 +229,23 @@ class TestCA65Export(unittest.TestCase):
             if out.exists():
                 out.unlink()
 
-    def test_dmc_level_clamped_to_7bit(self):
-        # Regression (NH-05 / #24): $4011 is a 7-bit register; an out-of-range
-        # dmc_level must be masked to 0-127 so CMD_DMC_LEVEL never sets bit 7 or
-        # overflows the :02X byte.
-        import re
+    def test_dmc_level_command_path_removed(self):
+        # Regression (#72 / D-09): no stage ever produces `dmc_level`, so the
+        # CMD_DMC_LEVEL ($87) plumbing was unreachable and has been removed. Even
+        # a dpcm frame that carries a `dmc_level` must NOT emit CMD_DMC_LEVEL —
+        # the exporter ignores the key entirely now.
         frames = {'dpcm': {'0': {'note': 1, 'volume': 15, 'dmc_level': 200},
                            '1': {'note': 1, 'volume': 15}}}
         patterns = {'p0': {'events': [{'note': 1, 'volume': 15}]}}
         refs = {'0': ('p0', 0)}  # non-empty patterns -> macro bytecode path
-        test_output = Path("test_dmc_clamp.asm")
+        test_output = Path("test_dmc_removed.asm")
         try:
             self.exporter.export_tables_with_patterns(frames, patterns, refs, test_output)
             output = test_output.read_text()
-            levels = [int(b, 16) for b in re.findall(
-                r'\.byte \$87, \$([0-9A-Fa-f]{2}) ; CMD_DMC_LEVEL', output)]
-            self.assertTrue(levels, "expected at least one CMD_DMC_LEVEL emission")
-            for lvl in levels:
-                self.assertLessEqual(lvl, 0x7F)
-            self.assertEqual(levels[0], 200 & 0x7F)  # 0x48, not 0xC8
+            self.assertNotIn('CMD_DMC_LEVEL', output)
+            # The $87 opcode byte must not be emitted as a sequence command
+            # (it may still legitimately appear as table data, so match the cmd).
+            self.assertNotIn('.byte $87,', output)
         finally:
             if test_output.exists():
                 test_output.unlink()
