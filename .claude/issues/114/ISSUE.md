@@ -27,3 +27,4 @@ Replace the rescan with a single suffix-hash / rolling-hash pass that records al
 - [ ] **ROUNDTRIP**: Hash-based matching yields the same patterns/references as the current rescan (decompressed playback unchanged)
 - [ ] **FALLBACK**: The `EnhancedPatternDetector` fallback still fires if the parallel path errors
 - [ ] **TESTS**: A regression test pins pattern equivalence before/after the algorithm change
+

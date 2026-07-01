@@ -53,7 +53,7 @@ un-disproven finding in that area.
 | `tracker/track_mapper.py` | `/audit-pipeline`, `/audit-nes-hardware` | HIGH |
 | `tracker/tempo_map.py`, `tracker/loop_manager.py` | `/audit-tempo` | HIGH |
 | `tracker/pattern_detector_parallel.py`, `tracker/pattern_detector.py` | `/audit-patterns`, `/audit-performance` | HIGH |
-| `nes/emulator_core.py`, `nes/pitch_table.py`, `nes/envelope_processor.py`, `nes/audio_constants.py` | `/audit-nes-hardware` | HIGH |
+| `nes/emulator_core.py`, `nes/pitch_table.py`, `nes/envelope_processor.py` | `/audit-nes-hardware` | HIGH |
 | `nes/project_builder.py`, `nes/debug_overlay.py` | `/audit-mappers`, `/audit-pipeline` | HIGH |
 | `mappers/**` | `/audit-mappers` | HIGH |
 | `compiler/**` | `/audit-mappers`, `/audit-safety` | HIGH |

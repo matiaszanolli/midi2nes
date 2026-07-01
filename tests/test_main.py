@@ -171,6 +171,23 @@ class TestRunMap:
             with pytest.raises(SystemExit):
                 main_entry()
 
+    def test_detect_patterns_parser_has_no_silent_config_flag(self):
+        """Regression (#109): the unused --config flag was dropped from
+        `detect-patterns` (it was declared but never read by run_detect_patterns)."""
+        from main import main as main_entry
+        with patch('sys.argv', ['main.py', 'detect-patterns', '--config', 'x.yaml',
+                                 'i.json', 'o.json']):
+            with pytest.raises(SystemExit):
+                main_entry()
+
+    def test_song_add_parser_has_no_silent_config_flag(self):
+        """Regression (#109, SIBLING): the unused --config flag was dropped from
+        `song add` (it was declared but never read by run_song_add)."""
+        from main import main as main_entry
+        with patch('sys.argv', ['main.py', 'song', 'add', '--config', 'x.yaml', 'i.mid']):
+            with pytest.raises(SystemExit):
+                main_entry()
+
     def test_run_map_invalid_json(self):
         """Test mapping with invalid JSON input."""
         self.test_input.write_text("invalid json")
