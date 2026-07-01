@@ -59,10 +59,11 @@ class CC65Wrapper:
                 [self._ca65_path, "--version"],
                 capture_output=True,
                 text=True,
+                timeout=10,
             )
             if result.returncode != 0:
                 raise ToolchainError("ca65")
-        except FileNotFoundError:
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             raise ToolchainError("ca65")
 
         try:
@@ -70,10 +71,11 @@ class CC65Wrapper:
                 [self._ld65_path, "--version"],
                 capture_output=True,
                 text=True,
+                timeout=10,
             )
             if result.returncode != 0:
                 raise ToolchainError("ld65")
-        except FileNotFoundError:
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             raise ToolchainError("ld65")
 
         return True
@@ -95,16 +97,18 @@ class CC65Wrapper:
                 [self._ca65_path, "--version"],
                 capture_output=True,
                 text=True,
+                timeout=10,
             )
-        except FileNotFoundError:
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             raise ToolchainError("ca65")
         try:
             ld65_result = subprocess.run(
                 [self._ld65_path, "--version"],
                 capture_output=True,
                 text=True,
+                timeout=10,
             )
-        except FileNotFoundError:
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             raise ToolchainError("ld65")
 
         return (
@@ -140,12 +144,20 @@ class CC65Wrapper:
             for path in include_paths:
                 cmd.extend(["-I", str(path)])
 
-        result = subprocess.run(
-            cmd,
-            cwd=working_dir,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            raise CompilationError(
+                f"ca65 timed out assembling {source_file.name}",
+                tool="ca65",
+                exit_code=-1,
+            )
 
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown error"
@@ -195,12 +207,20 @@ class CC65Wrapper:
             for path in library_paths:
                 cmd.extend(["-L", str(path)])
 
-        result = subprocess.run(
-            cmd,
-            cwd=working_dir,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            raise CompilationError(
+                "ld65 timed out linking ROM",
+                tool="ld65",
+                exit_code=-1,
+            )
 
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown error"

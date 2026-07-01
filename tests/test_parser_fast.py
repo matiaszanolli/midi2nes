@@ -23,10 +23,11 @@ from unittest.mock import patch, MagicMock, mock_open
 sys.path.append(str(Path(__file__).parent.parent))
 
 from tracker.parser_fast import (
-    parse_midi_to_frames, 
+    parse_midi_to_frames,
     parse_midi_to_frames_with_analysis
 )
 from tracker.tempo_map import TempoValidationError
+from core.exceptions import InvalidMIDIError
 
 
 class TestParseMidiToFrames:
@@ -747,6 +748,47 @@ class TestEdgeCases:
         finally:
             import shutil
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class TestInvalidMIDIGuard:
+    """Regression tests for SAFE-02: mido.MidiFile() guard → InvalidMIDIError (#121)."""
+
+    def setup_method(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+
+    def teardown_method(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_zero_byte_file_raises_invalid_midi_error(self):
+        zero = self.temp_dir / "empty.mid"
+        zero.write_bytes(b"")
+        with pytest.raises(InvalidMIDIError) as exc_info:
+            parse_midi_to_frames(str(zero))
+        assert str(zero) in str(exc_info.value)
+
+    def test_non_midi_file_raises_invalid_midi_error(self):
+        txt = self.temp_dir / "notmidi.mid"
+        txt.write_bytes(b"This is not a MIDI file at all.\n")
+        with pytest.raises(InvalidMIDIError):
+            parse_midi_to_frames(str(txt))
+
+    def test_truncated_midi_raises_invalid_midi_error(self):
+        # Write only the first 4 bytes of a valid MIDI header (incomplete).
+        truncated = self.temp_dir / "truncated.mid"
+        truncated.write_bytes(b"MThd")
+        with pytest.raises(InvalidMIDIError):
+            parse_midi_to_frames(str(truncated))
+
+    def test_invalid_midi_error_is_not_raw_mido_exception(self):
+        bad = self.temp_dir / "bad.mid"
+        bad.write_bytes(b"\x00" * 16)
+        try:
+            parse_midi_to_frames(str(bad))
+        except InvalidMIDIError:
+            pass  # expected
+        except Exception as e:
+            pytest.fail(f"Expected InvalidMIDIError but got {type(e).__name__}: {e}")
 
 
 if __name__ == '__main__':
