@@ -166,10 +166,15 @@ class ParallelPatternDetector:
         """Select best non-overlapping patterns from candidates"""
         if not candidate_patterns:
             return {}
-        
-        # Sort by score (best first)
-        candidate_patterns.sort(key=lambda x: x['score'], reverse=True)
-        
+
+        # Sort by score (best first) with a deterministic tie-break on
+        # (start, length). Parallel chunks complete in arbitrary `as_completed`
+        # order, so sorting on score alone would let equal-score candidates
+        # resolve by arrival order — making which non-overlapping patterns win
+        # depend on host core count. The (start, length) tie-break makes the
+        # selection identical across worker counts and vs the serial path (#46).
+        candidate_patterns.sort(key=lambda x: (-x['score'], x['start'], x['length']))
+
         patterns = {}
         used_positions = set()
         
