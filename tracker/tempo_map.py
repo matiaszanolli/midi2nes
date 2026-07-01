@@ -13,6 +13,16 @@ from constants import FRAME_MS, FRAME_RATE_HZ
 import numpy as np
 
 
+# Single source of truth for frame-alignment tolerance (#99). A tick whose time
+# is within this many milliseconds of a frame boundary is treated as
+# frame-aligned. Every alignment *validity* check — is_frame_aligned,
+# _validate_frame_boundaries and _check_frame_alignment — references this so a
+# change cannot be judged "aligned" by one method and "misaligned" by another.
+# The best-effort snap search in add_tempo_change uses its own wider search
+# window and is deliberately kept separate (it adjusts ticks, it does not verdict).
+FRAME_ALIGNMENT_TOLERANCE_MS = 0.5
+
+
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -236,7 +246,6 @@ class EnhancedTempoMap(TempoMap):
         self.pattern_tempos = {}  # For pattern-specific tempo info
         self.loop_points = {}     # For loop point tracking
         self._time_cache = {}     # For time calculations
-        self._frame_cache = {}    # For frame calculations
         self.optimization_stats = defaultdict(int)  # For tracking optimizations
 
     def is_frame_aligned(self, tick: int) -> bool:
@@ -244,7 +253,7 @@ class EnhancedTempoMap(TempoMap):
         time_ms = np.float64(self.calculate_time_ms(0, tick))
         frame_number = np.round(time_ms / FRAME_MS)
         frame_time = frame_number * FRAME_MS
-        return np.abs(time_ms - frame_time) < 0.001
+        return np.abs(time_ms - frame_time) < FRAME_ALIGNMENT_TOLERANCE_MS
 
     def add_tempo_change(self, tick: int, tempo: int, 
                         change_type: TempoChangeType = TempoChangeType.IMMEDIATE,
@@ -258,7 +267,6 @@ class EnhancedTempoMap(TempoMap):
             else:
                 super().add_tempo_change(tick, tempo)
             self._time_cache = {}
-            self._frame_cache = {}
             self._tempo_index = None
             return
             
@@ -335,7 +343,6 @@ class EnhancedTempoMap(TempoMap):
         
         # Clear caches
         self._time_cache = {}
-        self._frame_cache = {}
         self._tempo_index = None
 
     def find_nearest_frame_aligned_tick(self, tick: int) -> int:
@@ -435,7 +442,7 @@ class EnhancedTempoMap(TempoMap):
         """Validate that tempo changes align with frame boundaries"""
         frame_time = self.calculate_time_ms(0, tick)
         remainder = frame_time % FRAME_MS
-        if remainder > 0.5:  # Allow more generous rounding errors
+        if remainder > FRAME_ALIGNMENT_TOLERANCE_MS:
             raise TempoValidationError(
                 f"Tempo change at tick {tick} does not align with frame boundary (off by {remainder:.3f}ms)"
             )
@@ -641,7 +648,6 @@ class EnhancedTempoMap(TempoMap):
             # For frame alignment, we need to:
             # 1. Clear any cached values
             self._time_cache = {}
-            self._frame_cache = {}
             self._tempo_index = None
 
             # 2. Perform the alignment
@@ -649,7 +655,6 @@ class EnhancedTempoMap(TempoMap):
 
         # Clear caches after optimization
         self._time_cache = {}
-        self._frame_cache = {}
         self._tempo_index = None
 
     def _find_frame_aligned_tick(self, target_time_ms: float) -> int:
@@ -800,8 +805,8 @@ class EnhancedTempoMap(TempoMap):
             us_per_tick = prev_tempo / self.ticks_per_beat
             time_us = change.tick * us_per_tick
             remainder_us = time_us % (FRAME_MS * 1000)
-            
-            if remainder_us > 1:  # Allow 1 microsecond tolerance
+
+            if remainder_us > FRAME_ALIGNMENT_TOLERANCE_MS * 1000:
                 raise TempoValidationError(
                     f"Tempo change at tick {change.tick} not aligned with frame "
                     f"boundary (off by {remainder_us/1000:.3f}ms)"

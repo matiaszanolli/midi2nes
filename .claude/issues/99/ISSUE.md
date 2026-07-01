@@ -1,7 +1,5 @@
 # TEMPO-07: _frame_cache is never read; inconsistent frame-alignment tolerances across methods
 
-Issue: #99
-
 **Severity:** LOW · **Domain:** tempo · **Source:** AUDIT_TEMPO_2026-06-29.md
 
 ## Description

@@ -12,6 +12,13 @@ from tracker.tempo_map import TempoChangeType, TempoChange, EnhancedTempoMap
 # pipeline) must apply this same policy so they agree on large inputs (#21).
 MAX_PATTERN_EVENTS = 15000
 
+# The sequential ``PatternDetector`` is O(n^2)-ish in the number of events, so it
+# caps its working set far below the shared parallel policy above. This cap is
+# applied by *uniform* sampling (not a head cut), so the whole song's structure
+# is covered rather than dropping the entire tail (#100). Callers feeding the
+# sequential detector should report THIS number as the retained count.
+DETECTOR_MAX_EVENTS = 1000
+
 
 def sample_events_for_detection(events, max_events=MAX_PATTERN_EVENTS):
     """Uniformly down-sample ``events`` to at most ``max_events`` entries.
@@ -136,15 +143,16 @@ class PatternDetector:
         if not valid_events:
             return {}
 
+        # Safeguard: this detector is O(n^2)-ish, so cap the working set. Sample
+        # UNIFORMLY (not head-truncate) so the whole song's structure is covered
+        # rather than dropping the entire tail (#100).
+        if len(valid_events) > DETECTOR_MAX_EVENTS:
+            print(f"Warning: Large sequence ({len(valid_events)} events), "
+                  f"uniformly sampling to {DETECTOR_MAX_EVENTS} for performance")
+            valid_events, _ = sample_events_for_detection(valid_events, DETECTOR_MAX_EVENTS)
+
         sequence = [(e['note'], e['volume']) for e in valid_events]
         events = valid_events  # Use cleaned events for the rest of the method
-        
-        # Add safeguard: limit processing to reasonable size
-        MAX_EVENTS = 1000  # Limit to prevent excessive processing time
-        if len(sequence) > MAX_EVENTS:
-            print(f"Warning: Large sequence ({len(sequence)} events), limiting to {MAX_EVENTS} for performance")
-            sequence = sequence[:MAX_EVENTS]
-            events = events[:MAX_EVENTS]
         
         # Function to score the benefit of a pattern for NES
         def score_pattern(length, exact_count, variation_count):

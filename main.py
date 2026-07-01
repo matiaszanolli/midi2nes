@@ -21,7 +21,7 @@ from nes.project_builder import NESProjectBuilder
 from nes.song_bank import SongBank
 from exporter.exporter_ca65 import CA65Exporter
 from exporter.exporter import generate_famitracker_txt_with_patterns
-from tracker.pattern_detector import EnhancedPatternDetector, sample_events_for_detection
+from tracker.pattern_detector import EnhancedPatternDetector, sample_events_for_detection, DETECTOR_MAX_EVENTS
 from tracker.tempo_map import EnhancedTempoMap
 from dpcm_sampler.enhanced_drum_mapper import EnhancedDrumMapper, DrumMapperConfig
 from config.config_manager import ConfigManager
@@ -317,10 +317,12 @@ def run_detect_patterns(args):
     # Sort events by frame number
     events.sort(key=lambda x: x['frame'])
 
-    # Apply the shared large-file policy (#21) so this subcommand stays as
-    # robust as the default pipeline on big inputs instead of running unbounded.
+    # This subcommand runs the sequential EnhancedPatternDetector, whose internal
+    # cap is DETECTOR_MAX_EVENTS. Sample uniformly straight to that limit so the
+    # warning reports the count the detector actually retains, instead of a larger
+    # figure the detector would silently re-sample away (#100, #21).
     original_count = len(events)
-    events, was_sampled = sample_events_for_detection(events)
+    events, was_sampled = sample_events_for_detection(events, DETECTOR_MAX_EVENTS)
     if was_sampled:
         print(f"⚠️  Large file ({original_count} events): sampled to {len(events)} "
               f"({len(events)/original_count*100:.1f}%, lossy) before pattern detection")
@@ -506,11 +508,13 @@ def run_full_pipeline(args):
                     print(f"  Parallel detection failed, using fallback: {e}")
                     from tracker.pattern_detector import EnhancedPatternDetector
                     detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH)
-                    # Sequential fallback is slower, so cap more conservatively —
-                    # but sample uniformly (not head-truncate) to keep structure.
-                    FALLBACK_MAX_EVENTS = 2000
+                    # Sequential fallback can only handle the detector's internal
+                    # cap, so sample uniformly straight to DETECTOR_MAX_EVENTS. This
+                    # keeps song structure (not a head cut) AND makes the warning
+                    # below report the count actually retained, not a larger sample
+                    # the detector would silently re-cut (#100).
                     fallback_count = len(events)
-                    events, was_sampled = sample_events_for_detection(events, FALLBACK_MAX_EVENTS)
+                    events, was_sampled = sample_events_for_detection(events, DETECTOR_MAX_EVENTS)
                     if was_sampled:
                         pattern_loss_warning = (
                             f"pattern detection fell back to the sequential detector and "
