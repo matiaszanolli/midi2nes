@@ -3,10 +3,13 @@
 Tests cover:
 - Sample allocation and memory management
 - Usage statistics and optimization
-- Similarity detection and caching
 - Memory constraints and limits
 - Sample bank optimization algorithms
 - Edge cases and error conditions
+
+The sample similarity/dedup machinery was removed (#71/D-08): the shipped index
+only carries id/filename, so length/data/frequency always defaulted and every
+pair scored 100% similar, making the dedup inert on real input.
 """
 
 import pytest
@@ -53,9 +56,11 @@ class TestDPCMSampleManagerBasics:
         assert manager.memory_limit == 4096  # Default
         assert manager.active_samples == {}
         assert manager.usage_stats == {}
-        assert manager.sample_cache == {}
-        assert manager.sample_similarities == {}
-    
+        # The similarity/dedup machinery (sample_cache / sample_similarities)
+        # was removed as inert on real input (#71/D-08).
+        assert not hasattr(manager, "sample_cache")
+        assert not hasattr(manager, "sample_similarities")
+
     def test_custom_initialization(self):
         """Test initialization with custom parameters."""
         manager = DPCMSampleManager(max_samples=8, memory_limit=1024)
@@ -134,13 +139,10 @@ class TestSampleAllocationAndMemoryManagement:
         
         assert len(self.manager.active_samples) == 4
         
-        # Adding one more should trigger optimization
-        with patch.object(self.manager, '_find_similar_sample') as mock_similar:
-            with patch.object(self.manager, '_optimize_sample_bank') as mock_optimize:
-                mock_similar.return_value = None  # No similar sample found
-                self.manager.allocate_sample("sample5", self.sample_data_small)
-                mock_similar.assert_called_once()
-                mock_optimize.assert_called_with(force=True)
+        # Adding one more (at capacity) must force-evict to make room.
+        with patch.object(self.manager, '_optimize_sample_bank') as mock_optimize:
+            self.manager.allocate_sample("sample5", self.sample_data_small)
+            mock_optimize.assert_called_with(force=True)
     
     def test_default_sample_values(self):
         """Test allocation with missing data fields."""
@@ -248,124 +250,44 @@ class TestSampleBankOptimization:
         
         assert "sample0" not in self.manager.active_samples
         assert len(self.manager.active_samples) == 2
-        
-        # Check that similarities are also cleaned up
-        assert "sample0" not in self.manager.sample_similarities
 
 
-class TestSampleSimilarity:
-    """Test sample similarity detection and caching."""
-    
-    def setup_method(self):
-        """Set up test fixtures."""
-        self.manager = DPCMSampleManager(max_samples=2, memory_limit=1000)
-        
-        self.sample_a = {
-            'data': [0x10, 0x20, 0x30, 0x40] * 25,  # 100 bytes
-            'length': 100,
-            'frequency': 33144
-        }
-        
-        self.sample_b_similar = {
-            'data': [0x10, 0x20, 0x30, 0x40] * 25,  # Identical data
-            'length': 100,
-            'frequency': 33144
-        }
-        
-        self.sample_c_different = {
-            'data': [0xAA, 0xBB, 0xCC, 0xDD] * 25,  # Different data
-            'length': 100,
-            'frequency': 33144
-        }
-    
-    def test_similarity_calculation(self):
-        """Test sample similarity calculation."""
-        # Test identical samples
-        similarity = self.manager._calculate_sample_similarity(
-            self.sample_a, self.sample_b_similar
-        )
-        assert similarity == 1.0  # Should be perfectly similar
-        
-        # Test different samples
-        similarity = self.manager._calculate_sample_similarity(
-            self.sample_a, self.sample_c_different
-        )
-        assert similarity < 1.0  # Should be less similar
-        assert similarity >= 0.0  # But not negative
-    
-    def test_similarity_with_different_lengths(self):
-        """Test similarity calculation with different length samples."""
-        short_sample = {
-            'data': [0x10, 0x20] * 10,  # 20 bytes
-            'length': 20,
-            'frequency': 33144
-        }
-        
-        similarity = self.manager._calculate_sample_similarity(
-            self.sample_a, short_sample
-        )
-        
-        # Should account for length difference
-        assert 0.0 <= similarity <= 1.0
-        assert similarity < 1.0  # Different lengths reduce similarity
-    
-    def test_similarity_with_empty_samples(self):
-        """Test similarity with empty or missing data."""
-        empty_sample = {'data': [], 'length': 0}
-        
-        # Empty vs empty should be similar
-        similarity = self.manager._calculate_sample_similarity(empty_sample, empty_sample)
-        assert similarity == 1.0
-        
-        # Empty vs non-empty should be dissimilar
-        similarity = self.manager._calculate_sample_similarity(self.sample_a, empty_sample)
-        assert similarity == 0.0
-    
-    def test_find_similar_sample(self):
-        """Test finding similar samples."""
-        # Allocate a sample
-        self.manager.allocate_sample("original", self.sample_a)
-        
-        # Try to find a similar sample
-        similar = self.manager._find_similar_sample("similar", self.sample_b_similar)
-        
-        # Note: The implementation may return None if similarity matrix is not yet built
-        # or if the threshold is not met. This is acceptable behavior.
-        if similar is not None:
-            assert similar['name'] == "original"
-    
-    def test_similar_sample_caching(self):
-        """Test that similar samples are cached."""
-        # Allocate a sample
-        self.manager.allocate_sample("original", self.sample_a)
-        
-        # Find similar sample twice
-        similar1 = self.manager._find_similar_sample("similar", self.sample_b_similar)
-        similar2 = self.manager._find_similar_sample("similar", self.sample_b_similar)
-        
-        # Second call should use cache if similarity was high enough
-        if similar1 is not None and similar2 is not None:
-            assert "similar" in self.manager.sample_cache
-            assert similar1 == similar2
-    
-    def test_similarity_threshold(self):
-        """Test similarity threshold for caching."""
-        # Create a sample that's somewhat similar but below threshold
-        somewhat_similar = {
-            'data': [0x10, 0x20, 0xFF, 0xFF] * 25,  # Partially similar
-            'length': 100,
-            'frequency': 33144
-        }
-        
-        self.manager.allocate_sample("original", self.sample_a)
-        
-        # Should not find this as similar enough
-        similar = self.manager._find_similar_sample("somewhat", somewhat_similar)
-        
-        # Depending on threshold, might not be considered similar enough
-        # This tests the 0.85 threshold in the implementation
-        if similar is None:
-            assert "somewhat" not in self.manager.sample_cache
+class TestSimilarityMachineryRemoved:
+    """Regression (#71/D-08): the similarity/dedup machinery was removed because
+    it was inert on real input. Pin that it is gone and that allocation at
+    capacity still works (evict-and-allocate) without any dedup reuse."""
+
+    def test_similarity_methods_and_state_are_gone(self):
+        manager = DPCMSampleManager()
+        for attr in ("sample_cache", "sample_similarities"):
+            assert not hasattr(manager, attr), f"{attr} should be removed"
+        for method in ("_find_similar_sample", "_update_similarities",
+                       "_calculate_sample_similarity"):
+            assert not hasattr(manager, method), f"{method} should be removed"
+
+    def test_identical_samples_are_not_deduplicated(self):
+        """Two identically-shaped samples must each allocate independently now —
+        the old code could collapse them via the (inert) similarity path."""
+        manager = DPCMSampleManager(max_samples=4, memory_limit=4096)
+        data = {'data': [0x10, 0x20, 0x30, 0x40] * 25, 'length': 100, 'frequency': 33144}
+        a = manager.allocate_sample("a", data)
+        b = manager.allocate_sample("b", dict(data))
+        assert a['name'] == "a"
+        assert b['name'] == "b"
+        assert a is not b
+        assert set(manager.active_samples) == {"a", "b"}
+
+    def test_allocation_at_capacity_evicts_and_allocates(self):
+        """At capacity, a new sample forces optimization (eviction) then
+        allocates — the removed similarity-reuse shortcut no longer intercepts."""
+        manager = DPCMSampleManager(max_samples=2, memory_limit=4096)
+        small = {'data': [0x55] * 40, 'length': 40, 'frequency': 33144}
+        manager.allocate_sample("s0", small)
+        manager.allocate_sample("s1", small)
+        result = manager.allocate_sample("s2", small)
+        assert result['name'] == "s2"
+        assert "s2" in manager.active_samples
+        assert len(manager.active_samples) <= manager.max_samples
 
 
 class TestMemoryCalculations:
@@ -452,20 +374,7 @@ class TestEdgeCasesAndErrorHandling:
         
         # State should remain consistent
         assert len(self.manager.active_samples) == 0
-        assert len(self.manager.sample_similarities) == 0
-    
-    def test_similarity_update_with_no_active_samples(self):
-        """Test similarity update when no active samples exist."""
-        sample_data = {'data': [0x11] * 50, 'length': 50}
-        
-        # Should not crash
-        self.manager._update_similarities("test", sample_data)
-        
-        # Should not create entry when no active samples exist to compare against
-        # This is the expected behavior since similarity updates need existing samples
-        assert "test" not in self.manager.sample_similarities
-        assert len(self.manager.sample_similarities) == 0
-    
+
     def test_optimization_with_empty_sample_bank(self):
         """Test optimization when no samples are active."""
         # Should not crash when optimizing empty bank
@@ -577,41 +486,5 @@ class TestIntegrationScenarios:
         result = self.manager.allocate_sample("recovery_test", new_sample)
         assert result['name'] == "recovery_test"
     
-    def test_sample_reuse_optimization(self):
-        """Test that similar samples are properly reused."""
-        # Create base sample
-        base_sample = {
-            'data': [0x11, 0x22, 0x33, 0x44] * 50,
-            'length': 200,
-            'frequency': 33144
-        }
-        
-        # Create very similar sample
-        similar_sample = {
-            'data': [0x11, 0x22, 0x33, 0x44] * 50,  # Identical
-            'length': 200,
-            'frequency': 33144
-        }
-        
-        # Allocate base sample
-        result1 = self.manager.allocate_sample("base", base_sample)
-        
-        # Fill up remaining slots
-        for i in range(3):
-            filler_sample = {
-                'data': [0x55 + i] * 100,
-                'length': 100,
-                'frequency': 33144
-            }
-            self.manager.allocate_sample(f"filler_{i}", filler_sample)
-        
-        # Now allocate similar sample - should reuse base
-        result2 = self.manager.allocate_sample("similar", similar_sample)
-        
-        # Should reuse the base sample due to similarity
-        if result2 == result1:  # If similarity threshold was met
-            assert "similar" in self.manager.sample_cache
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

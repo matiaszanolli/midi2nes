@@ -172,8 +172,6 @@ class NESEmulatorCore:
                         "note": min(255, sample_id + 1),
                         "volume": 15,
                     }
-                    if 'dmc_level' in e:
-                        frame["dmc_level"] = max(0, min(127, e['dmc_level']))
                     dpcm_frames[e['frame']] = frame
                 processed[channel_name] = dpcm_frames
 
