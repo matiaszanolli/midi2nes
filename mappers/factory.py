@@ -171,7 +171,7 @@ def get_mapper(name_or_auto: str = "auto", data_size: int = 0) -> BaseMapper:
     """
     if name_or_auto.lower() == "auto":
         if data_size <= 0:
-            # Default to MMC1 for backwards compatibility
-            return MapperFactory.get_mapper("mmc1")
+            # Default to MMC3 to match the pipeline default.
+            return MapperFactory.get_mapper("mmc3")
         return MapperFactory.auto_select(data_size)
     return MapperFactory.get_mapper(name_or_auto)

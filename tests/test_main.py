@@ -1170,6 +1170,70 @@ class TestFullPipelineBackupCleanup:
             assert backup_path.exists(), ".nes.backup must be kept on failure"
             assert output_rom.read_bytes() == original, "original ROM must be restored"
 
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('dpcm_sampler.dpcm_packer.DpcmPacker')
+    @patch('main.CA65Exporter')
+    @patch('main.NESEmulatorCore')
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
+    def test_backup_restored_on_prepare_failure(self, mock_parse, mock_assign,
+                                                mock_emu_cls, mock_exporter_cls,
+                                                mock_packer_cls, mock_builder_cls,
+                                                mock_compile):
+        """Regression (#26): restore must fire when prepare_project returns False."""
+        self._common_mocks(mock_parse, mock_assign, mock_emu_cls,
+                           mock_exporter_cls, mock_packer_cls, mock_builder_cls)
+        # prepare_project returns False; compile is never reached.
+        mock_builder_cls.return_value.prepare_project.return_value = False
+
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            input_midi = tdp / "song.mid"
+            input_midi.write_bytes(b"MThd")
+            output_rom = tdp / "song.nes"
+            original = b"\x03" * 16
+            output_rom.write_bytes(original)
+            backup_path = output_rom.with_suffix('.nes.backup')
+
+            with pytest.raises(SystemExit):
+                run_full_pipeline(self._make_args(input_midi, output_rom))
+
+            assert backup_path.exists(), ".nes.backup must be kept on prepare failure"
+            assert output_rom.read_bytes() == original, "original ROM must be restored on prepare failure"
+
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('dpcm_sampler.dpcm_packer.DpcmPacker')
+    @patch('main.CA65Exporter')
+    @patch('main.NESEmulatorCore')
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
+    def test_backup_restored_on_top_level_exception(self, mock_parse, mock_assign,
+                                                    mock_emu_cls, mock_exporter_cls,
+                                                    mock_packer_cls, mock_builder_cls,
+                                                    mock_compile):
+        """Regression (#26): restore must fire on an unhandled exception in the try block."""
+        self._common_mocks(mock_parse, mock_assign, mock_emu_cls,
+                           mock_exporter_cls, mock_packer_cls, mock_builder_cls)
+        # Cause an unexpected exception inside the pipeline try block.
+        mock_builder_cls.return_value.prepare_project.side_effect = RuntimeError("boom")
+
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            input_midi = tdp / "song.mid"
+            input_midi.write_bytes(b"MThd")
+            output_rom = tdp / "song.nes"
+            original = b"\x04" * 16
+            output_rom.write_bytes(original)
+            backup_path = output_rom.with_suffix('.nes.backup')
+
+            with pytest.raises(SystemExit):
+                run_full_pipeline(self._make_args(input_midi, output_rom))
+
+            assert backup_path.exists(), ".nes.backup must be kept on unexpected exception"
+            assert output_rom.read_bytes() == original, "original ROM must be restored on unexpected exception"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
