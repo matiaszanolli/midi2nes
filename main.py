@@ -44,6 +44,13 @@ def run_parse(args):
 
 def run_map(args):
     midi_data = json.loads(Path(args.input).read_text())
+    # The parser always writes an 'events' key; a hand-edited or drifted parse
+    # output without it should fail with a clear message, not a bare KeyError
+    # traceback (#110). The default pipeline builds midi_data in-memory via
+    # parse_fast, so this only guards the step-by-step `map` subcommand.
+    if "events" not in midi_data:
+        print("[ERROR] Parse output missing 'events' key")
+        sys.exit(1)
     # Honor --dpcm-index instead of silently using the default (#13).
     dpcm_index_path = getattr(args, 'dpcm_index', None) or 'dpcm_index.json'
     # Extract just the events from the parsed data
