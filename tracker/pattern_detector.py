@@ -5,18 +5,21 @@ import numpy as np
 from tqdm import tqdm
 from tracker.tempo_map import TempoChangeType, TempoChange, EnhancedTempoMap
 
-# Shared large-file policy. Pattern detection is O(n^2)-ish in the number of
-# events, so very large inputs are uniformly down-sampled to this many events
-# before detection. This is LOSSY — see docs/legacy/PATTERN_DETECTION_IMPROVEMENTS.md.
-# Both entry points (the `detect-patterns` subcommand and the default full
-# pipeline) must apply this same policy so they agree on large inputs (#21).
+# There are exactly TWO event caps, one per detector complexity class — they do
+# NOT shadow each other; each binds a different algorithm (#102). Both decimate
+# via the single `sample_events_for_detection` (uniform, lossy — see
+# docs/legacy/PATTERN_DETECTION_IMPROVEMENTS.md); the old third limit (the
+# ThreadedPatternDetector 2000-stride) was removed with that dead class.
+#
+# MAX_PATTERN_EVENTS: the O(n) parallel `ParallelPatternDetector` (hash grouping,
+# #114) handles far more events, so the default full pipeline samples to this.
 MAX_PATTERN_EVENTS = 15000
 
-# The sequential ``PatternDetector`` is O(n^2)-ish in the number of events, so it
-# caps its working set far below the shared parallel policy above. This cap is
-# applied by *uniform* sampling (not a head cut), so the whole song's structure
-# is covered rather than dropping the entire tail (#100). Callers feeding the
-# sequential detector should report THIS number as the retained count.
+# DETECTOR_MAX_EVENTS: the sequential `PatternDetector` is O(n^2)-ish, so it caps
+# its working set far lower. The `detect-patterns` subcommand and the pipeline's
+# sequential fallback both run this detector, so they sample to THIS number, not
+# MAX_PATTERN_EVENTS. Applied by *uniform* sampling (not a head cut) so the whole
+# song is covered (#100); callers report THIS as the retained count.
 DETECTOR_MAX_EVENTS = 1000
 
 

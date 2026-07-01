@@ -1,9 +1,7 @@
 import multiprocessing as mp
-import threading
 import time
 from typing import List, Dict, Tuple, Any, Optional
-from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 from tracker.tempo_map import EnhancedTempoMap
 from tracker.pattern_detector import PatternCompressor, sample_events_for_detection, score_pattern
@@ -308,136 +306,6 @@ def _detect_patterns_worker(work_chunk: Dict) -> List[Dict]:
         # Defensive: only happens if invoked outside the initialised pool.
         return []
     return _collect_length_candidates(sequence, events, work_chunk['pattern_length'])
-
-
-class ThreadedPatternDetector:
-    """
-    Threading-based pattern detector for I/O bound operations.
-    Used when multiprocessing isn't available or practical.
-    """
-    
-    def __init__(self, tempo_map: EnhancedTempoMap, min_pattern_length=3, max_pattern_length=32):
-        self.tempo_map = tempo_map
-        self.min_pattern_length = min_pattern_length
-        self.max_pattern_length = max_pattern_length
-        self.compressor = PatternCompressor()
-        
-        # Use threading for I/O-bound tasks
-        self.max_threads = min(8, (mp.cpu_count() or 1) * 2)  # 2x CPU cores, max 8
-    
-    def detect_patterns(self, events: List[Dict]) -> Dict:
-        """Detect patterns using threading for I/O-bound operations"""
-        if not events:
-            return {
-                'patterns': {},
-                'references': {},
-                'stats': {'compression_ratio': 0, 'original_size': 0, 'compressed_size': 0, 'unique_patterns': 0},
-                'variations': {}
-            }
-        
-        print(f"🧵 Using threaded pattern detection with {self.max_threads} threads")
-        start_time = time.time()
-        
-        # Use threading for pattern search coordination
-        # The actual pattern matching is still CPU-bound but this helps with coordination
-        patterns = self._detect_patterns_threaded(events)
-        
-        # Compress patterns
-        compressed_patterns, pattern_refs = self.compressor.compress_patterns(patterns)
-        
-        # Calculate compression statistics
-        compression_stats = self.compressor.calculate_compression_stats(
-            patterns, compressed_patterns
-        )
-        
-        end_time = time.time()
-        print(f"✅ Threaded pattern detection completed in {end_time - start_time:.2f}s")
-        
-        return {
-            'patterns': compressed_patterns,
-            'references': pattern_refs,
-            'stats': compression_stats,
-            'variations': {}
-        }
-    
-    def _detect_patterns_threaded(self, events: List[Dict]) -> Dict:
-        """Use threading to coordinate pattern detection"""
-        # Filter valid events
-        valid_events = [
-            event for event in events
-            if isinstance(event.get('note'), (int, float)) and
-               isinstance(event.get('volume'), (int, float))
-        ]
-        
-        if not valid_events:
-            return {}
-        
-        sequence = [(e['note'], e['volume']) for e in valid_events]
-        
-        # Limit for performance
-        if len(sequence) > 2000:
-            step = len(sequence) // 2000
-            sequence = sequence[::step]
-            valid_events = valid_events[::step]
-        
-        patterns = {}
-        pattern_lock = threading.Lock()
-        
-        def search_patterns_for_length(length):
-            local_patterns = []
-            for start in range(len(sequence) - length + 1):
-                pattern = tuple(sequence[start:start + length])
-                matches = self._find_matches(sequence, pattern, start)
-                
-                if len(matches) >= 3:
-                    score = length * len(matches)  # Simple scoring
-                    local_patterns.append({
-                        'id': f"pattern_{len(patterns)}_{start}",
-                        'events': [valid_events[i] for i in range(start, start + length)],
-                        'positions': matches,
-                        'exact_matches': matches,
-                        'variations': [],
-                        'length': length,
-                        'score': score
-                    })
-            
-            # Add to global patterns with thread safety
-            with pattern_lock:
-                for p in local_patterns:
-                    if len(patterns) < 50:  # Limit pattern count
-                        patterns[p['id']] = p
-        
-        # Use threads for different pattern lengths
-        with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
-            futures = []
-            for length in range(self.min_pattern_length, 
-                              min(self.max_pattern_length, len(sequence)) + 1):
-                future = executor.submit(search_patterns_for_length, length)
-                futures.append(future)
-            
-            # Wait for all threads to complete
-            for future in as_completed(futures):
-                try:
-                    future.result(timeout=10)  # 10s timeout per thread
-                except Exception as e:
-                    print(f"Thread failed: {e}")
-        
-        return patterns
-    
-    def _find_matches(self, sequence: List, pattern: Tuple, start_pos: int) -> List[int]:
-        """Find pattern matches"""
-        matches = [start_pos]
-        pattern_len = len(pattern)
-        
-        pos = start_pos + 1
-        while pos <= len(sequence) - pattern_len:
-            if tuple(sequence[pos:pos + pattern_len]) == pattern:
-                matches.append(pos)
-                pos += pattern_len
-            else:
-                pos += 1
-        
-        return matches
 
 
 if __name__ == "__main__":

@@ -925,5 +925,43 @@ class TestStatsSchemaConsistency(unittest.TestCase):
         self.assertNotIn("'patterns_found'", src)
 
 
+class TestEventLimitConsolidation(unittest.TestCase):
+    """After #102 there are exactly TWO event caps (one per detector complexity
+    class); the dead ThreadedPatternDetector — the stray third 2000-stride limit —
+    was removed, and all live decimation goes through sample_events_for_detection."""
+
+    def test_threaded_detector_removed(self):
+        import tracker.pattern_detector_parallel as pdp
+        self.assertFalse(hasattr(pdp, 'ThreadedPatternDetector'),
+                         "dead ThreadedPatternDetector should be gone (#102)")
+
+    def test_two_named_caps(self):
+        from tracker import pattern_detector as pd
+        self.assertEqual(pd.MAX_PATTERN_EVENTS, 15000)   # O(n) parallel path
+        self.assertEqual(pd.DETECTOR_MAX_EVENTS, 1000)   # O(n^2) sequential path
+
+    def test_sequential_detector_binds_at_detector_max_events(self):
+        # The sequential detector's effective limit is DETECTOR_MAX_EVENTS (not
+        # MAX_PATTERN_EVENTS): feeding twice that many events uniformly samples
+        # down to the cap, so no detected position can exceed it (#102, #100).
+        from tracker.pattern_detector import PatternDetector, DETECTOR_MAX_EVENTS
+        n = DETECTOR_MAX_EVENTS * 2
+        events = [{'frame': i, 'note': 60 + (i % 8), 'volume': 100} for i in range(n)]
+        patterns = PatternDetector().detect_patterns(events)
+        self.assertGreater(len(patterns), 0)
+        for info in patterns.values():
+            for pos in info['positions']:
+                self.assertLess(pos, DETECTOR_MAX_EVENTS)
+
+    def test_no_bespoke_stride_decimation_remains(self):
+        # The old `sequence[::step]` stride is gone; the parallel module decimates
+        # only via the shared sampler.
+        import inspect
+        import tracker.pattern_detector_parallel as pdp
+        src = inspect.getsource(pdp)
+        self.assertNotIn('// 2000', src)
+        self.assertIn('sample_events_for_detection', src)
+
+
 if __name__ == '__main__':
     unittest.main()

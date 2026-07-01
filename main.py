@@ -20,7 +20,6 @@ from arranger import arrange_for_nes
 from nes.project_builder import NESProjectBuilder
 from nes.song_bank import SongBank
 from exporter.exporter_ca65 import CA65Exporter
-from exporter.exporter import generate_famitracker_txt_with_patterns
 from tracker.pattern_detector import EnhancedPatternDetector, sample_events_for_detection, DETECTOR_MAX_EVENTS
 from tracker.tempo_map import EnhancedTempoMap
 from dpcm_sampler.enhanced_drum_mapper import EnhancedDrumMapper, DrumMapperConfig

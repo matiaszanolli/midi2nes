@@ -57,8 +57,8 @@ un-disproven finding in that area.
 | `nes/project_builder.py`, `nes/debug_overlay.py` | `/audit-mappers`, `/audit-pipeline` | HIGH |
 | `mappers/**` | `/audit-mappers` | HIGH |
 | `compiler/**` | `/audit-mappers`, `/audit-safety` | HIGH |
-| `exporter/exporter_ca65.py`, `exporter/compression.py`, `exporter/pattern_exporter.py` | `/audit-exporters`, `/audit-patterns` | HIGH |
-| `exporter/exporter_nsf.py`, `exporter/exporter_famistudio.py`, `exporter/exporter.py`, `exporter/base_exporter.py` | `/audit-exporters` | MEDIUM |
+| `exporter/exporter_ca65.py`, `exporter/compression.py` | `/audit-exporters`, `/audit-patterns` | HIGH |
+| `exporter/exporter_nsf.py`, `exporter/exporter_famistudio.py`, `exporter/base_exporter.py` | `/audit-exporters` | MEDIUM |
 | `arranger/**` | `/audit-arranger`, `/audit-nes-hardware` | HIGH |
 | `dpcm_sampler/**`, `dpcm_index.json` | `/audit-dpcm`, `/audit-exporters` | MEDIUM |
 | `nes/song_bank.py` | `/audit-pipeline` | MEDIUM |

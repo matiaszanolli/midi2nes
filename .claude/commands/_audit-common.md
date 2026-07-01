@@ -39,8 +39,7 @@ Exporters:        exporter/
   Base:           exporter/base_exporter.py            (BaseExporter)
   CA65:           exporter/exporter_ca65.py            (export_tables_with_patterns → music.asm)
   NSF:            exporter/exporter_nsf.py             (NSFExporter)
-  FamiTracker:    exporter/exporter_famistudio.py + exporter/exporter.py
-  Patterns:       exporter/pattern_exporter.py
+  FamiStudio:     exporter/exporter_famistudio.py      (FamiStudio text export)
   Compression:    exporter/compression.py
 
 DPCM/drums:       dpcm_sampler/

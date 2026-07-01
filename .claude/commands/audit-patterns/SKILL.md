@@ -32,12 +32,12 @@ THE headline check. Compression must be lossless. Do not take the docstrings' wo
 **actually round-trip a sample**. Two distinct paths exist and both must be verified:
 
 - The pattern-dedup path: `tracker/pattern_detector.py` `PatternCompressor.compress_patterns`
-  produces `compressed_data` + `pattern_refs`; `exporter/pattern_exporter.py`
-  `PatternExporter.expand_to_frames()` rebuilds the frame stream from them. Build a small
-  synthetic event list with known repeats, run `EnhancedPatternDetector.detect_patterns`
-  (`tracker/pattern_detector.py`), feed `patterns`/`references` into `PatternExporter`, and
-  diff `expand_to_frames()` against the input. Any note/volume mismatch, dropped frame, or
-  extra frame = CRITICAL.
+  produces `compressed_data` + `pattern_refs`. (The former `PatternExporter`/`exporter.py`
+  FamiTracker reconstruction path was deleted as dead + frame-space-buggy, #101 — the
+  `references` are analysis-only and no exporter consumes them, #4.) Build a small synthetic
+  event list with known repeats, run `EnhancedPatternDetector.detect_patterns`
+  (`tracker/pattern_detector.py`), and confirm every detected pattern's occurrences are exact
+  repeats of its events. Any note/volume mismatch = CRITICAL.
 - The RLE/delta path: `exporter/compression.py` `CompressionEngine.compress_pattern` ↔
   `decompress_pattern`. Round-trip a pattern that exercises RLE runs, delta runs, and raw
   events together. Watch the delta decoder (`compression.py:93-107`): it mutates a running
@@ -46,7 +46,7 @@ THE headline check. Compression must be lossless. Do not take the docstrings' wo
   (`compression.py:154-177`) and `_create_delta_block` (`compression.py:179-200`) agree on the
   `numeric_keys` set so no field silently drifts.
 - Existing coverage to check (and distrust if thin): `tests/test_compression.py`,
-  `tests/test_compression_integration.py`, `tests/test_pattern_exporter.py`,
+  `tests/test_compression_integration.py`,
   `tests/test_pattern_integration.py`. A round-trip with no asserted frame-by-frame equality
   is not coverage.
 
@@ -58,9 +58,8 @@ The detect-patterns contract is a dict with `patterns`, `references`, `stats`, `
   (`pattern_detector_parallel.py:31-37`).
 - `EnhancedPatternDetector.detect_patterns` (`tracker/pattern_detector.py:318`) and its
   no-events return (`pattern_detector.py:320-326`).
-- `ThreadedPatternDetector.detect_patterns` (`tracker/pattern_detector_parallel.py:332`) —
-  note it returns `'variations': {}` unconditionally; flag if a consumer expects per-pattern
-  entries.
+  (The dead `ThreadedPatternDetector` was removed, #102 — only the parallel and
+  sequential detectors remain.)
 - The `--no-patterns` stub built inline in `run_full_pipeline` (`main.py:332-341`): confirm
   its `stats` keys (`original_events`, `compressed_size`, `patterns_found`,
   `compression_ratio`) match what downstream and `run_detect_patterns` read. The detectors emit
@@ -71,12 +70,11 @@ The detect-patterns contract is a dict with `patterns`, `references`, `stats`, `
 
 ### Dimension 3: Reference Offsets & Length Correctness
 A wrong offset corrupts playback, not just space. Trace position→frame mapping end to end:
-- `PatternExporter._create_pattern_map` (`exporter/pattern_exporter.py:12-20`) treats each
-  value in `pattern_refs` as a pattern **start position** and lays the pattern's events at
-  `start_pos + offset`. Confirm `references` actually contains start positions (it does in
-  `PatternCompressor.compress_patterns`, `pattern_detector.py:715-728`) and that
-  `len(compressed_data[pattern_id]['events'])` equals the pattern `length` — a mismatch is an
-  off-by-one that misaligns every later frame.
+- `PatternCompressor.compress_patterns` (`pattern_detector.py:715-728`) fills `pattern_refs`
+  with pattern **start positions** (sequence indices). These are analysis-only — no exporter
+  consumes them (#4), and the one path that did (`PatternExporter`) was deleted as
+  frame-space-buggy (#101). Still confirm `len(compressed_data[pattern_id]['events'])` equals
+  the pattern `length` — a mismatch would misalign any future consumer.
 - The CA65 conversion in `run_full_pipeline` (`main.py:352-361`): it iterates
   `enumerate(positions)` and passes the loop index `i` as the pattern offset
   (`ca65_references[str(actual_frame)] = (pattern_id, i)`). `i` is the *occurrence index*, not
@@ -135,10 +133,8 @@ a closure, a numpy array — leaks into a chunk). Check the memory blow-up of co
 sequence into every chunk × every pattern length (this is a perf cross-ref, but a chunk too
 large to pickle is a correctness failure that should hit the fallback). Confirm
 `_detect_patterns_worker` (`pattern_detector_parallel.py:259`) is module-level (picklable) and
-mutates no shared state. For `ThreadedPatternDetector`, the `search_patterns_for_length`
-closure mutates the shared `patterns` dict under `pattern_lock` but reads `len(patterns)` to
-build IDs (`pattern_detector_parallel.py:399`, `411`) — check for an ID collision / lost-update
-race across threads.
+mutates no shared state. (The thread-based `ThreadedPatternDetector` was removed as dead,
+#102, so there is no longer a shared-`patterns`-dict thread-race to check here.)
 
 ### Dimension 7: Large-File Sampling Not Dropping Musical Content
 Sampling must not silently change the song.
@@ -150,11 +146,13 @@ Sampling must not silently change the song.
   reconstruction: if the export uses the sampled stream, the song is permanently altered
   (potential CRITICAL data loss); if patterns are detected on the sample but applied back to
   the full stream, verify the position indices still line up (off-by-many).
-- `EnhancedPatternDetector` (via `PatternDetector.detect_patterns`) truncates to
-  `MAX_EVENTS = 1000` with `sequence[:MAX_EVENTS]` (`pattern_detector.py:120-124`) — a hard
-  cut, not a sample. `ThreadedPatternDetector` strides to 2000 (`pattern_detector_parallel.py:382-385`).
-  Three different limits (15000 / 1000 / 2000) across the three detectors is a consistency
-  finding; any path that drops events it then claims to have compressed losslessly is CRITICAL.
+- `EnhancedPatternDetector` (via `PatternDetector.detect_patterns`) uniformly samples to
+  `DETECTOR_MAX_EVENTS = 1000` via `sample_events_for_detection` (`pattern_detector.py`, #100)
+  — the O(n^2) sequential cap, lower than the parallel 15000 by design. Post-#102 there are
+  exactly TWO caps (15000 parallel / 1000 sequential), one per detector complexity class —
+  they don't shadow, they bound different algorithms; the old third limit (the removed
+  `ThreadedPatternDetector` 2000-stride) is gone. Any path that drops events it then claims
+  to have compressed losslessly is CRITICAL.
 
 ### Dimension 8: Pattern-Length Bounds & Match Semantics
 - `min_pattern_length` / `max_pattern_length` defaults differ by entry point: detectors

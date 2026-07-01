@@ -159,19 +159,18 @@ kinds and the instrument-pointer table must be emitted correctly:
   (lossy macro compression that changes volume/pitch = CRITICAL per the severity rubric).
 
 ### Dimension 7: Cross-Exporter Consistency
-For the same `frames` input, NSF (`exporter/exporter_nsf.py`), FamiTracker
-(`exporter/exporter.py` `generate_famitracker_txt_with_patterns` +
-`exporter/pattern_exporter.py`), and FamiStudio (`exporter/exporter_famistudio.py`)
-should describe the same song the CA65 path produces. Check:
+For the same `frames` input, NSF (`exporter/exporter_nsf.py`) and FamiStudio
+(`exporter/exporter_famistudio.py`) should describe the same song the CA65 path
+produces. (The old FamiTracker-text path — `exporter/exporter.py` +
+`exporter/pattern_exporter.py` — was deleted as dead + frame-space-buggy, #101.) Check:
 - `NSFExporter._serialize_compressed_data` serializes channel data as **JSON text**
   embedded in the NSF binary (`json.dumps(...).encode('utf-8')`) — that is not 6502-
   executable data; flag whether the NSF output is actually a playable NSF or a stub
   (the `NSFMacroPacker` docstring calls itself "Draft logic … will eventually replace
   the JSON-based serialization"). A format that claims to be NSF but can't play = HIGH.
 - Channel-set agreement: CA65 macro path handles `pulse1/pulse2/triangle/noise/dpcm`;
-  FamiTracker path (`exporter/exporter.py`) only emits note+vol with `COLUMNS 1 1 1 1 1`
-  — confirm it doesn't silently drop channels the CA65 path keeps.
-- Note/volume conversion: `midi_note_to_famistudio` / `midi_note_to_ft` octave math vs
+  confirm FamiStudio doesn't silently drop channels the CA65 path keeps.
+- Note/volume conversion: `midi_note_to_famistudio` octave math vs
   `CA65Exporter.midi_note_to_timer_value` valid range (24–119). A note in range for one
   exporter and silently dropped/mis-octaved in another is an inconsistency (MEDIUM,
   HIGH if a common note is dropped).
