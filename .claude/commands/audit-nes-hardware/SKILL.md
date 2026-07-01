@@ -24,7 +24,7 @@ which is a separate LOW finding).
 
 The hot files for this audit:
 `nes/emulator_core.py`, `nes/pitch_table.py`, `nes/envelope_processor.py`,
-`nes/audio_constants.py`, and the serializer `exporter/exporter_ca65.py`.
+and the serializer `exporter/exporter_ca65.py`.
 
 ## Parameters (from $ARGUMENTS)
 - `--focus <dims>` — comma-separated dimension numbers (e.g. `--focus 1,5,9`). Default: all.
@@ -43,9 +43,11 @@ Pulse channels live at `$4000–$4007` (`exporter/exporter_ca65.py` defines
   `nes/envelope_processor.py:get_envelope_control_byte` the duty is masked
   `(duty_cycle & 0x03) << 6` and the constant-volume flag `0x10` (bit 4) is set —
   confirm both, and that the 4-bit volume occupies bits 0–3 (`volume & 0x0F`).
-- The duty *values* in `PULSE_DUTY_CYCLES` (`nes/audio_constants.py`) are the four
-  legal NES duties (12.5/25/50/75%). Cross-check against `docs/APU_PULSE_REFERENCE.md`
-  §4 Duty Cycles — flag any divergence or an unused/contradictory mapping.
+- The duty ID reaching `get_envelope_control_byte` is one of the four legal NES
+  duties (0–3 → 12.5/25/50/75%). Cross-check the packing against
+  `docs/APU_PULSE_REFERENCE.md` §4 Duty Cycles — flag any value outside 0–3 or an
+  8-bit "duty" being written into the 2-bit field (the old `PULSE_DUTY_CYCLES`
+  constant was that trap; removed in #108).
 - Timer write order in the play_pulse routine (`exporter/exporter_ca65.py`, around the
   `sta $4002`/`sta $4003` and `sta $4006`/`sta $4007` writes): note the phase-reset
   click quirk in `docs/APU_PULSE_REFERENCE.md` §3 / `docs/NES_APU_REFERENCE.md` §2.1 —

@@ -725,7 +725,10 @@ def main():
                                       help='Detect and compress patterns in frame data')
     p_patterns.add_argument('input')
     p_patterns.add_argument('output')
-    p_patterns.add_argument('--config', help='Path to pattern detection configuration')
+    # NOTE: pattern-detection --config was not consumed by run_detect_patterns
+    # (it hardcodes the tempo and PATTERN_MIN/MAX_LENGTH), so it was dropped
+    # rather than left as a silently-ignored flag — same treatment as map --config
+    # (#13, #109).
     p_patterns.set_defaults(func=run_detect_patterns)
 
     p_export = subparsers.add_parser('export', help='Export NES-ready files (ca65/FamiTracker)')
@@ -767,7 +770,9 @@ def main():
     p_song_add.add_argument('--loop-point', type=int, help='Loop point in frames')
     p_song_add.add_argument('--tags', help='Comma-separated tags')
     p_song_add.add_argument('--tempo', type=int, default=120, help='Base tempo (default: 120)')
-    p_song_add.add_argument('--config', help='Path to drum mapper configuration')
+    # NOTE: song-add --config was not consumed by run_song_add, so it was dropped
+    # rather than left as a silently-ignored flag — same treatment as map --config
+    # (#13, #109).
     p_song_add.set_defaults(func=run_song_add)
 
     p_song_list = song_subparsers.add_parser('list', help='List songs in bank')

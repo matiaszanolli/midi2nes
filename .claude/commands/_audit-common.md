@@ -29,7 +29,6 @@ NES core:         nes/
   Envelope:       nes/envelope_processor.py            (ADSR / velocity → volume)
   Project build:  nes/project_builder.py               (NESProjectBuilder — main.asm/music.asm/nes.cfg)
   Song bank:      nes/song_bank.py                     (multi-song banks; `song` subcommands)
-  Audio consts:   nes/audio_constants.py
   Debug overlay:  nes/debug_overlay.py                 (--debug on-screen APU/frame diagnostics)
 
 Mappers:          mappers/                             (BaseMapper + nrom/mmc1/mmc3 + factory)

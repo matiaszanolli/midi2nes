@@ -1,3 +1,5 @@
+# NH-15: PULSE_DUTY_CYCLES is dead and its 8-bit values contradict the 2-bit duty field
+
 **Severity:** LOW · **Domain:** nes-hardware · **Source:** AUDIT_NES_HARDWARE_2026-06-29.md
 
 ## Description
