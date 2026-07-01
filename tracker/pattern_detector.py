@@ -34,6 +34,48 @@ def sample_events_for_detection(events, max_events=MAX_PATTERN_EVENTS):
     indices = np.linspace(0, len(events) - 1, max_events, dtype=int)
     return [events[i] for i in indices], True
 
+
+def score_pattern(length, exact_count, variation_count):
+    """NES-optimized benefit score for a candidate pattern (#103).
+
+    Shared by BOTH detectors so the sequential and parallel paths rank
+    exact-repeat candidates identically. ``variation_count`` is the number of
+    transposed/volume-scaled repeats: the sequential ``EnhancedPatternDetector``
+    supplies it, while the parallel ``ParallelPatternDetector`` (O(n) hash
+    grouping, exact repeats only) always passes 0 — the two paths therefore share
+    scoring but the parallel path never scores variations (see
+    ``pattern_detector_parallel._collect_length_candidates``).
+    """
+    total_count = exact_count + variation_count
+
+    # Must have at least 3 total occurrences
+    if total_count < 3:
+        return -1
+
+    # Base score: compression benefit (bytes saved)
+    compression_benefit = length * (total_count - 1)
+    # Storage cost: pattern definition + reference table (1 byte per reference)
+    storage_cost = length + total_count
+    net_benefit = compression_benefit - storage_cost
+
+    # Slight bonus for exact matches
+    exact_bonus = exact_count * 0.3
+
+    # Length bonus: strongly favor longer patterns (exponential for 6+).
+    if length >= 6:
+        length_bonus = length * 3.0
+    elif length >= 4:
+        length_bonus = length * 2.0
+    elif length == 3:
+        length_bonus = 1.5
+    else:
+        length_bonus = 0.5
+
+    # Frequency bonus: heavily favor patterns that repeat often.
+    frequency_bonus = total_count * 0.5 if total_count >= 4 else 0
+
+    return net_benefit + exact_bonus + length_bonus + frequency_bonus
+
 class PatternDetector:
     def __init__(self, min_pattern_length=3, max_pattern_length=32):
         self.min_pattern_length = min_pattern_length
@@ -153,48 +195,9 @@ class PatternDetector:
 
         sequence = [(e['note'], e['volume']) for e in valid_events]
         events = valid_events  # Use cleaned events for the rest of the method
-        
-        # Function to score the benefit of a pattern for NES
-        def score_pattern(length, exact_count, variation_count):
-            total_count = exact_count + variation_count
-            
-            # Must have at least 3 total occurrences
-            if total_count < 3:
-                return -1
-                
-            # NES-optimized scoring:
-            # Focus on compression efficiency and musical meaningfulness
-            
-            # Base score: compression benefit (bytes saved)
-            compression_benefit = length * (total_count - 1)
-            
-            # Storage cost: pattern definition + reference table (reduced for NES)
-            storage_cost = length + total_count  # 1 byte per reference (optimized for NES)
-            
-            # Net benefit
-            net_benefit = compression_benefit - storage_cost
-            
-            # Bonuses and penalties:
-            exact_bonus = exact_count * 0.3  # Slight bonus for exact matches
-            
-            # Length bonus: strongly favor longer patterns for better compression
-            # Exponential bonus for longer patterns
-            if length >= 6:
-                length_bonus = length * 3.0  # Strong bonus for 6+ note patterns
-            elif length >= 4:
-                length_bonus = length * 2.0  # Good bonus for 4-5 note patterns
-            elif length == 3:
-                length_bonus = 1.5  # Basic bonus for minimum patterns
-            else:
-                length_bonus = 0.5  # Small bonus for 2-note patterns
-            
-            # Frequency bonus: heavily favor patterns that repeat often
-            if total_count >= 4:
-                frequency_bonus = total_count * 0.5
-            else:
-                frequency_bonus = 0
-            
-            return net_benefit + exact_bonus + length_bonus + frequency_bonus
+
+        # Scoring is the module-level score_pattern (shared with the parallel
+        # detector so both rank exact-repeat candidates identically, #103).
 
         # First pass: collect all possible patterns with their scores
         candidate_patterns = []

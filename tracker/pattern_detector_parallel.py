@@ -6,7 +6,7 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from tracker.tempo_map import EnhancedTempoMap
-from tracker.pattern_detector import PatternCompressor, sample_events_for_detection
+from tracker.pattern_detector import PatternCompressor, sample_events_for_detection, score_pattern
 
 class ParallelPatternDetector:
     """
@@ -186,6 +186,11 @@ class ParallelPatternDetector:
             
             if not pattern_positions.intersection(used_positions):
                 pattern_id = f"pattern_{len(patterns)}"
+                # `variations` is always empty in the parallel path by design: the
+                # O(n) hash grouping only finds EXACT repeats, so there is no
+                # transposition/volume-variation detection here (unlike the
+                # sequential EnhancedPatternDetector). Scoring is still shared via
+                # score_pattern(length, exact_count, 0) (#103).
                 patterns[pattern_id] = {
                     'events': candidate['events'],
                     'positions': candidate['positions'],
@@ -273,14 +278,12 @@ def _collect_length_candidates(sequence: List[Tuple], events: List[Dict],
         if len(matches) < 3:  # Minimum 3 non-overlapping occurrences
             continue
 
+        # Score with the SHARED score_pattern (#103) so the parallel default path
+        # ranks exact repeats identically to the sequential detector. This path is
+        # exact-repeats-only (the O(n) hash grouping cannot detect transposed /
+        # volume-scaled variations), so variation_count is always 0 here.
         total_count = len(matches)
-        compression_benefit = pattern_length * (total_count - 1)
-        storage_cost = pattern_length + total_count
-        net_benefit = compression_benefit - storage_cost
-
-        length_bonus = pattern_length * 2.0 if pattern_length >= 4 else pattern_length
-        frequency_bonus = total_count * 0.5 if total_count >= 4 else 0
-        score = net_benefit + length_bonus + frequency_bonus
+        score = score_pattern(pattern_length, total_count, 0)
 
         if score > 0:
             anchor = matches[0]

@@ -774,10 +774,10 @@ class TestParallelPatternEquivalence(unittest.TestCase):
                 else:
                     pos += 1
             if len(matches) >= 3:
-                tc = len(matches)
-                score = (length * (tc - 1) - (length + tc)
-                         + (length * 2.0 if length >= 4 else length)
-                         + (tc * 0.5 if tc >= 4 else 0))
+                # Parallel path is exact-repeats-only, so it scores with the
+                # shared score_pattern using variation_count=0 (#103).
+                from tracker.pattern_detector import score_pattern
+                score = score_pattern(length, len(matches), 0)
                 if score > 0:
                     result[pattern] = (matches, score)
         return result
@@ -848,6 +848,81 @@ class TestParallelPatternEquivalence(unittest.TestCase):
         self.assertNotIn("'events': valid_events", src)
         self.assertIn('initializer=_init_pattern_worker', src)
         self.assertIn('initargs=', src)
+
+
+class TestDetectorScoringConsistency(unittest.TestCase):
+    """Both detectors must share the scoring formula, and the parallel path is
+    intentionally exact-repeats-only / variation-free (#103)."""
+
+    def test_both_detectors_use_shared_score_pattern(self):
+        # The sequential detector calls the module-level score_pattern, and the
+        # parallel candidate collector imports and calls the same function.
+        import inspect
+        from tracker import pattern_detector as pd
+        from tracker import pattern_detector_parallel as pdp
+        # The sequential scoring lives in the base PatternDetector.detect_patterns;
+        # the parallel path scores in _collect_length_candidates. Both must call
+        # the shared module-level score_pattern.
+        seq_src = inspect.getsource(pd.PatternDetector.detect_patterns)
+        self.assertIn('score_pattern(', seq_src)
+        collect_src = inspect.getsource(pdp._collect_length_candidates)
+        self.assertIn('score_pattern(', collect_src)
+
+    def test_parallel_candidate_score_equals_shared_score_pattern(self):
+        # For an exact-repeat input, a parallel candidate's score must equal
+        # score_pattern(length, occurrences, 0) exactly — no bespoke formula.
+        from tracker.pattern_detector import score_pattern
+        from tracker.pattern_detector_parallel import _collect_length_candidates
+        seq = [(60 + (i % 4), 100) for i in range(60)]
+        events = [{'note': a, 'volume': b, 'frame': i} for i, (a, b) in enumerate(seq)]
+        for length in range(3, 8):
+            for c in _collect_length_candidates(seq, events, length):
+                expected = score_pattern(length, len(c['positions']), 0)
+                self.assertAlmostEqual(c['score'], expected, places=9)
+
+    def test_parallel_path_is_variation_free_by_design(self):
+        # The O(n) hash grouping cannot detect transposed/volume-scaled repeats,
+        # so every parallel pattern reports zero variations. This pins the
+        # documented divergence from the sequential detector (#103).
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        detector = ParallelPatternDetector(EnhancedTempoMap(initial_tempo=500000),
+                                           min_pattern_length=3, max_pattern_length=12)
+        events = [{'frame': i, 'note': 60 + (i % 6), 'volume': 100} for i in range(200)]
+        result = detector.detect_patterns(events)
+        self.assertGreater(len(result['patterns']), 0)
+        for info in result['patterns'].values():
+            self.assertEqual(info['variations'], [])
+        for summary in result['variations'].values():
+            self.assertEqual(summary['variation_count'], 0)
+
+
+class TestStatsSchemaConsistency(unittest.TestCase):
+    """The --no-patterns stub and both detectors must emit one stats schema so a
+    future consumer can't hit a KeyError on a path-dependent key (#104)."""
+
+    CANONICAL_KEYS = {'original_size', 'compressed_size',
+                      'compression_ratio', 'unique_patterns'}
+
+    def test_detectors_emit_canonical_stats_keys(self):
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        events = [{'frame': i, 'note': 60 + (i % 6), 'volume': 100} for i in range(120)]
+        seq_stats = EnhancedPatternDetector(
+            EnhancedTempoMap(initial_tempo=500000)).detect_patterns(events)['stats']
+        par_stats = ParallelPatternDetector(
+            EnhancedTempoMap(initial_tempo=500000)).detect_patterns(events)['stats']
+        self.assertEqual(set(seq_stats), self.CANONICAL_KEYS)
+        self.assertEqual(set(par_stats), self.CANONICAL_KEYS)
+
+    def test_no_patterns_stub_uses_canonical_stats_keys(self):
+        # The stub lives inline in run_full_pipeline; assert it emits the four
+        # canonical keys and none of the old bespoke ones (#104).
+        import inspect
+        import main
+        src = inspect.getsource(main.run_full_pipeline)
+        for key in self.CANONICAL_KEYS:
+            self.assertIn(f"'{key}'", src, f"stub missing canonical stats key {key}")
+        self.assertNotIn("'original_events'", src)
+        self.assertNotIn("'patterns_found'", src)
 
 
 if __name__ == '__main__':

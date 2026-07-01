@@ -533,15 +533,20 @@ def run_full_pipeline(args):
             else:
                 print("[4/7] Skipping pattern detection (direct export mode)...")
                 print(f"  📊 Processing direct frame export for complete data preservation")
-                # Create dummy pattern result for direct export
+                # Create dummy pattern result for direct export. The stats must
+                # use the SAME schema the detectors emit (original_size /
+                # compressed_size / compression_ratio / unique_patterns) so any
+                # consumer sees one shape regardless of path (#104). Direct export
+                # applies no pattern compression, so ratio is 0% reduction (#17).
+                direct_size = sum(len(ch) for ch in frames.values())
                 pattern_result = {
                     'patterns': {},
                     'references': {},
                     'stats': {
-                        'compression_ratio': 1.0,
-                        'original_events': sum(len(ch) for ch in frames.values()),
-                        'compressed_size': sum(len(ch) for ch in frames.values()),
-                        'patterns_found': 0
+                        'original_size': direct_size,
+                        'compressed_size': direct_size,
+                        'compression_ratio': 0,
+                        'unique_patterns': 0
                     }
                 }
                 events = []  # Not needed for direct export
