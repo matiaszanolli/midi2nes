@@ -4,6 +4,7 @@ from collections import defaultdict
 from constants import FRAME_MS, FRAME_RATE_HZ
 from tracker.tempo_map import (EnhancedTempoMap, TempoValidationConfig, TempoOptimizationStrategy,
                                TempoChangeType, TempoValidationError)
+from core.exceptions import InvalidMIDIError
 
 def parse_midi_to_frames(midi_path):
     """
@@ -11,7 +12,12 @@ def parse_midi_to_frames(midi_path):
     Pattern detection, loop detection, and other expensive analysis
     is moved to separate pipeline steps.
     """
-    mid = mido.MidiFile(midi_path)
+    try:
+        mid = mido.MidiFile(midi_path)
+    except FileNotFoundError:
+        raise  # file does not exist — not a MIDI validity issue
+    except (EOFError, OSError, ValueError) as e:
+        raise InvalidMIDIError(str(midi_path), str(e)) from e
 
     # SMPTE-division MIDI (division word bit 15 set) makes mido report
     # ticks_per_beat as a negative value; zero is equally degenerate. Either

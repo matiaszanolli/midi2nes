@@ -6,9 +6,15 @@ from tracker.tempo_map import (EnhancedTempoMap, TempoValidationConfig, TempoOpt
                                TempoChangeType, TempoValidationError)
 from tracker.pattern_detector import EnhancedPatternDetector
 from tracker.loop_manager import EnhancedLoopManager
+from core.exceptions import InvalidMIDIError
 
 def parse_midi_to_frames(midi_path):
-    mid = mido.MidiFile(midi_path)
+    try:
+        mid = mido.MidiFile(midi_path)
+    except FileNotFoundError:
+        raise  # file does not exist — not a MIDI validity issue
+    except (EOFError, OSError, ValueError) as e:
+        raise InvalidMIDIError(str(midi_path), str(e)) from e
     # Initialize with validation but NO optimization
     # Full musically-valid tempo band with the change-ratio gate disabled: the
     # narrow 40-250 BPM / ratio-3.0 limits are authoring heuristics, not parse
