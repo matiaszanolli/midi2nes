@@ -673,6 +673,26 @@ class TestLargeFilePolicy(unittest.TestCase):
         self.assertIn('sample_events_for_detection', par,
                       "parallel default path must apply the shared sampler")
 
+    def test_base_detector_uniformly_samples_not_head_cuts(self):
+        """The sequential detector must uniformly sample its working set, not
+        head-cut to the first DETECTOR_MAX_EVENTS — otherwise the whole back
+        half of a long song is silently dropped (#100)."""
+        from tracker.pattern_detector import PatternDetector, DETECTOR_MAX_EVENTS
+        n = DETECTOR_MAX_EVENTS * 3
+        half = n // 2
+        # A repeating motif in the head (notes 60-62), a DIFFERENT repeating
+        # motif in the tail (notes 80-82). A head cut keeps only the first
+        # DETECTOR_MAX_EVENTS events, dropping the tail motif entirely.
+        head = [{'frame': i, 'note': 60 + (i % 3), 'volume': 100}
+                for i in range(half)]
+        tail = [{'frame': i, 'note': 80 + (i % 3), 'volume': 100}
+                for i in range(half, n)]
+        patterns = PatternDetector().detect_patterns(head + tail)
+        notes = {ev['note'] for p in patterns.values() for ev in p['events']}
+        self.assertTrue(any(note >= 80 for note in notes),
+                        "tail motif dropped — detector head-cut instead of "
+                        "uniformly sampling")
+
 
 class TestPatternParameterConsistency(unittest.TestCase):
     """Both pattern-detection entry points (the `detect-patterns` subcommand and

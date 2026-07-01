@@ -585,7 +585,32 @@ class TestEnhancedTempoMap(unittest.TestCase):
         frame_aligned_tick = tempo_map._find_frame_aligned_tick(50.0)
         self.assertIsInstance(frame_aligned_tick, int)
         self.assertGreaterEqual(frame_aligned_tick, 0)
-        
+
+    def test_alignment_predicates_share_one_tolerance(self):
+        """Every alignment-validity check must agree on the same tolerance
+        constant, so a tick cannot be judged aligned by one method and
+        misaligned by another (#99)."""
+        from tracker.tempo_map import FRAME_ALIGNMENT_TOLERANCE_MS
+        from constants import FRAME_MS
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            ticks_per_beat=480,
+            validation_config=self.default_config,
+        )
+        # A tick whose time sits just OUTSIDE the tolerance must be rejected by
+        # every validity check in lockstep. Tick 17 is ~1.04ms off a boundary.
+        off_tick = 17
+        remainder = tempo_map.calculate_time_ms(0, off_tick) % FRAME_MS
+        self.assertGreater(remainder, FRAME_ALIGNMENT_TOLERANCE_MS)
+        self.assertFalse(tempo_map.is_frame_aligned(off_tick))
+        with self.assertRaises(TempoValidationError):
+            tempo_map._validate_frame_boundaries(off_tick, 400000)
+        with self.assertRaises(TempoValidationError):
+            tempo_map._check_frame_alignment(TempoChange(off_tick, 400000))
+        # Tick 0 is exactly on a boundary — accepted by the same tolerance.
+        self.assertTrue(tempo_map.is_frame_aligned(0))
+        tempo_map._validate_frame_boundaries(0, 500000)  # must not raise
+
     def test_validation_edge_cases(self):
         """Test validation edge cases and error conditions"""
         tempo_map = EnhancedTempoMap(
