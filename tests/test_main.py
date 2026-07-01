@@ -188,11 +188,23 @@ class TestRunMap:
             with pytest.raises(SystemExit):
                 main_entry()
 
+    def test_run_map_missing_events_key(self):
+        """Regression (#110): a parse output without an 'events' key must fail
+        with a clear [ERROR] message and exit 1, not a bare KeyError traceback."""
+        self.test_input.write_text(json.dumps({"tracks": {}}))
+        args = Namespace(input=str(self.test_input), output=str(self.test_output))
+
+        with patch('builtins.print') as mock_print:
+            with pytest.raises(SystemExit) as exc:
+                run_map(args)
+        assert exc.value.code == 1
+        mock_print.assert_any_call("[ERROR] Parse output missing 'events' key")
+
     def test_run_map_invalid_json(self):
         """Test mapping with invalid JSON input."""
         self.test_input.write_text("invalid json")
         args = Namespace(input=str(self.test_input), output=str(self.test_output))
-        
+
         with pytest.raises(json.JSONDecodeError):
             run_map(args)
     
