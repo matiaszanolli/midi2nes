@@ -28,3 +28,4 @@ PERF-08 (tempo map rebuilt multiple times); the same O(T) scan recurs everywhere
 - [ ] **TESTS**: A regression test pins parse correctness on a tempo-dense MIDI (many `set_tempo`)
 - [ ] **SIBLING**: Same O(T) scan fixed at every `get_tempo_at_tick` / `calculate_time_ms` call site
 - [ ] **DOC**: If a docstring/SKILL claims O(1), it is corrected
+
