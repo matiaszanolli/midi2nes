@@ -111,10 +111,11 @@ Re-derive the bank-switch sequences against the reference docs:
 ### Dimension 6: MapperFactory auto-selection
 In `mappers/factory.py`, `auto_select(data_size)` walks `_default_mappers`
 (`nrom`→`mmc1`→`mmc3`) and returns the first whose `can_fit_data()` is true; the
-`get_mapper("auto", data_size=0)` convenience falls back to MMC1 when no size is given.
+`get_mapper("auto", data_size=0)` convenience falls back to MMC3 when no size is given
+(deliberately matching the hardcoded pipeline default — #43).
 Check: the ordering is genuinely smallest-first by capacity; the "nothing fits" branch
-raises with the largest mapper's capacity; the `data_size <= 0` → MMC1 default is
-intentional (and note it conflicts with the MMC3 default used elsewhere — Dimension 10).
+raises with the largest mapper's capacity; the `data_size <= 0` → MMC3 default agrees
+with the pipeline default used elsewhere (Dimension 10).
 A threshold that picks a mapper too small for the data (so it overruns) ties back to
 Dimension 4 and is CRITICAL.
 
@@ -162,16 +163,17 @@ that passes a truncated 512KB-declared ROM is a MEDIUM gap (it should compare ag
 mapper's expected `prg_rom_size`, not a flat constant).
 
 ### Dimension 10: default-mapper doc drift
-The codebase has *three* different "defaults": `main.py:run_prepare` and
+The codebase's "defaults" now agree on MMC3: `main.py:run_prepare` and
 `run_full_pipeline` instantiate `MMC3Mapper()` explicitly; `NESProjectBuilder.__init__`
-defaults `mapper_name="auto"`; and `get_mapper("auto", data_size=0)` falls back to MMC1.
-Reconcile these against the docs:
-- `CLAUDE.md` line 31/160 say MMC3; `CLAUDE.md` line 194 still says "Always use MMC1".
-- The README and `docs/MAPPER_MMC1_REFERENCE.md` may still describe MMC1 as the always-on
-  mapper. `grep -niE 'always use mmc1|default.*mapper|mmc1' README.md CLAUDE.md docs/*.md`.
-Each contradiction between code and a `docs/*.md` is doc-rot (LOW), but the fact that the
-auto-default (MMC1) disagrees with the hardcoded pipeline default (MMC3) is a real
-behavioral trap worth MEDIUM if a caller relies on `mapper_name="auto"`.
+defaults `mapper_name="auto"`; and `get_mapper("auto", data_size=0)` falls back to MMC3
+(#43). Still worth re-checking against the docs on each audit:
+- `CLAUDE.md` (ROM Structure) and `_audit-common.md` say MMC3 — the old "Always use MMC1"
+  claim was corrected (#43). Verify no regression reintroduced it.
+- The README and `docs/MAPPER_MMC1_REFERENCE.md` legitimately describe MMC1 as a
+  *selectable* mapper (and MMC1's own Mode-3 default) — not the pipeline default.
+  `grep -niE 'always use mmc1|default.*mapper|mmc1' README.md CLAUDE.md docs/*.md`.
+Any code path or `docs/*.md` that reasserts MMC1 as *the* default is doc-rot (LOW); a
+real auto-vs-pipeline default *disagreement* (were one reintroduced) would be MEDIUM.
 
 ## Skeptical checklist (run before writing each finding)
 - [ ] Sum the `nes.cfg` `MEMORY` regions — do they equal `prg_rom_size`? Does the header PRG byte agree?
