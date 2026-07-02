@@ -72,6 +72,35 @@ class TestMainArgumentParsing:
                     main()
                 assert exc.value.code == 2, f"{bad} should exit 2, got {exc.value.code}"
 
+    def test_global_arranger_before_subcommand_errors(self):
+        """Regression (#174): --arranger before a subcommand is a global flag
+        that argparse accepts but no subcommand consumes. It must error loudly
+        instead of silently falling back to legacy (non-arranger) mapping."""
+        for flag in ['--arranger', '-a']:
+            with patch('sys.argv', ['main.py', flag, 'map', 'parsed.json', 'mapped.json']):
+                with pytest.raises(SystemExit) as exc:
+                    main()
+                assert exc.value.code == 2, f"{flag} before a subcommand should exit 2, got {exc.value.code}"
+
+    def test_arranger_after_subcommand_still_rejected_by_argparse(self):
+        """--arranger placed after a subcommand (which doesn't declare it) must
+        keep failing via argparse's own 'unrecognized arguments' error."""
+        with patch('sys.argv', ['main.py', 'map', '--arranger', 'parsed.json', 'mapped.json']):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 2
+
+    def test_global_arranger_on_default_path_still_works(self):
+        """--arranger before a MIDI file (no subcommand) is the supported form
+        and must not be rejected by the new subcommand guard."""
+        with patch('sys.argv', ['main.py', '--arranger', 'song.mid', 'out.nes']):
+            with patch('builtins.print'):
+                with pytest.raises(SystemExit) as exc:
+                    main()
+                # Fails later on missing input file, not on flag parsing (exit 1),
+                # confirming --arranger was accepted and reached the pipeline.
+                assert exc.value.code != 2
+
 
 class TestRunParse:
     """Test run_parse command."""
