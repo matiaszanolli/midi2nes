@@ -691,7 +691,7 @@ def main():
     parser.add_argument('--version', action='version', version=f'MIDI2NES {__version__}')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     parser.add_argument('--debug', '-d', action='store_true', help='Enable debug overlay in ROM (shows APU status, frame counter, errors on screen)')
-    parser.add_argument('--arranger', '-a', action='store_true', help='Use intelligent arranger with arpeggiation for polyphonic content')
+    parser.add_argument('--arranger', '-a', action='store_true', help='Use intelligent arranger with arpeggiation for polyphonic content (default pipeline only; no subcommand equivalent yet)')
     
     subparsers = parser.add_subparsers(dest='command', help='Advanced commands (optional - default is MIDI to ROM conversion)')
 
@@ -837,6 +837,17 @@ def main():
             break
     
     if first_arg in subcommands:
+        # --arranger is declared on the top-level parser, so argparse happily
+        # accepts it before a subcommand -- but no subcommand reads args.arranger,
+        # so it would be silently discarded and the step-by-step chain would
+        # produce the legacy (non-arranger) song with zero diagnostics (#174).
+        pre_subcommand_args = sys.argv[1:sys.argv.index(first_arg)]
+        if '--arranger' in pre_subcommand_args or '-a' in pre_subcommand_args:
+            print("Error: --arranger only applies to the default MIDI-to-ROM pipeline; "
+                  "there is no step-by-step equivalent yet.", file=sys.stderr)
+            print(f"Run 'midi2nes --arranger song.mid' instead, or drop --arranger before '{first_arg}'.",
+                  file=sys.stderr)
+            sys.exit(2)
         # It's a subcommand, parse normally
         args = parser.parse_args()
         if hasattr(args, 'func'):
