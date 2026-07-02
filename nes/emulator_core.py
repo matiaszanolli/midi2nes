@@ -109,7 +109,7 @@ class NESEmulatorCore:
                         "control": control_byte,
                         "arpeggio": arpeggio,
                         "note": event['note'],
-                        "volume": min(15, velocity // 8) if velocity == 0 else max(1, int(15 * math.pow(velocity / 127.0, 1.5)))
+                        "volume": max(1, int(15 * math.pow(velocity / 127.0, 1.5)))
                     }
                 else:
                     # Apply power curve for volume fidelity on all non-pulse channels too

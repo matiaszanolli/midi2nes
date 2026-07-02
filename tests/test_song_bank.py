@@ -26,6 +26,37 @@ class TestSongBank(unittest.TestCase):
         if self.test_bank_path.exists():
             self.test_bank_path.unlink()
 
+    def test_uses_parser_fast_not_old_parser(self):
+        """Regression (#33 / F-14): SongBank must parse with the same
+        parser front-end the real pipeline uses (parser_fast), not the
+        older full parser -- otherwise a song stored in the bank could be
+        parsed differently than the pipeline that would render it."""
+        import nes.song_bank as song_bank_module
+        from tracker.parser_fast import parse_midi_to_frames as fast_parse
+        self.assertIs(song_bank_module.parse_midi_to_frames, fast_parse)
+
+    def test_add_song_from_midi_matches_parser_fast_output(self):
+        """The events SongBank stores for a MIDI file must match what
+        parser_fast itself produces for the same file (parser parity)."""
+        import mido
+
+        mid = mido.MidiFile()
+        track = mido.MidiTrack()
+        mid.tracks.append(track)
+        track.append(mido.MetaMessage('track_name', name='Test', time=0))
+        track.append(mido.Message('note_on', note=60, velocity=100, channel=0, time=0))
+        track.append(mido.Message('note_off', note=60, velocity=0, channel=0, time=480))
+        midi_path = Path(self.temp_dir) / "song.mid"
+        mid.save(str(midi_path))
+
+        from tracker.parser_fast import parse_midi_to_frames as fast_parse
+        expected = fast_parse(str(midi_path))
+
+        self.bank.add_song_from_midi(str(midi_path), name="test_song")
+        stored_events = self.bank.songs["test_song"]["segments"]["events"]
+
+        self.assertEqual(stored_events, expected["events"])
+
     def test_add_song(self):
         """Test adding a song to the bank"""
         metadata = {

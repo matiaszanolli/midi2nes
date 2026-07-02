@@ -4,7 +4,11 @@ import json
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 from pathlib import Path
-from tracker.parser import parse_midi_to_frames
+# Use the same parser front-end the real pipeline uses (main.py), not the
+# older full parser -- a song stored in the bank must be parsed by the same
+# code path that would render it, or note/event handling can silently drift
+# between the two (#33 / F-14).
+from tracker.parser_fast import parse_midi_to_frames
 
 @dataclass
 class SongMetadata:

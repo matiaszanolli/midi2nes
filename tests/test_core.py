@@ -91,6 +91,22 @@ class TestNESCore(unittest.TestCase):
         self.assertEqual(frames[4]['note'], 60)
         self.assertEqual(frames[5]['note'], 62)
 
+    def test_pulse_frame_volume_uses_power_curve(self):
+        """Regression (#34 / NH-08): the pulse-branch `volume` field used to
+        have a dead `velocity == 0` arm (`min(15, velocity // 8)`) that could
+        never fire -- compile_channel_to_frames already `continue`s on
+        velocity 0 before reaching this code. Only the power-curve expression
+        must survive, matching every other channel's volume curve."""
+        import math
+        for velocity in (1, 8, 32, 64, 100, 127):
+            events = [{'frame': 0, 'note': 60, 'velocity': velocity}]
+            frames = self.emulator.compile_channel_to_frames(
+                events, channel_type='pulse1', sustain_frames=1)
+            expected = max(1, int(15 * math.pow(velocity / 127.0, 1.5)))
+            self.assertEqual(frames[0]['volume'], expected)
+            self.assertGreaterEqual(frames[0]['volume'], 1)
+            self.assertLessEqual(frames[0]['volume'], 15)
+
     def test_basic_track_structure(self):
         """Test that process_all_tracks maintains expected channel structure"""
         result = self.emulator.process_all_tracks(self.test_tracks)
