@@ -307,6 +307,36 @@ class TestRunPrepare:
             run_prepare(args)
         assert exc.value.code == 1
         mock_builder_class.assert_called_once()
+
+    @patch('main.NESProjectBuilder')
+    @patch('builtins.print')
+    def test_run_prepare_honors_debug_flag(self, mock_print, mock_builder_class):
+        """Regression (#175): global --debug must reach the builder's debug_mode,
+        not be silently discarded like --arranger was (#174)."""
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        args = Namespace(input=str(self.test_input), output=str(self.test_output), debug=True)
+
+        run_prepare(args)
+
+        assert mock_builder_class.call_args.kwargs['debug_mode'] is True
+
+    @patch('main.NESProjectBuilder')
+    @patch('builtins.print')
+    def test_run_prepare_defaults_debug_false(self, mock_print, mock_builder_class):
+        """Without --debug (or on a Namespace that lacks the attribute), the
+        builder must still be built in non-debug mode."""
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        args = Namespace(input=str(self.test_input), output=str(self.test_output))
+
+        run_prepare(args)
+
+        assert mock_builder_class.call_args.kwargs['debug_mode'] is False
         assert mock_builder_class.call_args[0][0] == str(self.test_output)
 
 
