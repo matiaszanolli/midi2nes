@@ -7,10 +7,44 @@ Tests the validate_rom function which performs basic NES ROM validation.
 import pytest
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import validate_rom as validate_rom_module
 from validate_rom import validate_rom
+
+
+class TestValidateROMDelegatesToRomDiagnostics:
+    """Regression (#130): the root validate_rom.py used to be a second,
+    independently hand-rolled header/vector checker with its own divergent
+    validity rules from main.py's real gate (ROMDiagnostics). It must now
+    delegate every check to ROMDiagnostics instead."""
+
+    def test_imports_rom_diagnostics(self):
+        assert hasattr(validate_rom_module, 'ROMDiagnostics')
+        from debug.rom_diagnostics import ROMDiagnostics
+        assert validate_rom_module.ROMDiagnostics is ROMDiagnostics
+
+    def test_validity_rule_comes_from_rom_diagnostics(self, valid_rom_file):
+        """A ROMDiagnostics result reporting an invalid ROM must make
+        validate_rom() fail too -- proving it actually consults
+        ROMDiagnostics rather than re-deriving validity independently."""
+        from debug.rom_diagnostics import ROMDiagnosticResult
+
+        fake_result = ROMDiagnosticResult(
+            file_path=str(valid_rom_file), file_size=1000, is_valid_nes=False,
+            prg_banks=0, chr_banks=0, expected_size=0, size_mismatch=0,
+            zero_byte_percent=0.0, repeated_chunks_percent=0.0, reset_vectors={},
+            reset_vectors_valid=False, apu_pattern_count=0, pattern_data_density=0.0,
+            assembly_code_score=0, overall_health="ERROR", issues=["fake"],
+            recommendations=[])
+
+        with patch.object(validate_rom_module.ROMDiagnostics, 'diagnose_rom',
+                          return_value=fake_result):
+            result = validate_rom(str(valid_rom_file))
+
+        assert result is False
 
 
 class TestValidateROMFunction:
