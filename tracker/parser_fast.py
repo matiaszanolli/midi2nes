@@ -84,12 +84,20 @@ def parse_midi_to_frames(midi_path):
     for i, track in enumerate(mid.tracks):
         current_tick = 0
         track_name = f"track_{i}"
+        # GM program is channel-scoped and can change mid-track; track each
+        # channel's currently active program so it can be carried on every
+        # note event for the arranger's GM role/timbre hint (#86) -- without
+        # this, program is unreachable and every track defaults to Acoustic
+        # Grand Piano.
+        channel_programs = {}
 
         for msg in track:
             current_tick += msg.time
-            
+
             if msg.type == 'track_name':
                 track_name = msg.name.strip().replace(" ", "_")
+            elif msg.type == 'program_change':
+                channel_programs[msg.channel] = msg.program
             elif msg.type in ['note_on', 'note_off']:
                 try:
                     # Fast frame calculation
@@ -109,6 +117,8 @@ def parse_midi_to_frames(midi_path):
                         # GM percussion (channel 10 / index 9). Without it the
                         # arranger can only guess drums from the track name (#85).
                         "channel": msg.channel,
+                        # GM program active on this channel at note time (#86).
+                        "program": channel_programs.get(msg.channel, 0),
                         "tempo": tempo_map.get_tempo_at_tick(current_tick)
                     })
                 except Exception:

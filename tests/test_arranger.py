@@ -16,11 +16,15 @@ NES_CHANNELS = {'pulse1', 'pulse2', 'triangle', 'noise', 'dpcm'}
 DEFAULT_ARP_SPEED = 3  # frames per arp step == 20Hz at 60fps (docs/arpeggio.md)
 
 
-def _held(pitch, start, dur, vel=100, chan=0):
+def _held(pitch, start, dur, vel=100, chan=0, program=None):
     """A note-on/note-off event pair for one held note (arranger input format:
     note-off is velocity 0)."""
-    return [{'frame': start, 'note': pitch, 'velocity': vel, 'channel': chan},
-            {'frame': start + dur, 'note': pitch, 'velocity': 0, 'channel': chan}]
+    on = {'frame': start, 'note': pitch, 'velocity': vel, 'channel': chan}
+    off = {'frame': start + dur, 'note': pitch, 'velocity': 0, 'channel': chan}
+    if program is not None:
+        on['program'] = program
+        off['program'] = program
+    return [on, off]
 
 
 class TestArrangerRoleAnalysis(unittest.TestCase):
@@ -35,6 +39,40 @@ class TestArrangerRoleAnalysis(unittest.TestCase):
         roles = {t.name: t.role for t in plan.tracks}
         self.assertEqual(roles['low'], MusicalRole.BASS)
         self.assertEqual(roles['high'], MusicalRole.MELODY)
+
+
+class TestArrangerGMProgramHint(unittest.TestCase):
+    """Regression (#86 / ARR-03): `program` used to be hardcoded to 0 in
+    analyze_midi_events and never updated, making the entire GM instrument
+    table and GM-driven role/channel/duty selection dead code."""
+
+    def test_program_is_carried_from_events_to_track_analysis(self):
+        events = {'bass_track': _held(40, 0, 40, program=33)}  # GM 33: Electric Bass
+        plan, _, _ = analyze_midi_events(events)
+        track = next(t for t in plan.tracks if t.name == 'bass_track')
+        self.assertEqual(track.program, 33)
+
+    def test_program_defaults_to_zero_when_absent(self):
+        """Events without a 'program' field (e.g. an older upstream parse)
+        must default to GM program 0, not crash."""
+        events = {'melody_track': _held(72, 0, 40)}  # no program kwarg
+        plan, _, _ = analyze_midi_events(events)
+        track = next(t for t in plan.tracks if t.name == 'melody_track')
+        self.assertEqual(track.program, 0)
+
+    def test_notes_pick_up_program_active_at_note_on(self):
+        """A mid-track instrument change must be reflected per-note (the
+        program active when each note started), not just at the track level."""
+        events = {
+            'track': (_held(40, 0, 40, program=33)      # Electric Bass
+                      + _held(67, 60, 40, program=56)),  # Trumpet
+        }
+        _, notes_by_track, _ = analyze_midi_events(events)
+        notes = notes_by_track[0]
+        bass_note = next(n for n in notes if n.pitch == 40)
+        trumpet_note = next(n for n in notes if n.pitch == 67)
+        self.assertEqual(bass_note.program, 33)
+        self.assertEqual(trumpet_note.program, 56)
 
 
 class TestArrangerArpeggiation(unittest.TestCase):
