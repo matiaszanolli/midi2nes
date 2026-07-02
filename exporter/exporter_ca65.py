@@ -45,8 +45,10 @@ class CA65Exporter(BaseExporter):
         super().__init__()
         
     def midi_note_to_timer_value(self, midi_note, channel=None):
-        if midi_note < 24 or midi_note > 119:  # Valid range for NES
-            return 0
+        # Clamp instead of returning 0: a 0 base combined with the encoder's
+        # +127-clamped pitch offset overflows the 11-bit timer at runtime
+        # instead of just playing the nearest representable note (#158).
+        midi_note = max(24, min(midi_note, 119))
         # Use the shared per-channel table so this base timer is on the same
         # scale as the frame `pitch` it is differenced against (#16, #12).
         # Triangle uses the /32 table (an octave lower for the same timer), so
@@ -982,6 +984,15 @@ class CA65Exporter(BaseExporter):
                         note = 255
                 elif note > 95:
                     note = 95
+                elif channel != 'noise' and 0 < note < 24:
+                    # Tone channels only: clamp the note baked into the
+                    # instruction stream (and later fed to
+                    # midi_note_to_timer_value) to the same floor the frame
+                    # `pitch` was already clamped to, so the runtime base-period
+                    # lookup and the pitch offset agree on the same note (#158).
+                    # `noise`'s "note" is a 4-bit period index, not a MIDI note —
+                    # clamping it here would corrupt the drum pitch.
+                    note = 24
 
                 if note != current_note:
                     if current_event is not None:

@@ -51,6 +51,12 @@ class NESEmulatorCore:
         """
         frames = defaultdict(dict)
 
+        # Real note-off pairing (#160): a fixed sustain_frames used to be the
+        # *only* source of duration, discarding whatever length the MIDI note
+        # actually had. Search the original (unfiltered) events for each
+        # note-on's matching note-off before they get collapsed away below.
+        all_events_sorted = sorted(events, key=lambda e: e['frame'])
+
         # Collapse same-frame note-ons (mono channel) so a later note never
         # silently overwrites an earlier one for the shared frames (#96). After
         # this, every kept event has a unique frame, so the truncation guard
@@ -65,9 +71,21 @@ class NESEmulatorCore:
                 continue  # We simulate note-off via time
 
             start_frame = event['frame']
-            end_frame = start_frame + sustain_frames
+            note_pitch = event['note']
 
-            # Stop early if another note starts before sustain ends
+            # Use the matching note-off's frame as the real duration; fall
+            # back to sustain_frames only when this note-on has none (same
+            # fallback the arranger front-end uses for unpaired notes).
+            end_frame = start_frame + sustain_frames
+            for other in all_events_sorted:
+                if other['frame'] <= start_frame:
+                    continue
+                other_velocity = other.get('velocity', other.get('volume', 0))
+                if other_velocity == 0 and other.get('note') == note_pitch:
+                    end_frame = other['frame']
+                    break
+
+            # Stop early if another note starts before this note's end
             for j in range(i + 1, num_events):
                 next_event = events[j]
                 next_velocity = next_event.get('velocity', next_event.get('volume', 0))
