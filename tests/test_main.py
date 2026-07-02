@@ -218,8 +218,9 @@ class TestRunMap:
                 main_entry()
 
     def test_run_map_missing_events_key(self):
-        """Regression (#110): a parse output without an 'events' key must fail
-        with a clear [ERROR] message and exit 1, not a bare KeyError traceback."""
+        """Regression (#110, #120): a parse output without an 'events' key must
+        fail with a clear [ERROR] message and exit 1, not a bare KeyError
+        traceback."""
         self.test_input.write_text(json.dumps({"tracks": {}}))
         args = Namespace(input=str(self.test_input), output=str(self.test_output))
 
@@ -227,22 +228,28 @@ class TestRunMap:
             with pytest.raises(SystemExit) as exc:
                 run_map(args)
         assert exc.value.code == 1
-        mock_print.assert_any_call("[ERROR] Parse output missing 'events' key")
+        mock_print.assert_any_call(
+            "[ERROR] parse input missing expected key(s) ['events']: "
+            f"{self.test_input} (is this the right stage's JSON?)")
 
     def test_run_map_invalid_json(self):
-        """Test mapping with invalid JSON input."""
+        """Regression (#120): invalid JSON must fail with a clear [ERROR]
+        message and exit 1, not a bare JSONDecodeError traceback."""
         self.test_input.write_text("invalid json")
         args = Namespace(input=str(self.test_input), output=str(self.test_output))
 
-        with pytest.raises(json.JSONDecodeError):
+        with pytest.raises(SystemExit) as exc:
             run_map(args)
-    
+        assert exc.value.code == 1
+
     def test_run_map_missing_file(self):
-        """Test mapping with missing input file."""
+        """Regression (#120): a missing input file must fail with a clear
+        [ERROR] message and exit 1, not a bare FileNotFoundError traceback."""
         args = Namespace(input="nonexistent.json", output=str(self.test_output))
-        
-        with pytest.raises(FileNotFoundError):
+
+        with pytest.raises(SystemExit) as exc:
             run_map(args)
+        assert exc.value.code == 1
 
 
 class TestRunFrames:
@@ -283,6 +290,23 @@ class TestRunFrames:
         assert "0" in content
         
         mock_print.assert_called_once_with(f" Generated frames -> {args.output}")
+
+    def test_run_frames_missing_file(self):
+        """Regression (#120): a missing input file must fail with a clear
+        [ERROR] message and exit 1, not a bare FileNotFoundError traceback."""
+        args = Namespace(input="nonexistent.json", output=str(self.test_output))
+        with pytest.raises(SystemExit) as exc:
+            run_frames(args)
+        assert exc.value.code == 1
+
+    def test_run_frames_invalid_json(self):
+        """Regression (#120): invalid JSON must fail with a clear [ERROR]
+        message and exit 1, not a bare JSONDecodeError traceback."""
+        self.test_input.write_text("not json")
+        args = Namespace(input=str(self.test_input), output=str(self.test_output))
+        with pytest.raises(SystemExit) as exc:
+            run_frames(args)
+        assert exc.value.code == 1
 
 
 class TestRunPrepare:
@@ -448,6 +472,60 @@ class TestRunExport:
         assert call_args[0][1] == {}  # empty patterns
         assert call_args[0][2] == {}  # empty references
     
+    def test_run_export_missing_frames_file(self):
+        """Regression (#120): a missing frames file must fail with a clear
+        [ERROR] message and exit 1, not a bare FileNotFoundError traceback."""
+        args = Namespace(input="nonexistent.json", output=str(self.test_output),
+                          format="ca65", patterns=None)
+        with pytest.raises(SystemExit) as exc:
+            run_export(args)
+        assert exc.value.code == 1
+
+    def test_run_export_missing_patterns_file(self):
+        """Regression (#120): a missing --patterns file must fail with a clear
+        [ERROR] message and exit 1, not a bare FileNotFoundError traceback."""
+        args = Namespace(input=str(self.test_input), output=str(self.test_output),
+                          format="ca65", patterns="nonexistent_patterns.json")
+        with pytest.raises(SystemExit) as exc:
+            run_export(args)
+        assert exc.value.code == 1
+
+    def test_run_export_wrong_stage_patterns_file(self):
+        """Regression (#120): a --patterns file from the wrong stage (missing
+        'patterns'/'references') must fail with a clear [ERROR] message and
+        exit 1, not a bare KeyError traceback."""
+        wrong_stage_file = self.temp_dir / "frames_not_patterns.json"
+        wrong_stage_file.write_text(json.dumps({"channel_0": {}}))
+        args = Namespace(input=str(self.test_input), output=str(self.test_output),
+                          format="ca65", patterns=str(wrong_stage_file))
+        with pytest.raises(SystemExit) as exc:
+            run_export(args)
+        assert exc.value.code == 1
+
+    @patch('main.CA65Exporter')
+    def test_run_export_dpcm_pack_failure_surfaced_prominently(self, mock_exporter_class):
+        """Regression (#123): a corrupt dpcm_index.json must not be silently
+        swallowed -- the failure must be surfaced after the main success line
+        (prominent), not just as an easy-to-miss warning printed above it."""
+        import shutil
+        mock_exporter_class.return_value = Mock()
+        cwd = os.getcwd()
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            (tmp / "dpcm_index.json").write_text("not valid json")
+            os.chdir(tmp)
+            args = Namespace(input=str(self.test_input), output=str(self.test_output),
+                              format="ca65", patterns=None)
+            with patch('builtins.print') as mock_print:
+                run_export(args)
+            messages = [str(c.args[0]) for c in mock_print.call_args_list if c.args]
+            exported_idx = next(i for i, m in enumerate(messages) if "Exported CA65 ASM" in m)
+            warning_idx = next(i for i, m in enumerate(messages) if "NO DRUMS" in m)
+            assert warning_idx > exported_idx, "the NO DRUMS warning must come after the success line"
+        finally:
+            os.chdir(cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_export_rejects_nsf_format(self):
         """Regression (#79): `--format nsf` used to be accepted by argparse but
         dispatched on the impossible string "nsftxt", so it silently wrote
@@ -1134,14 +1212,16 @@ class TestErrorHandling:
             run_parse(args)
     
     def test_run_map_invalid_json(self):
-        """Test map with invalid JSON input."""
+        """Regression (#120): invalid JSON must fail with a clear [ERROR]
+        message and exit 1, not a bare JSONDecodeError traceback."""
         invalid_json_file = self.temp_dir / "invalid.json"
         invalid_json_file.write_text("invalid json content")
-        
+
         args = Namespace(input=str(invalid_json_file), output="output.json")
-        
-        with pytest.raises(json.JSONDecodeError):
+
+        with pytest.raises(SystemExit) as exc:
             run_map(args)
+        assert exc.value.code == 1
     
     @patch('main.EnhancedPatternDetector')
     def test_run_detect_patterns_detector_error(self, mock_detector_class):
@@ -1226,6 +1306,54 @@ class TestFullPipelineBackupCleanup:
 
             assert output_rom.exists()
             assert not backup_path.exists(), ".nes.backup must be removed on success"
+
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('main.CA65Exporter')
+    @patch('main.NESEmulatorCore')
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
+    def test_corrupt_dpcm_index_warns_prominently_in_success_banner(
+            self, mock_parse, mock_assign, mock_emu_cls, mock_exporter_cls,
+            mock_builder_cls, mock_compile):
+        """Regression (#123): a corrupt dpcm_index.json must not be silently
+        swallowed -- the ROM still builds (DPCM is optional) but the success
+        banner must prominently warn it has no drums, not just an
+        easy-to-miss warning line buried earlier in the output."""
+        mock_parse.return_value = {"events": {"0": [{"frame": 0, "note": 60}]}}
+        mock_assign.return_value = {}
+        mock_emu = Mock()
+        mock_emu.process_all_tracks.return_value = {"pulse1": {"0": {"note": 60, "volume": 15}}}
+        mock_emu_cls.return_value = mock_emu
+        mock_exporter_cls.return_value = Mock()
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_cls.return_value = mock_builder
+
+        def fake_compile(project_path, out_rom):
+            Path(out_rom).write_bytes(b"\x00" * 1024)
+            return True
+        mock_compile.side_effect = fake_compile
+
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            (tdp / "dpcm_index.json").write_text("not valid json")
+            input_midi = tdp / "song.mid"
+            input_midi.write_bytes(b"MThd")
+            output_rom = tdp / "song.nes"
+
+            os.chdir(tdp)
+            try:
+                with patch('builtins.print') as mock_print:
+                    run_full_pipeline(self._make_args(input_midi, output_rom))
+                messages = [str(c.args[0]) for c in mock_print.call_args_list if c.args]
+            finally:
+                os.chdir(cwd)
+
+        success_idx = next(i for i, m in enumerate(messages) if "SUCCESS! ROM created" in m)
+        warning_idx = next(i for i, m in enumerate(messages) if "NO DRUMS" in m)
+        assert warning_idx > success_idx, "the NO DRUMS warning must come after the success banner"
 
     @patch('main.compile_rom')
     @patch('main.NESProjectBuilder')

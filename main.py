@@ -34,6 +34,37 @@ from compiler import compile_rom
 PATTERN_MIN_LENGTH = 3
 PATTERN_MAX_LENGTH = 12
 
+def load_json_stage(path, required_keys, stage_name):
+    """Load an inter-stage JSON artifact with an existence/parse/key guard.
+
+    Every step-by-step subcommand did `json.loads(Path(input).read_text())`
+    then immediately indexed a hard-coded key, so a missing file, a
+    truncated/garbage file, or a file from the wrong pipeline stage all
+    surfaced as a raw traceback (FileNotFoundError / JSONDecodeError /
+    KeyError) on the documented step-by-step debugging path instead of a
+    clear message (#120). Exits with a clean [ERROR] message and code 1,
+    matching every other subcommand guard in this file (#110, #13, #15)
+    rather than raising, since main.py has no outer caller to catch it.
+    """
+    p = Path(path)
+    if not p.exists():
+        print(f"[ERROR] {stage_name} input not found: {p}")
+        sys.exit(1)
+    try:
+        data = json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] {stage_name} input is not valid JSON: {p} ({e})")
+        sys.exit(1)
+    if not isinstance(data, dict):
+        print(f"[ERROR] {stage_name} input must be a JSON object: {p}")
+        sys.exit(1)
+    missing = [k for k in required_keys if k not in data]
+    if missing:
+        print(f"[ERROR] {stage_name} input missing expected key(s) {missing}: {p} "
+              f"(is this the right stage's JSON?)")
+        sys.exit(1)
+    return data
+
 def run_parse(args):
     # Use fast parser by default for better performance
     from tracker.parser_fast import parse_midi_to_frames as parse_fast
@@ -42,14 +73,8 @@ def run_parse(args):
     print(f"[OK] Parsed MIDI -> {args.output}")
 
 def run_map(args):
-    midi_data = json.loads(Path(args.input).read_text())
-    # The parser always writes an 'events' key; a hand-edited or drifted parse
-    # output without it should fail with a clear message, not a bare KeyError
-    # traceback (#110). The default pipeline builds midi_data in-memory via
-    # parse_fast, so this only guards the step-by-step `map` subcommand.
-    if "events" not in midi_data:
-        print("[ERROR] Parse output missing 'events' key")
-        sys.exit(1)
+    # Guard against a missing/corrupt file or wrong-stage JSON (#110, #120).
+    midi_data = load_json_stage(args.input, ['events'], 'parse')
     # Honor --dpcm-index instead of silently using the default (#13).
     dpcm_index_path = getattr(args, 'dpcm_index', None) or 'dpcm_index.json'
     # Extract just the events from the parsed data
@@ -58,7 +83,9 @@ def run_map(args):
     print(f"[OK] Mapped tracks -> {args.output}")
 
 def run_frames(args):
-    mapped = json.loads(Path(args.input).read_text())
+    # Guard against a missing/corrupt file (#120); the mapped JSON's channel
+    # keys are all optional, so there is no fixed required key to validate.
+    mapped = load_json_stage(args.input, [], 'map')
     emulator = NESEmulatorCore()
     frames = emulator.process_all_tracks(mapped)
     Path(args.output).write_text(json.dumps(frames, indent=2))
@@ -245,13 +272,18 @@ def run_prepare(args):
 
 def run_export(args):
     """Export function supporting multiple formats with pattern compression"""
-    frames = json.loads(Path(args.input).read_text())
-    
+    # Guard against a missing/corrupt file (#120); the frames JSON's channel
+    # keys are all optional, so there is no fixed required key to validate.
+    frames = load_json_stage(args.input, [], 'frames')
+
     # Check if we have pattern data
     pattern_data = None
     if args.patterns:
-        pattern_data = json.loads(Path(args.patterns).read_text())
-    
+        # detect-patterns always writes 'patterns'/'references'; a wrong-stage
+        # file here used to raise a raw KeyError below instead of this clear
+        # message (#120).
+        pattern_data = load_json_stage(args.patterns, ['patterns', 'references'], 'detect-patterns')
+
     # NOTE: `nsf` was removed from --format until the NSF exporter produces a
     # playable file (#81/EXP-05). The old `if args.format == "nsftxt"` branch
     # dispatched on a string argparse never allowed, so `--format nsf` silently
@@ -276,7 +308,13 @@ def run_export(args):
             standalone=False  # Don't include header and vectors for project builder
         )
             
-        # Pack DPCM samples for exported ASM
+        # Pack DPCM samples for exported ASM. Tracks any failure so it can be
+        # surfaced prominently after the success line rather than buried above
+        # it — a corrupt/partial dpcm_index.json (bad JSON, or an entry
+        # missing 'id'/'filename') used to be swallowed by this broad except
+        # and ship a silently drumless ASM with only an easy-to-miss warning
+        # printed before the final status line (#123).
+        dpcm_pack_warning = None
         try:
             from dpcm_sampler.dpcm_packer import DpcmPacker
             from dpcm_sampler.generate_dpcm_index import (
@@ -295,17 +333,27 @@ def run_export(args):
                 loaded_samples, _ = load_dpcm_index_into_packer(
                     packer, dpcm_index, dpcm_index_path, sample_ids=sample_ids)
                 if loaded_samples == 0 and sample_ids:
-                    print(f" Warning: this song references {len(sample_ids)} DPCM sample(s) but none resolved to a file — percussion will be silent.")
+                    dpcm_pack_warning = (
+                        f"this song references {len(sample_ids)} DPCM sample(s) but none "
+                        f"resolved to a file — the exported ASM has NO drums."
+                    )
                 with open(args.output, 'a') as f:
                     f.write("\n\n" + packer.generate_assembly())
         except Exception as e:
-            print(f" Warning: Failed to pack DPCM samples: {e}")
-                
+            dpcm_pack_warning = (
+                f"DPCM packing failed ({e}) — the exported ASM has NO drums even "
+                f"though dpcm_index.json may reference some."
+            )
+
         print(f" Exported CA65 ASM -> {args.output}")
+        if dpcm_pack_warning:
+            print(f"   ⚠️  NO DRUMS: {dpcm_pack_warning}")
 
 def run_detect_patterns(args):
-    frames = json.loads(Path(args.input).read_text())
-    
+    # Guard against a missing/corrupt file (#120); the frames JSON's channel
+    # keys are all optional, so there is no fixed required key to validate.
+    frames = load_json_stage(args.input, [], 'frames')
+
     # Create tempo map and pattern detector
     tempo_map = EnhancedTempoMap(initial_tempo=500000)  # 120 BPM default
     detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH,
@@ -570,8 +618,13 @@ def run_full_pipeline(args):
                 standalone=False  # We'll create our own project structure
             )
             
-            # Step 5.5: Pack DPCM samples
+            # Step 5.5: Pack DPCM samples. Tracks any failure so the success
+            # banner can warn the ROM has no drums, rather than reporting silent
+            # loss (#123) — a corrupt/partial dpcm_index.json (bad JSON, or an
+            # entry missing 'id'/'filename') used to be swallowed by this broad
+            # except with only a warning line that scrolled out of view.
             print("[5.5/7] Packing DPCM samples...")
+            dpcm_pack_warning = None
             try:
                 from dpcm_sampler.dpcm_packer import DpcmPacker
                 from dpcm_sampler.generate_dpcm_index import (
@@ -603,17 +656,25 @@ def run_full_pipeline(args):
                     if loaded_samples > 0:
                         print(f"  ✓ Packed {loaded_samples} DPCM samples across {len(packer.banks)} banks")
                     elif sample_ids:
-                        print(f"  ⚠️ Warning: this song references {len(sample_ids)} DPCM sample(s) but none resolved to a file — percussion will be silent.")
+                        dpcm_pack_warning = (
+                            f"this song references {len(sample_ids)} DPCM sample(s) but none "
+                            f"resolved to a file — the ROM has NO drums."
+                        )
+                        print(f"  ⚠️ Warning: {dpcm_pack_warning}")
                     else:
                         print("  ℹ️ No DPCM samples referenced by this song.")
                 else:
                     print("  ℹ️ No dpcm_index.json found, skipping DPCM packing.")
             except Exception as e:
+                dpcm_pack_warning = (
+                    f"DPCM packing failed ({e}) — the ROM has NO drums even though "
+                    f"dpcm_index.json may reference some."
+                )
                 print(f"  ⚠️ Warning: Failed to pack DPCM samples: {str(e)}")
                 if args.verbose:
                     import traceback
                     traceback.print_exc()
-                    
+
             # Step 6: Prepare NES project
             print("[6/7] Preparing NES project...")
             project_path = temp_path / "nes_project"
@@ -662,6 +723,8 @@ def run_full_pipeline(args):
             print(f"   Total patterns detected: {len(pattern_result['patterns'])}")
             if pattern_loss_warning:
                 print(f"\n   ⚠️  INCOMPLETE OUTPUT: {pattern_loss_warning}")
+            if dpcm_pack_warning:
+                print(f"\n   ⚠️  NO DRUMS: {dpcm_pack_warning}")
             print("\n🎮 Your NES ROM is ready to run on emulators or flash carts!")
 
             # The new ROM is final and validated; mark success so the finally
