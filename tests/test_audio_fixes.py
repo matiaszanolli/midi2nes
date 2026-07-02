@@ -419,19 +419,22 @@ class TestTrackSplitting(unittest.TestCase):
         self.assertEqual(len(split['pulse2']), 2, "Notes 48, 59 should be Pulse2")
         self.assertEqual(len(split['triangle']), 1, "Note 47 should be Triangle")
 
-    def test_skip_note_off_events(self):
-        """Verify note-off events (volume=0) are skipped during split"""
+    def test_note_off_events_routed_by_pitch(self):
+        """Regression (#160): note-off events must be preserved (routed by their
+        own pitch, same as note-ons) rather than dropped, so
+        compile_channel_to_frames can pair them with their note-on and recover
+        the note's real duration instead of forcing a fixed sustain."""
         events = [
-            {'frame': 0, 'note': 60, 'volume': 15},  # Note on
-            {'frame': 10, 'note': 60, 'volume': 0},  # Note off - should be skipped
-            {'frame': 20, 'note': 64, 'volume': 15}, # Note on
+            {'frame': 0, 'note': 60, 'volume': 15},  # Note on -> pulse1
+            {'frame': 10, 'note': 60, 'volume': 0},  # Note off -> pulse1
+            {'frame': 20, 'note': 64, 'volume': 15}, # Note on -> pulse1
         ]
 
         split = split_polyphonic_track(events)
 
-        # Should only have 2 events total (both note-ons)
         total_events = len(split['pulse1']) + len(split['pulse2']) + len(split['triangle'])
-        self.assertEqual(total_events, 2, "Note-off events should be skipped")
+        self.assertEqual(total_events, 3, "Note-off events must be preserved for duration pairing")
+        self.assertEqual(len(split['pulse1']), 3)
 
 
 @unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")

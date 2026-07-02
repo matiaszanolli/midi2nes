@@ -538,8 +538,14 @@ audio_update:
     jmp @next_channel
     
 @end_of_stream:
-    ; Sequence finished, leave wait counter at 0
-    
+    ; Sequence finished. Every subsequent frame re-fetches this same $FF, so
+    ; without an explicit silence write the channel's last note keeps its
+    ; hardware-halted, nonzero-volume state forever (#159). Re-arm silence
+    ; each frame instead (idempotent, and cheap next to a 5-channel budget).
+    lda #0
+    sta current_note, x
+    jmp @silence
+
 @next_channel:
     inx
     cpx #5

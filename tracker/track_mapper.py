@@ -147,6 +147,12 @@ def split_polyphonic_track(events):
     """
     Split a single polyphonic MIDI track into multiple NES channels by pitch range.
     Returns dict with pulse1, pulse2, triangle events.
+
+    Note-off events are routed by the same pitch-range rule as note-ons (a
+    note-off always carries the same `note` as the note-on it closes) and kept
+    in the output rather than dropped: compile_channel_to_frames pairs them
+    with their note-on to recover the real note duration instead of forcing a
+    fixed sustain (#160).
     """
     pulse1_events = []  # High notes (melody): >= 60
     pulse2_events = []  # Mid notes (harmony): 48-59
@@ -154,11 +160,6 @@ def split_polyphonic_track(events):
 
     for event in events:
         note = event['note']
-        vel = event.get('volume', event.get('velocity', 0))
-
-        # Skip note-off events
-        if vel == 0:
-            continue
 
         # Split by pitch range
         if note >= 60:

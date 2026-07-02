@@ -32,18 +32,25 @@ class TestCA65Export(unittest.TestCase):
         # Test valid notes
         self.assertGreater(self.exporter.midi_note_to_timer_value(60), 0)  # Middle C
         self.assertGreater(self.exporter.midi_note_to_timer_value(67), 0)  # G4
-        
-        # Test invalid notes
-        self.assertEqual(self.exporter.midi_note_to_timer_value(20), 0)  # Too low
-        self.assertEqual(self.exporter.midi_note_to_timer_value(120), 0)  # Too high
+
+        # Regression (#158): out-of-range notes must clamp to the nearest
+        # valid table entry instead of returning a 0 "rest" sentinel -- a 0
+        # base timer combined with the encoder's +127-clamped pitch offset
+        # overflowed the 11-bit APU timer instead of just playing the nearest
+        # representable note.
+        from nes.pitch_table import NES_NOTE_TABLE
+        self.assertEqual(self.exporter.midi_note_to_timer_value(20), NES_NOTE_TABLE[24])  # Too low
+        self.assertEqual(self.exporter.midi_note_to_timer_value(120), NES_NOTE_TABLE[119])  # Too high
 
     def test_midi_note_to_timer_value_floors_at_8(self):
         # Regression (NH-06 / #27): the highest in-range timer values are < 8,
         # which silences pulse/triangle (t < 8). NES_NOTE_TABLE floors at 8.
         self.assertGreaterEqual(self.exporter.midi_note_to_timer_value(118), 8)
         self.assertGreaterEqual(self.exporter.midi_note_to_timer_value(119), 8)
-        # Out-of-range still returns the 0 "rest" sentinel.
-        self.assertEqual(self.exporter.midi_note_to_timer_value(120), 0)
+        # Regression (#158): out-of-range now clamps to the nearest valid
+        # entry (still >= 8) instead of returning 0.
+        from nes.pitch_table import NES_NOTE_TABLE
+        self.assertEqual(self.exporter.midi_note_to_timer_value(120), NES_NOTE_TABLE[119])
 
     def test_base_timer_matches_pitch_table(self):
         # Regression (NH-03 / #16): the exporter base timer and the frame pitch
@@ -67,6 +74,45 @@ class TestCA65Export(unittest.TestCase):
             offset = max(-128, min(127, frame_pitch - base))
             self.assertEqual(offset, 0,
                              f"note {note}: frame {frame_pitch} vs base {base}")
+
+    def test_sub_c1_note_does_not_overflow_timer(self):
+        # Regression (#158): a sub-C1 note (e.g. MIDI 21, below the NES's
+        # lowest representable pitch) used to get base_timer=0 combined with a
+        # +127-clamped pitch offset, overflowing the 11-bit APU timer at
+        # runtime. The note baked into the instruction stream must clamp to
+        # 24 (same floor as the frame `pitch` already uses) so the runtime
+        # base-period lookup and the pitch offset agree, yielding offset 0.
+        from nes.pitch_table import NES_TRIANGLE_TABLE
+        frames = {'triangle': {'0': {'note': 21, 'pitch': NES_TRIANGLE_TABLE[24],
+                                      'volume': 10, 'control': 0x80}}}
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            self.exporter.export_tables_with_patterns(
+                frames, patterns={'triangle': ['x']}, references={}, output_path=out)
+            text = Path(out).read_text()
+            # The note operand baked into the instruction stream must be
+            # clamped to 24 ($18), not the raw out-of-range MIDI note (21).
+            self.assertIn('Note 24', text)
+            self.assertNotIn('Note 21', text)
+            # And the pitch macro offset must be 0 (not the +127 the bug produced).
+            pitch_section = text.split('; --- Pitch Macros ---', 1)[1]
+            first_macro = pitch_section.split('macro_pitch_1:', 1)[1].split('\n', 2)[1]
+            self.assertIn('$00, $FF', first_macro)
+        finally:
+            Path(out).unlink(missing_ok=True)
+
+    def test_end_of_stream_silences_channel(self):
+        # Regression (#159): hitting the $FF end-of-stream marker must fall
+        # into the channel's silence write, not just leave frame_wait at 0.
+        # Otherwise every subsequent frame re-fetches the same $FF with no
+        # hardware write, and the channel's last note (nonzero volume, halted
+        # length counter) drones forever once its part is shorter than the
+        # rest of the song.
+        engine_path = Path(__file__).parent.parent / "nes" / "audio_engine.asm"
+        text = engine_path.read_text()
+        end_of_stream = text.split('@end_of_stream:', 1)[1].split('@next_channel:', 1)[0]
+        self.assertIn('jmp @silence', end_of_stream,
+                      "end_of_stream must fall into the channel's silence write")
 
     def test_standalone_header_tracks_selected_mapper(self):
         # Regression (NH-09 / #36): the standalone iNES header must come from the

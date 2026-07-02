@@ -58,6 +58,39 @@ class TestNESCore(unittest.TestCase):
             self.emulator.pitch_processor.get_channel_pitch(62, 'pulse1')
         )
 
+    def test_note_off_gives_real_duration(self):
+        """Regression (#160): a note-on paired with a matching note-off must
+        sustain for its real length, not the fixed sustain_frames default --
+        the legacy path previously discarded MIDI note-off timing entirely,
+        capping every note at ~67ms regardless of how long it was actually
+        held."""
+        events = [
+            {'frame': 0, 'note': 60, 'velocity': 100},
+            {'frame': 30, 'note': 60, 'velocity': 0},  # note-off 30 frames later
+        ]
+        frames = self.emulator.compile_channel_to_frames(events, channel_type='pulse1')
+        self.assertEqual(sorted(frames.keys()), list(range(30)))
+
+    def test_missing_note_off_falls_back_to_sustain_frames(self):
+        """A note-on with no matching note-off must still fall back to
+        sustain_frames, exactly as before #160."""
+        events = [{'frame': 0, 'note': 60, 'velocity': 100}]
+        frames = self.emulator.compile_channel_to_frames(
+            events, channel_type='pulse1', sustain_frames=4)
+        self.assertEqual(sorted(frames.keys()), [0, 1, 2, 3])
+
+    def test_note_off_duration_still_truncated_by_next_note(self):
+        """A note-off timed after the next note-on must not resurrect or
+        extend the earlier note -- the next-note truncation guard still wins."""
+        events = [
+            {'frame': 0, 'note': 60, 'velocity': 100},
+            {'frame': 5, 'note': 62, 'velocity': 100},
+            {'frame': 40, 'note': 60, 'velocity': 0},  # stray/late note-off
+        ]
+        frames = self.emulator.compile_channel_to_frames(events, channel_type='pulse1')
+        self.assertEqual(frames[4]['note'], 60)
+        self.assertEqual(frames[5]['note'], 62)
+
     def test_basic_track_structure(self):
         """Test that process_all_tracks maintains expected channel structure"""
         result = self.emulator.process_all_tracks(self.test_tracks)
