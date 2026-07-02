@@ -266,7 +266,41 @@ class TestParseMidiToFrames:
         # Check that note_on with velocity 0 becomes note_off
         note_67_events = [e for e in events if e['note'] == 67]
         assert all(e['type'] == 'note_off' for e in note_67_events)
-    
+
+    def test_program_change_carried_on_note_events(self):
+        """Regression (#86): program_change was not parsed at all, so every
+        note event defaulted to GM program 0 (Acoustic Grand Piano) downstream
+        regardless of the MIDI's actual instrument, making the GM instrument
+        table unreachable. Each note event must carry the channel's currently
+        active program."""
+        tracks = [
+            [
+                mido.Message('program_change', channel=0, program=33, time=0),  # Electric Bass
+                mido.Message('note_on', channel=0, note=40, velocity=100, time=0),
+                mido.Message('note_off', channel=0, note=40, velocity=0, time=480),
+                # Mid-track instrument change on the same channel.
+                mido.Message('program_change', channel=0, program=56, time=0),  # Trumpet
+                mido.Message('note_on', channel=0, note=67, velocity=100, time=0),
+                mido.Message('note_off', channel=0, note=67, velocity=0, time=480),
+            ]
+        ]
+        midi_path = self.create_test_midi("program_change_test.mid", tracks)
+        result = parse_midi_to_frames(midi_path)
+        events = next(iter(result['events'].values()))
+
+        bass_events = [e for e in events if e['note'] == 40]
+        trumpet_events = [e for e in events if e['note'] == 67]
+        assert all(e['program'] == 33 for e in bass_events)
+        assert all(e['program'] == 56 for e in trumpet_events)
+
+    def test_note_without_program_change_defaults_to_zero(self):
+        """A channel with no program_change must default to GM program 0
+        (Acoustic Grand Piano), matching the MIDI spec default."""
+        midi_path = self.create_test_midi()  # default fixture: no program_change
+        result = parse_midi_to_frames(midi_path)
+        events = next(iter(result['events'].values()))
+        assert all(e['program'] == 0 for e in events)
+
     def test_event_error_handling(self):
         """Test that problematic events are silently skipped"""
         with patch('mido.MidiFile') as mock_midi:

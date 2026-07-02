@@ -12,7 +12,7 @@ from collections import defaultdict
 
 from .gm_instruments import (
     MusicalRole, NESChannel, PlayStyle, DutyCycle,
-    get_instrument_mapping,
+    get_instrument_mapping, get_drum_mapping,
 )
 from .role_analyzer import NoteInfo, TrackAnalysis, ArrangementPlan
 
@@ -240,6 +240,16 @@ class VoiceAllocator:
         self.triangle.note = lowest_pitch
         return (lowest_pitch, max_velocity)
 
+    # The only two DPCM-eligible drum categories GM_DRUM_MAP currently flags
+    # `use_sample=True` for are kick (notes 35/36) and snare (note 38); slots
+    # are keyed by GM_DRUM_MAP's own name so a note it does NOT route to DPCM
+    # (e.g. note 40, Electric Snare -> NOISE) can never be misrouted here (#87).
+    DPCM_SAMPLE_SLOTS = {
+        "Acoustic Bass Drum": 0,
+        "Bass Drum 1": 0,
+        "Acoustic Snare": 1,
+    }
+
     def _allocate_noise(
         self,
         notes_data: List[Tuple[int, NoteInfo, TrackAnalysis]],
@@ -253,9 +263,16 @@ class VoiceAllocator:
         best_note = max(notes_data, key=lambda x: x[1].velocity)
         _, note, _ = best_note
 
-        # Map MIDI note to noise period (0-15)
-        # Higher notes = shorter period = higher pitch noise
-        noise_period = max(0, min(15, (note.pitch - 36) // 6))
+        # Use GM_DRUM_MAP's curated noise_period instead of recomputing a
+        # linear pitch-based formula, so e.g. a closed hi-hat (period 0) and a
+        # cowbell (period 8) sound distinct as intended (#87). Fall back to 5
+        # (matching get_drum_mapping's own "Unknown Drum" default) when the
+        # mapped drum has no curated period (e.g. it's normally routed to a
+        # different channel, like the toms -> TRIANGLE).
+        noise_period = get_drum_mapping(note.pitch).noise_period
+        if noise_period is None:
+            noise_period = 5
+        noise_period = max(0, min(15, noise_period))
 
         self.noise.note = note.pitch
         return (noise_period, note.velocity)
@@ -264,20 +281,29 @@ class VoiceAllocator:
         self,
         notes_data: List[Tuple[int, NoteInfo, TrackAnalysis]],
     ) -> Optional[int]:
-        """Allocate DPCM samples for kicks/snares."""
+        """Allocate DPCM samples for kicks/snares.
+
+        Routing and slot selection are driven by GM_DRUM_MAP (get_drum_mapping)
+        instead of a hardcoded note list, so a note GM_DRUM_MAP does not flag
+        `use_sample=True` for (e.g. note 40, Electric Snare -> NOISE) is never
+        treated as a DPCM hit (#87).
+        """
         if not notes_data:
             return None
 
-        # Pick the drum hit to sample
-        # Priority: kick (35, 36), snare (38, 40)
-        for _, note, _ in notes_data:
-            if note.pitch in [35, 36]:  # Kick
-                return 0  # Sample index for kick
-            elif note.pitch in [38, 40]:  # Snare
-                return 1  # Sample index for snare
+        dpcm_candidates = [
+            (note, get_drum_mapping(note.pitch)) for _, note, _ in notes_data
+        ]
+        dpcm_candidates = [
+            (note, mapping) for note, mapping in dpcm_candidates
+            if mapping.use_sample and mapping.channel == NESChannel.DPCM
+        ]
+        if not dpcm_candidates:
+            return None
 
-        # No priority drum, just return first
-        return 2  # Generic sample
+        # Highest GM priority wins (kick outranks snare in GM_DRUM_MAP).
+        _, mapping = max(dpcm_candidates, key=lambda nm: nm[1].priority)
+        return self.DPCM_SAMPLE_SLOTS.get(mapping.name, 2)
 
 
 class FrameByFrameAllocator:
