@@ -221,7 +221,9 @@ def run_prepare(args):
     except ValueError as e:
         print(f"[ERROR] {e}")
         sys.exit(1)
-    builder = NESProjectBuilder(args.output, mapper=mapper)
+    # Honor --debug on the step-by-step `prepare` path the same way the default
+    # pipeline does, instead of silently building a non-debug ROM (#175).
+    builder = NESProjectBuilder(args.output, debug_mode=getattr(args, 'debug', False), mapper=mapper)
     # prepare_project may raise (bad path/permissions) or return falsy; either
     # way surface a clean nonzero exit instead of an uncaught traceback or a
     # silent exit 0 on failure (#15).
