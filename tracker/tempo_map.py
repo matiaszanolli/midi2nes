@@ -243,10 +243,7 @@ class EnhancedTempoMap(TempoMap):
             
         super().__init__(initial_tempo, ticks_per_beat)
         self.optimization_strategy = optimization_strategy
-        
-        # Initialize numpy arrays for frame calculations
-        self._frame_times = np.arange(0, 10000) * np.float64(FRAME_MS)
-        
+
         # Enhanced features
         self.enhanced_changes = [TempoChange(0, initial_tempo)]
         self.pattern_tempos = {}  # For pattern-specific tempo info
@@ -267,6 +264,14 @@ class EnhancedTempoMap(TempoMap):
         """Add a tempo change with frame alignment"""
         # Allow tempo changes at tick 0 only if it's replacing the initial tempo
         if tick == 0:
+            # Validate before replacing the initial tempo (#208/TEMPO-08): this
+            # early return used to bypass _validate_basic_tempo entirely, so a
+            # MIDI file whose first set_tempo carried a zero/negative or
+            # out-of-range tempo at tick 0 was accepted with no error and
+            # silently corrupted the whole song's timing (tempo=0 collapses
+            # every event before the next real change onto frame 0; negative
+            # tempo produces negative frame indices for the whole song).
+            self._validate_basic_tempo(TempoChange(tick, tempo, change_type, duration_ticks))
             # Update the initial tempo in the base class
             if self.tempo_changes and self.tempo_changes[0][0] == 0:
                 self.tempo_changes[0] = (0, tempo)
