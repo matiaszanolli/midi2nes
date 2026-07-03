@@ -4,7 +4,9 @@ from typing import List, Dict, Tuple, Any, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 from tracker.tempo_map import EnhancedTempoMap
-from tracker.pattern_detector import PatternCompressor, sample_events_for_detection, score_pattern
+from tracker.pattern_detector import (
+    PatternCompressor, sample_events_for_detection, score_pattern, MAX_PATTERN_EVENTS
+)
 
 class ParallelPatternDetector:
     """
@@ -12,12 +14,17 @@ class ParallelPatternDetector:
     Designed for large MIDI files with thousands of events.
     """
     
-    def __init__(self, tempo_map: EnhancedTempoMap, min_pattern_length=3, max_pattern_length=32):
+    def __init__(self, tempo_map: EnhancedTempoMap, min_pattern_length=3, max_pattern_length=32,
+                 max_pattern_events=MAX_PATTERN_EVENTS):
         self.tempo_map = tempo_map
         self.min_pattern_length = min_pattern_length
         self.max_pattern_length = max_pattern_length
+        # Overridable sampling cap (#219) — defaults to the module constant so
+        # behavior is unchanged unless a caller (e.g. a loaded config file)
+        # supplies a different value.
+        self.max_pattern_events = max_pattern_events
         self.compressor = PatternCompressor()
-        
+
         # Get optimal number of workers
         self.max_workers = max(1, mp.cpu_count() - 1)  # Leave one core for OS
         
@@ -33,7 +40,7 @@ class ParallelPatternDetector:
                 'variations': {}
             }
         
-        print(f"🚀 Starting parallel pattern detection with {self.max_workers} workers")
+        print(f"🚀 Starting parallel pattern detection with up to {self.max_workers} workers")
         start_time = time.time()
         
         # Clean and validate events
@@ -44,7 +51,7 @@ class ParallelPatternDetector:
         # Handle large sequences using the shared large-file policy (#21) so the
         # default path and the `detect-patterns` subcommand sample identically.
         original_count = len(valid_events)
-        valid_events, was_sampled = sample_events_for_detection(valid_events)
+        valid_events, was_sampled = sample_events_for_detection(valid_events, self.max_pattern_events)
         if was_sampled:
             print(f"⚠️  Large sequence ({original_count} events), sampling to "
                   f"{len(valid_events)} ({len(valid_events)/original_count*100:.1f}%, lossy)")
@@ -103,14 +110,28 @@ class ParallelPatternDetector:
         if not work_chunks:
             return {}
 
+        # A single work chunk gains nothing from a process pool but still pays
+        # full spawn/teardown overhead — on the `spawn` start method (macOS/
+        # Windows) that overhead can run to 100ms+ per process, dwarfing the
+        # sub-100ms serial-path cost for the trivial input that produces one
+        # chunk. Skip pool construction entirely in that case (#218).
+        if len(work_chunks) == 1:
+            print("🔄 Only one work chunk; skipping process pool")
+            return self._detect_patterns_serial(sequence, valid_events)
+
         print(f"🔧 Created {len(work_chunks)} work chunks for parallel processing")
+
+        # Never spawn more worker processes than there are chunks to hand out —
+        # cpu_count()-1 is an upper bound on usable parallelism, not a target
+        # process count (#218).
+        pool_workers = min(self.max_workers, len(work_chunks))
 
         # Process chunks in parallel
         all_candidate_patterns = []
 
         try:
             with ProcessPoolExecutor(
-                max_workers=self.max_workers,
+                max_workers=pool_workers,
                 initializer=_init_pattern_worker,
                 initargs=(sequence, valid_events),
             ) as executor:

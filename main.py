@@ -19,7 +19,9 @@ from arranger import arrange_for_nes
 from nes.project_builder import NESProjectBuilder
 from nes.song_bank import SongBank
 from exporter.exporter_ca65 import CA65Exporter
-from tracker.pattern_detector import EnhancedPatternDetector, sample_events_for_detection, DETECTOR_MAX_EVENTS
+from tracker.pattern_detector import (
+    EnhancedPatternDetector, sample_events_for_detection, DETECTOR_MAX_EVENTS, MAX_PATTERN_EVENTS
+)
 from tracker.tempo_map import EnhancedTempoMap
 from dpcm_sampler.enhanced_drum_mapper import EnhancedDrumMapper, DrumMapperConfig
 from config.config_manager import ConfigManager
@@ -32,6 +34,24 @@ from compiler import compile_rom
 # their `patterns`/`references` JSON artifacts agree for the same input (#19).
 PATTERN_MIN_LENGTH = 3
 PATTERN_MAX_LENGTH = 12
+
+def get_pattern_detection_caps(config_path: Optional[str] = None):
+    """Resolve the sequential/parallel pattern-detection event-sampling caps.
+
+    Defaults to the hardcoded DETECTOR_MAX_EVENTS/MAX_PATTERN_EVENTS constants;
+    when `config_path` is given, `processing.pattern_detection.max_events` /
+    `max_pattern_events` override them (#219) — this is the single place both
+    the `detect-patterns` subcommand and the default full pipeline resolve
+    these caps from, so they stay in sync.
+    """
+    max_events = DETECTOR_MAX_EVENTS
+    max_pattern_events = MAX_PATTERN_EVENTS
+    if config_path:
+        config_manager = ConfigManager(config_path)
+        max_events = config_manager.get("processing.pattern_detection.max_events", DETECTOR_MAX_EVENTS)
+        max_pattern_events = config_manager.get(
+            "processing.pattern_detection.max_pattern_events", MAX_PATTERN_EVENTS)
+    return max_events, max_pattern_events
 
 def load_json_stage(path, required_keys, stage_name):
     """Load an inter-stage JSON artifact with an existence/parse/key guard.
@@ -353,11 +373,15 @@ def run_detect_patterns(args):
     # keys are all optional, so there is no fixed required key to validate.
     frames = load_json_stage(args.input, [], 'frames')
 
+    # Sequential detector's event cap, optionally overridden by --config (#219).
+    max_events, _ = get_pattern_detection_caps(getattr(args, 'config', None))
+
     # Create tempo map and pattern detector
     tempo_map = EnhancedTempoMap(initial_tempo=500000)  # 120 BPM default
     detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH,
-                                       max_pattern_length=PATTERN_MAX_LENGTH)
-    
+                                       max_pattern_length=PATTERN_MAX_LENGTH,
+                                       max_events=max_events)
+
     # Extract events from frames structure
     events = []
     for channel_name, channel_frames in frames.items():
@@ -368,16 +392,17 @@ def run_detect_patterns(args):
                 'volume': frame_data.get('volume', 0)
             }
             events.append(event)
-    
+
     # Sort events by frame number
     events.sort(key=lambda x: x['frame'])
 
     # This subcommand runs the sequential EnhancedPatternDetector, whose internal
-    # cap is DETECTOR_MAX_EVENTS. Sample uniformly straight to that limit so the
-    # warning reports the count the detector actually retains, instead of a larger
-    # figure the detector would silently re-sample away (#100, #21).
+    # cap is max_events (DETECTOR_MAX_EVENTS unless overridden). Sample uniformly
+    # straight to that limit so the warning reports the count the detector
+    # actually retains, instead of a larger figure the detector would silently
+    # re-sample away (#100, #21).
     original_count = len(events)
-    events, was_sampled = sample_events_for_detection(events, DETECTOR_MAX_EVENTS)
+    events, was_sampled = sample_events_for_detection(events, max_events)
     if was_sampled:
         print(f"⚠️  Large file ({original_count} events): sampled to {len(events)} "
               f"({len(events)/original_count*100:.1f}%, lossy) before pattern detection")
@@ -552,24 +577,27 @@ def run_full_pipeline(args):
                     print(f"  ⚠️  Large MIDI file ({len(events):,} events) detected")
                     print(f"  💡 For best results with large files, consider using --no-patterns flag")
                     print(f"  🚀 Proceeding with improved pattern detection...")
-                
+
+                # Sampling caps, optionally overridden by --config (#219).
+                max_events, max_pattern_events = get_pattern_detection_caps(getattr(args, 'config', None))
+
                 # Use parallel pattern detection with position mapping fix
                 try:
                     from tracker.pattern_detector_parallel import ParallelPatternDetector
-                    detector = ParallelPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH)
+                    detector = ParallelPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH, max_pattern_events=max_pattern_events)
                     print(f"  Using parallel pattern detection with {len(events):,} events")
                     pattern_result = detector.detect_patterns(events)
                 except Exception as e:
                     print(f"  Parallel detection failed, using fallback: {e}")
                     from tracker.pattern_detector import EnhancedPatternDetector
-                    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH)
+                    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH, max_events=max_events)
                     # Sequential fallback can only handle the detector's internal
-                    # cap, so sample uniformly straight to DETECTOR_MAX_EVENTS. This
+                    # cap, so sample uniformly straight to max_events. This
                     # keeps song structure (not a head cut) AND makes the warning
                     # below report the count actually retained, not a larger sample
                     # the detector would silently re-cut (#100).
                     fallback_count = len(events)
-                    events, was_sampled = sample_events_for_detection(events, DETECTOR_MAX_EVENTS)
+                    events, was_sampled = sample_events_for_detection(events, max_events)
                     if was_sampled:
                         pattern_loss_warning = (
                             f"pattern detection fell back to the sequential detector and "
@@ -796,14 +824,15 @@ def main():
     p_frames.add_argument('output')
     p_frames.set_defaults(func=run_frames)
 
-    p_patterns = subparsers.add_parser('detect-patterns', 
+    p_patterns = subparsers.add_parser('detect-patterns',
                                       help='Detect and compress patterns in frame data')
     p_patterns.add_argument('input')
     p_patterns.add_argument('output')
-    # NOTE: pattern-detection --config was not consumed by run_detect_patterns
-    # (it hardcodes the tempo and PATTERN_MIN/MAX_LENGTH), so it was dropped
-    # rather than left as a silently-ignored flag — same treatment as map --config
-    # (#13, #109).
+    # NOTE: --config here only overrides processing.pattern_detection.max_events
+    # (the sequential detector's sampling cap, #219) — it still does NOT touch
+    # the tempo or PATTERN_MIN/MAX_LENGTH, which stay hardcoded. Same scoped
+    # treatment as map --config (#13, #109): only wire what is actually consumed.
+    p_patterns.add_argument('--config', help='Path to YAML config overriding pattern-detection sampling caps')
     p_patterns.set_defaults(func=run_detect_patterns)
 
     p_export = subparsers.add_parser('export', help='Export NES-ready files (ca65/FamiTracker)')
@@ -945,6 +974,12 @@ def main():
             elif arg == '--skip-validation':
                 global_args.extend([arg])
                 i += 1
+            elif arg == '--config':
+                if i + 1 >= len(sys.argv):
+                    print("Error: --config requires a path argument", file=sys.stderr)
+                    sys.exit(2)
+                global_args.extend([arg, sys.argv[i + 1]])
+                i += 2
             elif arg.startswith('-'):
                 # Reject unknown/typo flags instead of silently dropping them —
                 # a swallowed --no-patterns/--arranger produces a different ROM (#8).
@@ -964,6 +999,7 @@ def main():
             print("  midi2nes --no-patterns song.mid    # Direct export (no compression)")
             print("  midi2nes --debug song.mid          # Debug ROM (shows APU status on screen)")
             print("  midi2nes --skip-validation song.mid # Skip ROM validation after compilation")
+            print("  midi2nes --config cfg.yaml song.mid # Override pattern-detection sampling caps")
             print("  midi2nes --help                    # Show full help")
             sys.exit(1)
 
@@ -977,6 +1013,8 @@ def main():
                 self.debug = '--debug' in global_args or '-d' in global_args
                 self.arranger = '--arranger' in global_args or '-a' in global_args
                 self.skip_validation = '--skip-validation' in global_args
+                self.config = (global_args[global_args.index('--config') + 1]
+                              if '--config' in global_args else None)
                 self.command = None
 
         args = SimpleArgs()

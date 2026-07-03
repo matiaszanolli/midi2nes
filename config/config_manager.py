@@ -17,7 +17,9 @@ class ProcessingConfig:
         "max_variations": 5,
         "similarity_threshold": 0.8,
         "enable_transposition": True,
-        "enable_volume_variations": True
+        "enable_volume_variations": True,
+        "max_events": 1000,
+        "max_pattern_events": 15000
     })
     channel_mapping: Dict[str, Any] = field(default_factory=lambda: {
         "priority_order": ["pulse1", "pulse2", "triangle", "noise", "dpcm"],
@@ -144,7 +146,9 @@ class ConfigManager:
                     "max_variations": 5,
                     "similarity_threshold": 0.8,
                     "enable_transposition": True,
-                    "enable_volume_variations": True
+                    "enable_volume_variations": True,
+                    "max_events": 1000,
+                    "max_pattern_events": 15000
                 },
                 "channel_mapping": {
                     "priority_order": ["pulse1", "pulse2", "triangle", "noise", "dpcm"],
@@ -265,7 +269,16 @@ class ConfigManager:
         similarity_threshold = self.get("processing.pattern_detection.similarity_threshold", 0.8)
         if not isinstance(similarity_threshold, (int, float)) or not 0.0 <= similarity_threshold <= 1.0:
             errors.append("processing.pattern_detection.similarity_threshold must be between 0.0 and 1.0")
-        
+
+        # Validate pattern-detection sampling caps (#219)
+        max_events = self.get("processing.pattern_detection.max_events", 1000)
+        if not isinstance(max_events, int) or max_events < 1:
+            errors.append("processing.pattern_detection.max_events must be a positive integer")
+
+        max_pattern_events = self.get("processing.pattern_detection.max_pattern_events", 15000)
+        if not isinstance(max_pattern_events, int) or max_pattern_events < 1:
+            errors.append("processing.pattern_detection.max_pattern_events must be a positive integer")
+
         # Validate performance settings
         max_memory = self.get("performance.max_memory_mb", 512)
         if not isinstance(max_memory, int) or max_memory < 64:
