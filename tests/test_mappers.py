@@ -149,6 +149,38 @@ class TestMapperCapacityOverrun(unittest.TestCase):
                         "MMC3 did not flag a fixed-bank (PRG_FIX) overflow")
         self.assertEqual(mmc3.validate_segment_sizes({"RODATA": 512}), [])
 
+    def test_validate_segment_sizes_sums_shared_bank_nn_and_dpcm_nn(self):
+        # Regression (MAP-1 / #212): BANK_NN (sequence bytecode) and DPCM_NN
+        # (drum samples) load into the SAME physical PRG_BANK_NN region for a
+        # given NN, but the exporter and DPCM packer assign bank indices
+        # independently. Two segments that individually fit under the 8 KB
+        # window can still overflow their shared bank when combined — this
+        # exact byte count (7535 + 1217 = 8752, 560 over budget) reproduces
+        # the reported ld65 link failure.
+        mmc3 = MMC3Mapper()
+        errors = mmc3.validate_segment_sizes({"BANK_00": 7535, "DPCM_00": 1217})
+        self.assertTrue(errors, "combined BANK_00+DPCM_00 overflow was not flagged")
+        self.assertIn("bank 0", errors[0])
+
+        # Both segments individually pass the old per-segment check, proving
+        # the old code would have missed this.
+        self.assertLess(7535, mmc3.PRG_WINDOW_SIZE)
+        self.assertLess(1217, mmc3.PRG_WINDOW_SIZE)
+
+    def test_validate_segment_sizes_does_not_combine_different_banks(self):
+        # Segments in different banks must NOT be summed together.
+        mmc3 = MMC3Mapper()
+        errors = mmc3.validate_segment_sizes({"BANK_00": 4000, "DPCM_01": 4000})
+        self.assertEqual(errors, [])
+
+    def test_validate_segment_sizes_still_flags_single_segment_overflow(self):
+        # A single segment that alone exceeds the 8 KB window must still be
+        # flagged (the combined check subsumes, not replaces, this case).
+        mmc3 = MMC3Mapper()
+        errors = mmc3.validate_segment_sizes({"BANK_05": mmc3.PRG_WINDOW_SIZE + 1})
+        self.assertTrue(errors)
+        self.assertIn("BANK_05", errors[0])
+
 
 class TestMapperFactoryLookup(unittest.TestCase):
     """Name-based lookup + unknown-mapper handling."""
