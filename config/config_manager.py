@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union
 from dataclasses import dataclass, field
 
+from core.exceptions import ConfigurationError
+
 
 @dataclass
 class ProcessingConfig:
@@ -115,8 +117,13 @@ class ConfigManager:
         try:
             with open(path, 'r') as f:
                 self._config = yaml.safe_load(f)
-        except Exception as e:
-            raise ValueError(f"Failed to load configuration from {path}: {e}")
+        except (OSError, yaml.YAMLError) as e:
+            # ConfigurationError exists for exactly this (#125/SAFE-08); a
+            # bare ValueError couldn't be distinguished from an unrelated bug
+            # elsewhere, and catching all Exception folded genuine defects
+            # (e.g. a TypeError in later config processing) into the same
+            # generic error instead of letting them propagate as real bugs.
+            raise ConfigurationError(f"Failed to load configuration from {path}: {e}") from e
     
     def _load_defaults(self):
         """Load default configuration."""

@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from config.config_manager import ConfigManager, ProcessingConfig, ExportConfig, PerformanceConfig
+from core.exceptions import ConfigurationError
 
 
 class TestConfigManager(unittest.TestCase):
@@ -153,15 +154,23 @@ class TestConfigManager(unittest.TestCase):
         self.assertEqual(config.get("processing.pattern_detection.min_length"), 3)
     
     def test_invalid_yaml_file(self):
-        """Test handling of invalid YAML files."""
+        """Regression (#125/SAFE-08): malformed YAML must raise the dedicated
+        ConfigurationError (already defined for this, previously unused),
+        not a bare ValueError that can't be distinguished from other bugs."""
         # Create invalid YAML file
         invalid_yaml = "invalid: yaml: content: ["
         with open(self.config_path, 'w') as f:
             f.write(invalid_yaml)
-        
-        # Should raise ValueError
-        with self.assertRaises(ValueError):
+
+        with self.assertRaises(ConfigurationError):
             ConfigManager(self.config_path)
+
+    def test_unreadable_config_file_raises_configuration_error(self):
+        """A file-system error (not malformed YAML) reaching _load_from_file
+        must also raise ConfigurationError, not propagate the raw OSError."""
+        # A directory 'exists()'s but open() raises IsADirectoryError (OSError).
+        with self.assertRaises(ConfigurationError):
+            ConfigManager(Path(self.temp_dir))
 
 
 if __name__ == '__main__':

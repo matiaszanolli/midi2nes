@@ -302,7 +302,9 @@ class TestParseMidiToFrames:
         assert all(e['program'] == 0 for e in events)
 
     def test_event_error_handling(self):
-        """Test that problematic events are silently skipped"""
+        """Regression (#124/SAFE-07): a problematic event must not crash the
+        parser, but it also must not vanish without a trace -- it has to be
+        counted and warned about, not silently skipped."""
         with patch('mido.MidiFile') as mock_midi:
             mock_track = MagicMock()
             mock_track.ticks_per_beat = 480  # valid metrical division (#93 guard)
@@ -310,17 +312,24 @@ class TestParseMidiToFrames:
                 mido.Message('note_on', channel=0, note=60, velocity=64, time=0),
             ]]
             mock_midi.return_value = mock_track
-            
+
             # Mock tempo map to raise exception on get_frame_for_tick
             with patch('tracker.parser_fast.EnhancedTempoMap') as mock_tempo_map:
                 mock_tempo_instance = MagicMock()
                 mock_tempo_instance.get_frame_for_tick.side_effect = Exception("Frame calculation error")
                 mock_tempo_map.return_value = mock_tempo_instance
-                
-                # Should not raise exception, should return empty events
-                result = parse_midi_to_frames("dummy.mid")
+
+                # Should not raise exception, should return empty events, and
+                # must print a warning naming the drop (not swallow it).
+                import io, contextlib
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    result = parse_midi_to_frames("dummy.mid")
                 assert isinstance(result, dict)
                 assert 'events' in result
+                output = buf.getvalue()
+                assert "dropped 1 note event" in output
+                assert "Frame calculation error" in output
     
     def test_empty_midi_file(self):
         """Test parsing of empty MIDI file"""
