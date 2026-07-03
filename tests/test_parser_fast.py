@@ -119,6 +119,28 @@ class TestParseMidiToFrames:
         assert notes[0]['tempo'] == self._us(60), (
             f"section-boundary tempo jump was dropped (got {notes[0]['tempo']})")
 
+    def test_zero_tempo_at_nonzero_tick_does_not_crash(self):
+        # Regression (TEMPO-09 / #209): a set_tempo(tempo=0) event at tick > 0
+        # used to raise a raw ZeroDivisionError out of _validate_basic_tempo,
+        # which parse_midi_to_frames's `except TempoValidationError` guard
+        # (added for #94) does not catch — crashing the whole parse instead of
+        # dropping just the one bad tempo change.
+        tracks = [[
+            mido.MetaMessage('set_tempo', tempo=self._us(120), time=0),
+            mido.Message('note_on', channel=0, note=60, velocity=100, time=0),
+            mido.Message('note_off', channel=0, note=60, velocity=0, time=240),
+            mido.MetaMessage('set_tempo', tempo=0, time=0),  # degenerate, tick > 0
+            mido.Message('note_on', channel=0, note=62, velocity=100, time=0),
+            mido.Message('note_off', channel=0, note=62, velocity=0, time=240),
+        ]]
+        path = self.create_test_midi("tempo_zero_midtrack.mid", tracks)
+        result = parse_midi_to_frames(path)  # must not raise ZeroDivisionError
+        notes = [e for evs in result['events'].values()
+                 for e in evs if e['type'] == 'note_on']
+        assert len(notes) == 2
+        # The degenerate tempo was dropped, so the section stays at 120 BPM.
+        assert notes[1]['tempo'] == self._us(120)
+
     def test_basic_midi_parsing(self):
         """Test basic MIDI file parsing"""
         midi_path = self.create_test_midi()

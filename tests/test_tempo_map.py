@@ -62,13 +62,51 @@ class TestTempoMap(unittest.TestCase):
         """Test getting tempo at specific ticks"""
         self.tempo_map.add_tempo_change(480, 400000)
         self.tempo_map.add_tempo_change(960, 300000)
-        
+
         self.assertEqual(self.tempo_map.get_tempo_at_tick(0), 500000)
         self.assertEqual(self.tempo_map.get_tempo_at_tick(240), 500000)
         self.assertEqual(self.tempo_map.get_tempo_at_tick(480), 400000)
         self.assertEqual(self.tempo_map.get_tempo_at_tick(720), 400000)
         self.assertEqual(self.tempo_map.get_tempo_at_tick(960), 300000)
         self.assertEqual(self.tempo_map.get_tempo_at_tick(1200), 300000)
+
+    def test_duplicate_tick_resolves_by_insertion_order(self):
+        # Regression (TEMPO-10 / #210): a bare .sort() on (tick, tempo) tuples
+        # tie-breaks equal ticks by numeric tempo value, not insertion order.
+        # MIDI semantics require "last event wins" for tied ticks.
+        self.tempo_map.add_tempo_change(1000, 600000)  # added first
+        self.tempo_map.add_tempo_change(1000, 400000)  # added second, must win
+        self.assertEqual(
+            self.tempo_map.tempo_changes,
+            [(0, 500000), (1000, 600000), (1000, 400000)],
+            "insertion order among tied ticks must be preserved, not "
+            "re-ordered by tempo value")
+        self.assertEqual(self.tempo_map.get_tempo_at_tick(1000), 400000)
+
+        # The reverse insertion order must produce the reverse winner —
+        # confirms the tie-break tracks insertion order, not e.g. "smaller
+        # tempo always wins".
+        tm2 = TempoMap()
+        tm2.add_tempo_change(1000, 400000)
+        tm2.add_tempo_change(1000, 600000)
+        self.assertEqual(tm2.get_tempo_at_tick(1000), 600000)
+
+    def test_align_to_frames_preserves_tie_break_order(self):
+        # Sibling site (#210): _align_to_frames() re-sorts tempo_changes with
+        # its own sorted() call, which had the same full-tuple tie-break bug.
+        tm = EnhancedTempoMap(
+            initial_tempo=500000, ticks_per_beat=480,
+            optimization_strategy=TempoOptimizationStrategy.FRAME_ALIGNED)
+        # Two changes at the same tick via the base class (bypasses the
+        # EnhancedTempoMap frame-alignment search) so _align_to_frames has a
+        # real tie to resolve.
+        tm.tempo_changes.append((960, 600000))
+        tm.tempo_changes.append((960, 300000))
+        tm.tempo_changes.sort(key=lambda c: c[0])
+        tm._align_to_frames()
+        # Both entries share the same source tick, so alignment maps them to
+        # the same aligned tick too — insertion order (300000 last) must win.
+        self.assertEqual(tm.get_tempo_at_tick(960), 300000)
         
     def test_calculate_time_ms(self):
         """Test time calculation between ticks"""
@@ -176,6 +214,31 @@ class TestEnhancedTempoMap(unittest.TestCase):
         with self.assertRaises(TempoValidationError) as context:
             tempo_map.add_tempo_change(480, 3000000)  # 20 BPM
         self.assertIn("outside valid range", str(context.exception))
+
+    def test_zero_or_negative_tempo_raises_validation_error(self):
+        # Regression (TEMPO-09 / #209): tempo <= 0 at tick > 0 used to divide
+        # by zero inside _validate_basic_tempo before the BPM-range check
+        # could reject it, raising a raw ZeroDivisionError instead of the
+        # TempoValidationError callers (parser_fast.py) actually catch.
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000, validation_config=self.default_config)
+
+        for bad_tempo in (0, -1, -500000):
+            with self.assertRaises(TempoValidationError) as context:
+                tempo_map.add_tempo_change(480, bad_tempo)
+            self.assertNotIsInstance(context.exception, ZeroDivisionError)
+            self.assertIn("positive", str(context.exception))
+
+    def test_validate_tempo_change_sibling_also_guards_zero_tempo(self):
+        # Sibling validator (#209): _validate_tempo_change has the same
+        # unguarded division as _validate_basic_tempo, even though nothing
+        # currently calls it — guard it too so a future caller doesn't
+        # reintroduce the crash.
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000, validation_config=self.default_config)
+        change = TempoChange(480, 0)
+        with self.assertRaises(TempoValidationError):
+            tempo_map._validate_tempo_change(change)
 
     def test_validation_tempo_change_ratio(self):
         """Test tempo change ratio validation"""
