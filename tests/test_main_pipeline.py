@@ -146,6 +146,41 @@ class TestCompileRomErrorPaths:
 
     @patch('compiler.cc65_wrapper.subprocess.run')
     @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_truncated_mmc3_image_rejected_with_mapper(self, mock_which, mock_run):
+        """Regression (#28/M-8): a flat 32768-byte floor silently passes a
+        truncated MMC3 image (declared 512KB PRG) as long as it clears the
+        floor. Passing the mapper must reject anything short of the exact
+        declared size."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        # Well above the old flat floor, but far short of MMC3's 512KB + 16.
+        truncated_rom = self.project_dir / 'game.nes'
+        truncated_rom.write_bytes(b'NES\x1a' + b'\x00' * 65536)
+
+        from mappers.mmc3 import MMC3Mapper
+        result = compile_rom(self.project_dir, self.rom_output, mapper=MMC3Mapper())
+
+        assert result == False
+
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_exact_mmc3_size_accepted_with_mapper(self, mock_which, mock_run):
+        """The exact declared MMC3 PRG size (+ 16-byte header) must still pass."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        from mappers.mmc3 import MMC3Mapper
+        mapper = MMC3Mapper()
+        exact_rom = self.project_dir / 'game.nes'
+        exact_rom.write_bytes(b'\x00' * (mapper.prg_rom_size + 16))
+
+        result = compile_rom(self.project_dir, self.rom_output, mapper=mapper)
+
+        assert result == True
+
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
     def test_compile_rom_file_not_found_exception(self, mock_which, mock_run):
         """Test compile_rom when FileNotFoundError is raised."""
         mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
@@ -165,6 +200,24 @@ class TestCompileRomErrorPaths:
         result = compile_rom(self.project_dir, self.rom_output)
 
         assert result == False
+
+    @patch('compiler.compiler.traceback.print_exc')
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_generic_exception_prints_traceback_when_verbose(
+            self, mock_which, mock_run, mock_print_exc):
+        """Regression (#32/M-9): the catch-all except in compile_rom used to
+        print only the exception message with no way to see where an
+        unexpected failure actually originated. Under verbose=True it must
+        also print the traceback; under verbose=False (the default,
+        exercised by test_compile_rom_generic_exception above) it must not."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
+        mock_run.side_effect = Exception("Unexpected error")
+
+        result = compile_rom(self.project_dir, self.rom_output, verbose=True)
+
+        assert result == False
+        mock_print_exc.assert_called_once()
 
 
 class TestRunFullPipeline:
@@ -233,7 +286,7 @@ class TestRunFullPipeline:
         mock_builder_class.return_value = mock_builder
 
         # compile_rom needs to create the ROM file
-        def create_rom(project_path, rom_path):
+        def create_rom(project_path, rom_path, **kwargs):
             rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
             return True
         mock_compile.side_effect = create_rom
@@ -297,7 +350,7 @@ class TestRunFullPipeline:
         mock_builder_class.return_value = mock_builder
 
         # compile_rom needs to create the ROM file
-        def create_rom(project_path, rom_path):
+        def create_rom(project_path, rom_path, **kwargs):
             rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
             return True
         mock_compile.side_effect = create_rom
@@ -357,7 +410,7 @@ class TestRunFullPipeline:
         mock_builder_class.return_value = mock_builder
 
         # compile_rom needs to create the ROM file
-        def create_rom(project_path, rom_path):
+        def create_rom(project_path, rom_path, **kwargs):
             rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
             return True
         mock_compile.side_effect = create_rom
@@ -417,7 +470,7 @@ class TestRunFullPipeline:
         mock_builder_class.return_value = mock_builder
 
         # compile_rom needs to create the ROM file
-        def create_rom(project_path, rom_path):
+        def create_rom(project_path, rom_path, **kwargs):
             rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
             return True
         mock_compile.side_effect = create_rom
@@ -623,7 +676,7 @@ class TestRunFullPipeline:
         mock_builder_class.return_value = mock_builder
 
         # compile_rom needs to create the ROM file at the expected path
-        def create_rom(project_path, rom_path):
+        def create_rom(project_path, rom_path, **kwargs):
             rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
             return True
         mock_compile.side_effect = create_rom
@@ -861,7 +914,7 @@ class TestPipelineSafetyGates:
         mock_builder.prepare_project.return_value = True
         mock_builder_class.return_value = mock_builder
 
-        def create_rom(project_path, rom_path):
+        def create_rom(project_path, rom_path, **kwargs):
             rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
             return True
         mock_compile.side_effect = create_rom
@@ -903,7 +956,7 @@ class TestPipelineSafetyGates:
         mock_builder.prepare_project.return_value = True
         mock_builder_class.return_value = mock_builder
 
-        def create_rom(project_path, rom_path):
+        def create_rom(project_path, rom_path, **kwargs):
             rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
             return True
         mock_compile.side_effect = create_rom
@@ -945,7 +998,7 @@ class TestPipelineSafetyGates:
         mock_builder.prepare_project.return_value = True
         mock_builder_class.return_value = mock_builder
 
-        def create_rom(project_path, rom_path):
+        def create_rom(project_path, rom_path, **kwargs):
             rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
             return True
         mock_compile.side_effect = create_rom
@@ -1018,7 +1071,7 @@ class TestPreparePath(object):
         proj.mkdir()
         out = self.temp_dir / "out.nes"
 
-        def create_rom(p, r):
+        def create_rom(p, r, **kwargs):
             Path(r).write_bytes(b'NES\x1a' + b'\x00' * 131000)
             return True
         mock_compile.side_effect = create_rom
@@ -1044,7 +1097,7 @@ class TestPreparePath(object):
         proj.mkdir()
         out = self.temp_dir / "out.nes"
 
-        def create_rom(p, r):
+        def create_rom(p, r, **kwargs):
             Path(r).write_bytes(b'NES\x1a' + b'\x00' * 131000)
             return True
         mock_compile.side_effect = create_rom

@@ -549,6 +549,36 @@ class TestRunExport:
             os.chdir(cwd)
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_run_export_rerun_on_same_output_does_not_duplicate_dpcm_block(self):
+        """Regression (#23/F-10): run_export appends the packed DPCM assembly
+        with open(args.output, 'a'). Re-running export onto the same
+        step-by-step output path must not produce a second DPCM block (which
+        would fail assembly with duplicate dpcm_* symbols) -- the CA65 table
+        write ahead of the append always opens output_path in 'w' mode, so
+        any prior content (including a previously-appended DPCM block) is
+        truncated before this run's own single append happens."""
+        import shutil
+        cwd = os.getcwd()
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            (tmp / "dpcm_index.json").write_text(json.dumps({
+                "test_kick": {"id": 0, "filename": "test_kick.dmc"}
+            }))
+            os.chdir(tmp)
+            args = Namespace(input=str(self.test_input), output=str(self.test_output),
+                              format="ca65", patterns=None)
+
+            run_export(args)
+            first_content = self.test_output.read_text()
+            assert first_content.count("dpcm_bank_table:") == 1
+
+            run_export(args)
+            second_content = self.test_output.read_text()
+            assert second_content.count("dpcm_bank_table:") == 1
+        finally:
+            os.chdir(cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_export_rejects_nsf_format(self):
         """Regression (#79): `--format nsf` used to be accepted by argparse but
         dispatched on the impossible string "nsftxt", so it silently wrote
@@ -1346,7 +1376,7 @@ class TestFullPipelineBackupCleanup:
         self._common_mocks(mock_parse, mock_assign, mock_emu_cls,
                            mock_exporter_cls, mock_packer_cls, mock_builder_cls)
 
-        def fake_compile(project_path, out_rom):
+        def fake_compile(project_path, out_rom, **kwargs):
             Path(out_rom).write_bytes(b"\x00" * 1024)
             return True
         mock_compile.side_effect = fake_compile
@@ -1387,7 +1417,7 @@ class TestFullPipelineBackupCleanup:
         mock_builder.prepare_project.return_value = True
         mock_builder_cls.return_value = mock_builder
 
-        def fake_compile(project_path, out_rom):
+        def fake_compile(project_path, out_rom, **kwargs):
             Path(out_rom).write_bytes(b"\x00" * 1024)
             return True
         mock_compile.side_effect = fake_compile
