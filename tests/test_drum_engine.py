@@ -47,7 +47,16 @@ class TestDrumMappingConstants:
             assert isinstance(note, int)
             assert isinstance(drum_name, str)
             assert len(drum_name) > 0
-    
+
+    def test_default_mapping_covers_full_gm_percussion_range(self):
+        """Regression (#73/D-10): the default mapping used to define only 7
+        notes (kick/snare/hihats/crash/ride), so toms, most cymbals, and
+        percussion (35-81 minus those 7) had no fallback at all and always
+        fell through to noise. It must now cover the full GM range."""
+        for note in range(35, 82):
+            assert note in DEFAULT_MIDI_DRUM_MAPPING, f"GM percussion note {note} has no default mapping"
+
+
     def test_advanced_midi_drum_mapping(self):
         """Test that advanced MIDI drum mapping is properly structured."""
         assert isinstance(ADVANCED_MIDI_DRUM_MAPPING, dict)

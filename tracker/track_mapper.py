@@ -246,8 +246,17 @@ def assign_tracks_to_nes_channels(midi_events, dpcm_index_path):
     if dpcm_events:
         nes_tracks['dpcm'] = dpcm_events
 
-    if noise_events and not nes_tracks['noise']:
-        nes_tracks['noise'] = noise_events
+    if noise_events:
+        if not nes_tracks['noise']:
+            nes_tracks['noise'] = noise_events
+        else:
+            # NES has a single Noise channel (docs/APU_NOISE_REFERENCE.md), so
+            # some contention is unavoidable when a track was already assigned
+            # to noise -- but silently discarding the drum fallback here used
+            # to drop these hits with no trace (#74/D-11).
+            print(f"Warning: {len(noise_events)} drum noise-fallback event(s) dropped — "
+                  f"the noise channel is already assigned to another track "
+                  f"(NES has a single Noise channel).")
 
     return nes_tracks
 

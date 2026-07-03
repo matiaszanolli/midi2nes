@@ -1,4 +1,5 @@
 # tests/test_enhanced_drum_mapper.py
+import json
 import pytest
 from dpcm_sampler.enhanced_drum_mapper import (EnhancedDrumMapper, DrumMapperConfig,
                                                DrumPatternConfig, SampleManagerConfig)
@@ -109,3 +110,79 @@ class TestEnhancedDrumMapper:
         else:
             # At least verify that the events were processed
             assert len(new_dpcm_events) > 0 or len(noise_events) > 0
+
+
+class TestDpcmSampleNameFallback:
+    """Regression (#73/D-10): ADVANCED_MIDI_DRUM_MAPPING only fully defined
+    kick/snare, so every other GM percussion note -- and even kick/snare at
+    velocities whose split sample name wasn't in the index -- fell through
+    to the noise fallback. _resolve_dpcm_sample_name must try progressively
+    coarser fallbacks (velocity-split -> primary -> generic role name)
+    before giving up."""
+
+    @pytest.fixture
+    def curated_index_path(self, tmp_path):
+        # A curated kit (unlike the real shipped dpcm_index.json, which is an
+        # uncurated found sample pack) -- only bare role names, no
+        # velocity-split variants, to exercise the primary/default fallbacks.
+        index = {
+            "kick": {"id": 0, "filename": "kick.dmc"},
+            "snare": {"id": 1, "filename": "snare.dmc"},
+            "tom_low": {"id": 2, "filename": "tom_low.dmc"},
+            "ride": {"id": 3, "filename": "ride.dmc"},
+            "hihat_closed": {"id": 4, "filename": "hihat_closed.dmc"},
+        }
+        path = tmp_path / "curated_index.json"
+        path.write_text(json.dumps(index))
+        return str(path)
+
+    @pytest.fixture
+    def mapper(self, curated_index_path):
+        return EnhancedDrumMapper(dpcm_index_path=curated_index_path)
+
+    def test_kick_falls_back_to_primary_when_velocity_split_missing(self, mapper):
+        # kick_soft/kick_hard aren't in the index, but "kick" (primary) is.
+        assert mapper._resolve_dpcm_sample_name(36, 100) == "kick"
+        assert mapper._resolve_dpcm_sample_name(36, 30) == "kick"
+
+    def test_unmapped_gm_note_falls_back_to_default_mapping(self, mapper):
+        # Notes 45 (tom) and 51 (ride) have no ADVANCED_MIDI_DRUM_MAPPING
+        # entry at all -- they must still resolve via DEFAULT_MIDI_DRUM_MAPPING.
+        assert mapper._resolve_dpcm_sample_name(45, 100) == "tom_low"
+        assert mapper._resolve_dpcm_sample_name(51, 100) == "ride"
+        assert mapper._resolve_dpcm_sample_name(42, 100) == "hihat_closed"
+
+    def test_truly_unmapped_note_returns_none(self, mapper):
+        # Note 90 isn't GM percussion at all -- no fallback should invent one.
+        assert mapper._resolve_dpcm_sample_name(90, 100) is None
+
+    def test_map_drums_routes_toms_and_cymbals_to_dpcm_not_noise(self, mapper):
+        midi_events = {
+            9: [
+                {"frame": 0, "note": 45, "velocity": 100},   # tom -> tom_low
+                {"frame": 10, "note": 51, "velocity": 100},  # ride
+                {"frame": 20, "note": 90, "velocity": 100},  # not GM percussion -> noise
+            ]
+        }
+        dpcm_events, noise_events = mapper.map_drums(midi_events)
+
+        dpcm_frames = {e["frame"] for e in dpcm_events}
+        noise_frames = {e["frame"] for e in noise_events}
+        assert {0, 10}.issubset(dpcm_frames)
+        assert 20 in noise_frames
+
+    def test_pattern_event_resolution_miss_falls_back_to_noise_not_silent_drop(self, mapper):
+        # Regression (#73/D-10): _handle_pattern_event used to return an empty
+        # list on a resolution miss, silently dropping the hit entirely (no
+        # DPCM, no noise) -- worse than the non-pattern path's noise fallback.
+        pattern_info = {
+            "id": "p0",
+            "info": {"template": [(90, 100)]},  # note 90: unresolvable anywhere
+            "position": 0,
+        }
+        dpcm_out, noise_out = mapper._handle_pattern_event(
+            pattern_info, midi_note=90, velocity=100, frame=5
+        )
+        assert dpcm_out == []
+        assert len(noise_out) == 1
+        assert noise_out[0]["frame"] == 5

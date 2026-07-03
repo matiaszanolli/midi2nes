@@ -1,15 +1,58 @@
 import json
 from .dpcm_sample_manager import DPCMSampleManager
 
-# Default MIDI drum note mapping
+# Default MIDI drum note mapping. Covers the full GM percussion key range
+# (35-81) with simple, generic role names, not just kick/snare (#73/D-10) --
+# used both when use_advanced=False and as the last-resort fallback for any
+# GM percussion note ADVANCED_MIDI_DRUM_MAPPING doesn't (fully) define.
 DEFAULT_MIDI_DRUM_MAPPING = {
-    36: "kick",
-    38: "snare",
-    40: "snare",
+    35: "kick",           # Acoustic Bass Drum
+    36: "kick",           # Bass Drum 1
+    37: "side_stick",
+    38: "snare",          # Acoustic Snare
+    39: "clap",
+    40: "snare",          # Electric Snare
+    41: "tom_low",        # Low Floor Tom
     42: "hihat_closed",
+    43: "tom_low",        # High Floor Tom
+    44: "hihat_pedal",
+    45: "tom_low",        # Low Tom
     46: "hihat_open",
-    49: "crash",
-    51: "ride"
+    47: "tom_mid",        # Low-Mid Tom
+    48: "tom_mid",        # Hi-Mid Tom
+    49: "crash",          # Crash Cymbal 1
+    50: "tom_high",       # High Tom
+    51: "ride",           # Ride Cymbal 1
+    52: "china",
+    53: "ride_bell",
+    54: "tambourine",
+    55: "splash",
+    56: "cowbell",
+    57: "crash",          # Crash Cymbal 2
+    58: "vibraslap",
+    59: "ride",           # Ride Cymbal 2
+    60: "bongo_hi",
+    61: "bongo_lo",
+    62: "conga_mute",
+    63: "conga_open",
+    64: "conga_lo",
+    65: "timbale_hi",
+    66: "timbale_lo",
+    67: "agogo_hi",
+    68: "agogo_lo",
+    69: "cabasa",
+    70: "maracas",
+    71: "whistle_short",
+    72: "whistle_long",
+    73: "guiro_short",
+    74: "guiro_long",
+    75: "claves",
+    76: "woodblock_hi",
+    77: "woodblock_lo",
+    78: "cuica_mute",
+    79: "cuica_open",
+    80: "triangle_mute",
+    81: "triangle_open",
 }
 
 ADVANCED_MIDI_DRUM_MAPPING = {
@@ -29,7 +72,9 @@ ADVANCED_MIDI_DRUM_MAPPING = {
         },
         "layers": ["snare", "snare_rattle"]
     },
-    # Add more mappings...
+    # Every other GM percussion note falls back to DEFAULT_MIDI_DRUM_MAPPING
+    # (see EnhancedDrumMapper._resolve_dpcm_sample_name, #73/D-10) rather than
+    # needing a hand-tuned velocity-split entry here.
 }
 
 
