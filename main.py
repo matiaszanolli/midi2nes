@@ -88,7 +88,9 @@ def run_parse(args):
     # Use fast parser by default for better performance
     from tracker.parser_fast import parse_midi_to_frames as parse_fast
     midi_data = parse_fast(args.input)
-    Path(args.output).write_text(json.dumps(midi_data, indent=2))
+    # Compact separators (#116): this is a machine-only intermediate a human
+    # rarely opens, and indent=2 typically inflates it 2-3x for no benefit.
+    Path(args.output).write_text(json.dumps(midi_data, separators=(',', ':')))
     print(f"[OK] Parsed MIDI -> {args.output}")
 
 def run_map(args):
@@ -98,7 +100,7 @@ def run_map(args):
     dpcm_index_path = getattr(args, 'dpcm_index', None) or 'dpcm_index.json'
     # Extract just the events from the parsed data
     mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
-    Path(args.output).write_text(json.dumps(mapped, indent=2))
+    Path(args.output).write_text(json.dumps(mapped, separators=(',', ':')))
     print(f"[OK] Mapped tracks -> {args.output}")
 
 def run_frames(args):
@@ -107,7 +109,7 @@ def run_frames(args):
     mapped = load_json_stage(args.input, [], 'map')
     emulator = NESEmulatorCore()
     frames = emulator.process_all_tracks(mapped)
-    Path(args.output).write_text(json.dumps(frames, indent=2))
+    Path(args.output).write_text(json.dumps(frames, separators=(',', ':')))
     print(f" Generated frames -> {args.output}")
 
 def estimate_segment_sizes(music_asm_path):
@@ -376,11 +378,15 @@ def run_detect_patterns(args):
     # Sequential detector's event cap, optionally overridden by --config (#219).
     max_events, _ = get_pattern_detection_caps(getattr(args, 'config', None))
 
-    # Create tempo map and pattern detector
+    # Create tempo map and pattern detector. tempo_map is a required
+    # constructor arg but carries no real tempo-change data here (the events
+    # below are already-quantized frame positions, not MIDI ticks), so its
+    # per-pattern tempo analysis would only produce a discarded constant
+    # result — skip it (analyze_tempo=False) rather than pay for it (#119).
     tempo_map = EnhancedTempoMap(initial_tempo=500000)  # 120 BPM default
     detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH,
                                        max_pattern_length=PATTERN_MAX_LENGTH,
-                                       max_events=max_events)
+                                       max_events=max_events, analyze_tempo=False)
 
     # Extract events from frames structure
     events = []
@@ -416,7 +422,7 @@ def run_detect_patterns(args):
         'references': pattern_result['references'],
         'stats': pattern_result['stats']
     }
-    Path(args.output).write_text(json.dumps(output, indent=2))
+    Path(args.output).write_text(json.dumps(output, separators=(',', ':')))
     print(f" Detected patterns -> {args.output}")
     print(f" Compression ratio: {pattern_result['stats']['compression_ratio']:.1f}% reduction")
 
@@ -590,7 +596,9 @@ def run_full_pipeline(args):
                 except Exception as e:
                     print(f"  Parallel detection failed, using fallback: {e}")
                     from tracker.pattern_detector import EnhancedPatternDetector
-                    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH, max_events=max_events)
+                    # tempo_map here has no real tempo-change data for the
+                    # same reason as run_detect_patterns's fallback (#119).
+                    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH, max_events=max_events, analyze_tempo=False)
                     # Sequential fallback can only handle the detector's internal
                     # cap, so sample uniformly straight to max_events. This
                     # keeps song structure (not a head cut) AND makes the warning

@@ -354,11 +354,18 @@ class PatternDetector:
 class EnhancedPatternDetector(PatternDetector):
     def __init__(self, tempo_map: EnhancedTempoMap,
                  min_pattern_length=3, max_pattern_length=32,
-                 max_events=DETECTOR_MAX_EVENTS):
+                 max_events=DETECTOR_MAX_EVENTS, analyze_tempo=True):
         super().__init__(min_pattern_length, max_pattern_length, max_events)
         self.tempo_map = tempo_map
         self.compressor = PatternCompressor()
-        
+        # Callers that pass a default-constructed EnhancedTempoMap purely to
+        # satisfy this constructor's required argument (it holds no real
+        # tempo-change data, so get_tempo_at_tick() below would just report a
+        # single flat value for every "tick" — which here is a pattern
+        # position, not a real MIDI tick anyway) can skip the analysis pass
+        # entirely rather than pay for a discarded/meaningless result (#119).
+        self.analyze_tempo = analyze_tempo
+
     def detect_patterns(self, events: List[Dict]) -> Dict:
         # Return empty structure if no events
         if not events:
@@ -368,17 +375,19 @@ class EnhancedPatternDetector(PatternDetector):
                 'stats': {'compression_ratio': 0, 'original_size': 0, 'compressed_size': 0, 'unique_patterns': 0},
                 'variations': {}
             }
-        
-        # Detect patterns with variations using parent class  
+
+        # Detect patterns with variations using parent class
         patterns = super().detect_patterns(events)
-        
-        # Enhance patterns with tempo information
-        for pattern_id, pattern_info in patterns.items():
-            self._analyze_pattern_tempo(pattern_id, pattern_info, events)
-            
-            # Add variation-specific tempo analysis
-            if 'variations' in pattern_info:
-                self._analyze_variation_tempos(pattern_id, pattern_info, events)
+
+        # Enhance patterns with tempo information (#119: skippable when the
+        # caller's tempo map carries no real data and the result is unused).
+        if self.analyze_tempo:
+            for pattern_id, pattern_info in patterns.items():
+                self._analyze_pattern_tempo(pattern_id, pattern_info, events)
+
+                # Add variation-specific tempo analysis
+                if 'variations' in pattern_info:
+                    self._analyze_variation_tempos(pattern_id, pattern_info, events)
         
         # Compress patterns
         compressed_patterns, pattern_refs = self.compressor.compress_patterns(patterns)

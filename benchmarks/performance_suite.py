@@ -15,13 +15,14 @@ import os
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
-from tracker.parser import parse_midi_to_frames
+from tracker.parser_fast import parse_midi_to_frames
 from tracker.track_mapper import assign_tracks_to_nes_channels
 from nes.emulator_core import NESEmulatorCore
-from tracker.pattern_detector import EnhancedPatternDetector
+from tracker.pattern_detector_parallel import ParallelPatternDetector
 from tracker.tempo_map import EnhancedTempoMap
 from exporter.exporter_ca65 import CA65Exporter
 from exporter.exporter_nsf import NSFExporter
+from utils.profiling import _tracemalloc_acquire, _tracemalloc_release
 
 
 @dataclass
@@ -49,44 +50,60 @@ class PipelineBenchmark:
     midi_info: Dict[str, Any] = field(default_factory=dict)
 
 
+class ProfileHandle:
+    """Mutable holder yielded by `PerformanceProfiler.profile()`.
+
+    `.result` is populated with the BenchmarkResult once the profiled block
+    exits (success or failure), so callers read it via `with ... as handle:`
+    instead of invoking `_end_profiling` a second time — a second call found
+    tracemalloc already stopped by the first (inside `profile()`) and fell
+    back to reporting current RSS instead of the traced peak (#117)."""
+
+    def __init__(self):
+        self.result: Optional[BenchmarkResult] = None
+
+
 class PerformanceProfiler:
     """Performance profiler for individual operations."""
-    
+
     def __init__(self):
         self.process = psutil.Process()
         self._start_time = None
         self._start_memory = None
         self._start_cpu = None
         self._peak_memory = 0
-    
+
     @contextmanager
     def profile(self, stage_name: str):
-        """Context manager for profiling a code block."""
+        """Context manager for profiling a code block.
+
+        Yields a `ProfileHandle` whose `.result` is set to the
+        `BenchmarkResult` on exit — `_end_profiling` runs exactly once here.
+        """
+        handle = ProfileHandle()
+        self._start_profiling()
         try:
-            # Start profiling
-            self._start_profiling()
-            
-            yield
-            
+            yield handle
+
             # End profiling and get results
-            result = self._end_profiling(stage_name, True)
-            
+            handle.result = self._end_profiling(stage_name, True)
+
         except Exception as e:
             # Handle errors gracefully
-            result = self._end_profiling(stage_name, False, str(e))
+            handle.result = self._end_profiling(stage_name, False, str(e))
             raise
     
     def _start_profiling(self):
         """Start performance monitoring."""
-        # Start memory tracing
-        tracemalloc.start()
-        
+        # Start memory tracing (nesting-safe, shared with utils.profiling, #118)
+        _tracemalloc_acquire()
+
         # Record initial state
         self._start_time = time.perf_counter()
         self._start_memory = self.process.memory_info().rss / 1024 / 1024  # MB
         self._start_cpu = self.process.cpu_percent()
         self._peak_memory = self._start_memory
-    
+
     def _end_profiling(self, stage_name: str, success: bool, error_msg: str = "") -> BenchmarkResult:
         """End profiling and create result."""
         # Calculate metrics
@@ -94,14 +111,15 @@ class PerformanceProfiler:
         current_memory = self.process.memory_info().rss / 1024 / 1024  # MB
         memory_delta = current_memory - self._start_memory
         cpu_percent = self.process.cpu_percent()
-        
+
         # Get memory tracing info
         try:
             current_trace, peak_trace = tracemalloc.get_traced_memory()
             peak_memory_traced = peak_trace / 1024 / 1024  # MB
-            tracemalloc.stop()
-        except:
+        except RuntimeError:
             peak_memory_traced = current_memory
+        finally:
+            _tracemalloc_release()
         
         # Update peak memory
         self._peak_memory = max(self._peak_memory, current_memory, peak_memory_traced)
@@ -154,10 +172,10 @@ class PerformanceBenchmark:
         def parse_wrapper():
             return parse_midi_to_frames(midi_file)
         
-        with self.profiler.profile("parse"):
+        with self.profiler.profile("parse") as handle:
             result = parse_wrapper()
-        
-        return result, self.profiler._end_profiling("parse", True)
+
+        return result, handle.result
     
     def benchmark_map_stage(self, parsed_data: Dict[str, Any]) -> tuple:
         """Benchmark track mapping performance."""
@@ -174,10 +192,10 @@ class PerformanceBenchmark:
             finally:
                 os.unlink(temp_path)
         
-        with self.profiler.profile("map"):
+        with self.profiler.profile("map") as handle:
             result = map_wrapper()
-        
-        return result, self.profiler._end_profiling("map", True)
+
+        return result, handle.result
     
     def benchmark_frames_stage(self, mapped_data: Dict[str, Any]) -> tuple:
         """Benchmark frame generation performance."""
@@ -185,17 +203,19 @@ class PerformanceBenchmark:
             emulator = NESEmulatorCore()
             return emulator.process_all_tracks(mapped_data)
         
-        with self.profiler.profile("frames"):
+        with self.profiler.profile("frames") as handle:
             result = frames_wrapper()
-        
-        return result, self.profiler._end_profiling("frames", True)
+
+        return result, handle.result
     
     def benchmark_pattern_detection(self, frames_data: Dict[str, Any]) -> tuple:
         """Benchmark pattern detection performance."""
         def pattern_wrapper():
-            # Create tempo map and pattern detector
+            # Create tempo map and pattern detector. Uses ParallelPatternDetector
+            # (not the serial EnhancedPatternDetector fallback) to match the
+            # production detect-patterns default path (#117).
             tempo_map = EnhancedTempoMap(initial_tempo=500000)
-            detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3)
+            detector = ParallelPatternDetector(tempo_map, min_pattern_length=3)
             
             # Extract events from frames structure
             events = []
@@ -214,10 +234,10 @@ class PerformanceBenchmark:
             # Detect patterns
             return detector.detect_patterns(events)
         
-        with self.profiler.profile("pattern_detection"):
+        with self.profiler.profile("pattern_detection") as handle:
             result = pattern_wrapper()
-        
-        return result, self.profiler._end_profiling("pattern_detection", True)
+
+        return result, handle.result
     
     def benchmark_export_stage(self, frames_data: Dict[str, Any], patterns: Dict[str, Any] = None) -> tuple:
         """Benchmark export performance."""
@@ -241,10 +261,10 @@ class PerformanceBenchmark:
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
         
-        with self.profiler.profile("export"):
+        with self.profiler.profile("export") as handle:
             result = export_wrapper()
-        
-        return result, self.profiler._end_profiling("export", True)
+
+        return result, handle.result
     
     def run_full_pipeline(self, midi_file: str) -> PipelineBenchmark:
         """

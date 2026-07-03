@@ -610,9 +610,12 @@ class TestRunDetectPatterns:
         mock_tempo_class.assert_called_once_with(initial_tempo=500000)
         # Shared pattern bounds keep this path in sync with the full pipeline (#19).
         # max_events defaults to DETECTOR_MAX_EVENTS unless --config overrides it (#219).
+        # analyze_tempo=False: this tempo_map has no real tempo-change data, so
+        # the per-pattern tempo analysis would only produce a discarded
+        # constant result (#119).
         mock_detector_class.assert_called_once_with(
             mock_tempo, min_pattern_length=3, max_pattern_length=12,
-            max_events=DETECTOR_MAX_EVENTS)
+            max_events=DETECTOR_MAX_EVENTS, analyze_tempo=False)
         mock_detector.detect_patterns.assert_called_once()
         
         # Verify output file was created

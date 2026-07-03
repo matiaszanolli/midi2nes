@@ -297,6 +297,51 @@ class TestEnhancedPatternDetector(unittest.TestCase):
                               "Variations should include tempo analysis when present")
 
 
+class TestAnalyzeTempoOptOut(unittest.TestCase):
+    """Regression tests for #119: EnhancedPatternDetector(analyze_tempo=False)
+    must skip the per-pattern tempo analysis (whose output is discarded by
+    main.py's callers, since their tempo_map holds no real tempo-change data)
+    while leaving the default (analyze_tempo=True) behavior unchanged."""
+
+    def _repeating_events(self):
+        return [
+            {'frame': i, 'note': 60 + (i % 3) * 4, 'volume': 100} for i in range(30)
+        ]
+
+    def test_default_still_runs_tempo_analysis(self):
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3)
+        self.assertTrue(detector.analyze_tempo)
+        result = detector.detect_patterns(self._repeating_events())
+        self.assertGreater(len(result['patterns']), 0)
+        # tempo_map.pattern_tempos gets populated as a side effect of the
+        # analysis pass when it runs.
+        self.assertGreater(len(tempo_map.pattern_tempos), 0)
+
+    def test_analyze_tempo_false_skips_pattern_tempo_registration(self):
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3,
+                                           analyze_tempo=False)
+        self.assertFalse(detector.analyze_tempo)
+        result = detector.detect_patterns(self._repeating_events())
+        # Patterns are still detected identically...
+        self.assertGreater(len(result['patterns']), 0)
+        # ...but the tempo-map side effect never happens.
+        self.assertEqual(len(tempo_map.pattern_tempos), 0)
+
+    def test_analyze_tempo_false_yields_identical_patterns_to_true(self):
+        events = self._repeating_events()
+        with_analysis = EnhancedPatternDetector(
+            EnhancedTempoMap(initial_tempo=500000), min_pattern_length=3
+        ).detect_patterns(events)
+        without_analysis = EnhancedPatternDetector(
+            EnhancedTempoMap(initial_tempo=500000), min_pattern_length=3,
+            analyze_tempo=False
+        ).detect_patterns(events)
+        self.assertEqual(set(with_analysis['patterns']), set(without_analysis['patterns']))
+        self.assertEqual(with_analysis['stats'], without_analysis['stats'])
+
+
 class TestPatternEdgeCases(unittest.TestCase):
     """Additional tests for edge cases and complex scenarios"""
     

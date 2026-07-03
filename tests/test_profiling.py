@@ -4,6 +4,7 @@ import pytest
 import tempfile
 import json
 import time
+import tracemalloc
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 import sys
@@ -234,10 +235,14 @@ class TestProfileMemoryUsage:
     @patch('utils.profiling.time.perf_counter')
     def test_profile_memory_usage_success(self, mock_time, mock_tracemalloc, mock_process_class):
         """Test profiling decorator with successful function."""
+        import utils.profiling as profiling_module
+        profiling_module._tracemalloc_depth = 0  # isolate from other tests (#118)
+        mock_tracemalloc.is_tracing.side_effect = [False, True]  # not-tracing at acquire, tracing at release
+
         # Setup mocks
         mock_time.side_effect = [0.0, 0.1]  # 100ms duration
         mock_tracemalloc.get_traced_memory.return_value = (1024*1024, 2*1024*1024)  # 1MB current, 2MB peak
-        
+
         mock_process = Mock()
         mock_process.memory_info.return_value.rss = 50 * 1024 * 1024  # 50MB
         mock_process.cpu_percent.return_value = 10.0
@@ -559,8 +564,75 @@ class TestIntegration:
         
         profiles = get_profiler_registry()
         assert len(profiles) == 2
-        
+
         clear_profiler_registry()
+
+
+class TestNestedProfilers:
+    """Regression tests for #118: nested profilers sharing the process-global
+    tracemalloc must not blind each other. Uses real tracemalloc (not mocked)
+    to pin actual start/stop behavior."""
+
+    def setup_method(self):
+        import utils.profiling as profiling_module
+        if tracemalloc.is_tracing():
+            tracemalloc.stop()
+        profiling_module._tracemalloc_depth = 0
+
+    def teardown_method(self):
+        import utils.profiling as profiling_module
+        if tracemalloc.is_tracing():
+            tracemalloc.stop()
+        profiling_module._tracemalloc_depth = 0
+
+    def test_inner_release_does_not_stop_tracemalloc_while_outer_active(self):
+        """A profile_memory_usage-decorated function called inside a
+        PerformanceContext must not stop tracemalloc out from under the still-
+        running outer context (the bug: the inner's stop() tore down tracing
+        for the outer, whose later get_traced_memory() then raised and was
+        silently swallowed into an RSS fallback)."""
+        with patch('builtins.print'):
+            with PerformanceContext("outer", print_results=False) as ctx:
+                assert tracemalloc.is_tracing()
+
+                @profile_memory_usage(save_to_registry=False)
+                def inner_work():
+                    return 42
+
+                result = inner_work()
+
+                assert result == 42
+                # The inner profiler released its acquire, but the outer is
+                # still active — tracemalloc must still be tracing.
+                assert tracemalloc.is_tracing()
+
+        # The outer has now exited (the outermost release) — tracemalloc
+        # must be stopped.
+        assert not tracemalloc.is_tracing()
+        assert ctx.success is True
+        assert ctx.peak_memory_mb > 0
+
+    def test_benchmark_profiler_and_utils_profiler_share_the_same_guard(self):
+        """The benchmarks.performance_suite.PerformanceProfiler must nest
+        safely with utils.profiling's profilers too — both go through the
+        same shared acquire/release, not two independent tracemalloc users."""
+        from benchmarks.performance_suite import PerformanceProfiler
+
+        bench_profiler = PerformanceProfiler()
+
+        with patch('builtins.print'):
+            with PerformanceContext("outer", print_results=False) as ctx:
+                assert tracemalloc.is_tracing()
+
+                with bench_profiler.profile("inner_stage") as handle:
+                    assert tracemalloc.is_tracing()
+
+                # Inner released, outer still active.
+                assert tracemalloc.is_tracing()
+                assert handle.result.stage == "inner_stage"
+
+        assert not tracemalloc.is_tracing()
+        assert ctx.success is True
 
 
 if __name__ == "__main__":
