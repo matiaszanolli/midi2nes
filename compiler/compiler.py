@@ -5,11 +5,13 @@ Compiles assembly files into NES ROM files using the CC65 toolchain.
 """
 
 import shutil
+import traceback
 from pathlib import Path
 from typing import Optional
 
 from .cc65_wrapper import CC65Wrapper
 from core.exceptions import CompilationError, ValidationError
+from mappers.base import BaseMapper
 
 
 class ROMCompiler:
@@ -23,8 +25,10 @@ class ROMCompiler:
     4. Verify output
     """
 
-    # Minimum valid ROM size (header + some content)
+    # Minimum valid ROM size (header + some content) -- used only when the
+    # mapper that produced the project is unknown; see compile()'s mapper arg.
     MIN_ROM_SIZE = 32768
+    INES_HEADER_SIZE = 16
 
     def __init__(self, verbose: bool = False):
         """
@@ -69,6 +73,7 @@ class ROMCompiler:
         project_dir: Path,
         output_path: Path,
         validate: bool = True,
+        mapper: Optional[BaseMapper] = None,
     ) -> bool:
         """
         Compile a NES project into a ROM.
@@ -77,6 +82,12 @@ class ROMCompiler:
             project_dir: Path to the NES project directory
             output_path: Where to save the compiled ROM
             validate: Whether to validate the project first
+            mapper: The mapper the project was prepared with. When given, the
+                generated ROM is validated against its exact declared PRG
+                size instead of the flat MIN_ROM_SIZE floor (#28/M-8) -- a
+                flat 32768-byte floor only catches a truncated NROM (32KB)
+                image; it silently passes a truncated MMC3 (512KB) or MMC1
+                (128KB) image that is still >= 32768 bytes.
 
         Returns:
             True on success
@@ -131,7 +142,17 @@ class ROMCompiler:
             raise CompilationError("Generated ROM file not found")
 
         rom_size = rom_path.stat().st_size
-        if rom_size < self.MIN_ROM_SIZE:
+        if mapper is not None:
+            expected_size = mapper.prg_rom_size + self.INES_HEADER_SIZE
+            if rom_size != expected_size:
+                raise CompilationError(
+                    f"Generated ROM size ({rom_size:,} bytes) does not match "
+                    f"the expected {mapper.name} size ({expected_size:,} "
+                    f"bytes = {mapper.prg_rom_size:,}-byte PRG-ROM + "
+                    f"{self.INES_HEADER_SIZE}-byte header). Something went "
+                    "wrong during linking."
+                )
+        elif rom_size < self.MIN_ROM_SIZE:
             raise CompilationError(
                 f"Generated ROM is too small ({rom_size:,} bytes). "
                 "Something went wrong during linking."
@@ -146,7 +167,8 @@ class ROMCompiler:
         return True
 
 
-def compile_rom(project_dir: Path, rom_output: Path, verbose: bool = False) -> bool:
+def compile_rom(project_dir: Path, rom_output: Path, verbose: bool = False,
+                 mapper: Optional[BaseMapper] = None) -> bool:
     """
     Convenience function to compile a NES project to ROM.
 
@@ -157,13 +179,15 @@ def compile_rom(project_dir: Path, rom_output: Path, verbose: bool = False) -> b
         project_dir: Path to the NES project directory
         rom_output: Where to save the compiled ROM
         verbose: Whether to print detailed progress
+        mapper: The mapper the project was prepared with, for an exact ROM
+            size check (#28/M-8). See ROMCompiler.compile.
 
     Returns:
         True on success, False on failure (prints error messages)
     """
     try:
         compiler = ROMCompiler(verbose=verbose)
-        return compiler.compile(project_dir, rom_output)
+        return compiler.compile(project_dir, rom_output, mapper=mapper)
     except CompilationError as e:
         print(f"[ERROR] {e}")
         return False
@@ -172,4 +196,10 @@ def compile_rom(project_dir: Path, rom_output: Path, verbose: bool = False) -> b
         return False
     except Exception as e:
         print(f"[ERROR] Compilation failed: {e}")
+        # The two typed exceptions above cover every anticipated failure
+        # (bad project, bad build output); reaching here means something
+        # genuinely unexpected happened, so surface the traceback under
+        # --verbose instead of losing its origin (#32/M-9).
+        if verbose:
+            traceback.print_exc()
         return False

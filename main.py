@@ -248,8 +248,13 @@ def run_compile(args):
         print(f"[ERROR] Prepared project directory not found: {project_path}")
         sys.exit(1)
 
+    # `prepare` only ever writes MMC3 projects today (no --mapper flag
+    # exists), so the exact-size check (#28/M-8) can assume MMC3 here too.
+    from mappers.mmc3 import MMC3Mapper
+    mapper = MMC3Mapper()
+
     print(f"Compiling NES ROM from {project_path} ...")
-    if not compile_rom(project_path, output_rom):
+    if not compile_rom(project_path, output_rom, verbose=getattr(args, 'verbose', False), mapper=mapper):
         print("[ERROR] ROM compilation failed")
         sys.exit(1)
 
@@ -737,7 +742,7 @@ def run_full_pipeline(args):
             
             # Step 7: Compile ROM
             print("[7/7] Compiling NES ROM...")
-            if not compile_rom(project_path, output_rom):
+            if not compile_rom(project_path, output_rom, verbose=args.verbose, mapper=mapper):
                 print("[ERROR] ROM compilation failed")
                 sys.exit(1)  # finally handles restore
 
