@@ -127,3 +127,135 @@ class TestSubprocessTimeouts:
         with patch("subprocess.run", return_value=fail_result):
             with pytest.raises(CompilationError):
                 self.wrapper.link([obj], out, cfg, working_dir=tmp_path)
+
+    # --- stderr must actually be surfaced in the raised error, not swallowed ---
+
+    def test_assemble_failure_message_includes_stderr(self, tmp_path):
+        src = tmp_path / "bad.asm"
+        src.write_text("; bad\n")
+        out = tmp_path / "bad.o"
+        fail_result = MagicMock(returncode=1, stderr="syntax error near line 5", stdout="")
+        with patch("subprocess.run", return_value=fail_result):
+            with pytest.raises(CompilationError) as exc_info:
+                self.wrapper.assemble(src, out, working_dir=tmp_path)
+        assert "syntax error near line 5" in str(exc_info.value)
+
+    def test_link_failure_message_includes_stderr(self, tmp_path):
+        obj = tmp_path / "bad.o"
+        obj.write_bytes(b"")
+        out = tmp_path / "game.nes"
+        cfg = tmp_path / "nes.cfg"
+        cfg.write_text("; stub\n")
+        fail_result = MagicMock(returncode=1, stderr="undefined symbol _music_data", stdout="")
+        with patch("subprocess.run", return_value=fail_result):
+            with pytest.raises(CompilationError) as exc_info:
+                self.wrapper.link([obj], out, cfg, working_dir=tmp_path)
+        assert "undefined symbol _music_data" in str(exc_info.value)
+
+
+class TestMissingToolDetection:
+    """REG-09/#49: check_toolchain must raise a clear ToolchainError when
+    ca65/ld65 aren't found on PATH, not fail some other way further down."""
+
+    def setup_method(self):
+        self.wrapper = CC65Wrapper()
+
+    def test_missing_ca65_raises_toolchain_error(self):
+        with patch("shutil.which", return_value=None):
+            with pytest.raises(ToolchainError) as exc_info:
+                self.wrapper.check_toolchain()
+        assert exc_info.value.tool == "ca65"
+
+    def test_missing_ld65_raises_toolchain_error(self):
+        # ca65 resolves; ld65 does not.
+        def fake_which(name):
+            return "/usr/bin/ca65" if name == "ca65" else None
+
+        ok = MagicMock(returncode=0, stdout="ca65 2.18", stderr="")
+        with patch("shutil.which", side_effect=fake_which):
+            with patch("subprocess.run", return_value=ok):
+                with pytest.raises(ToolchainError) as exc_info:
+                    self.wrapper.check_toolchain()
+        assert exc_info.value.tool == "ld65"
+
+    def test_missing_tool_error_names_the_tool(self):
+        with patch("shutil.which", return_value=None):
+            with pytest.raises(ToolchainError) as exc_info:
+                self.wrapper.check_toolchain()
+        assert "ca65" in str(exc_info.value)
+
+    def test_ca65_version_probe_nonzero_exit_raises_toolchain_error(self):
+        self.wrapper._ca65_path = "/usr/bin/ca65"
+        self.wrapper._ld65_path = "/usr/bin/ld65"
+        bad = MagicMock(returncode=1, stdout="", stderr="not a real binary")
+        with patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"):
+            with patch("subprocess.run", return_value=bad):
+                with pytest.raises(ToolchainError) as exc_info:
+                    self.wrapper.check_toolchain()
+        assert exc_info.value.tool == "ca65"
+
+    def test_ld65_version_probe_nonzero_exit_raises_toolchain_error(self):
+        ok = MagicMock(returncode=0, stdout="ca65 2.18", stderr="")
+        bad = MagicMock(returncode=1, stdout="", stderr="not a real binary")
+        with patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"):
+            with patch("subprocess.run", side_effect=[ok, bad]):
+                with pytest.raises(ToolchainError) as exc_info:
+                    self.wrapper.check_toolchain()
+        assert exc_info.value.tool == "ld65"
+
+
+class TestBuildMethod:
+    """The full build() pipeline (assemble all sources, then link) had no
+    direct coverage -- only its constituent assemble()/link() calls were
+    tested in isolation."""
+
+    def setup_method(self):
+        self.wrapper = CC65Wrapper()
+
+    def test_build_assembles_all_sources_then_links(self, tmp_path):
+        src1 = tmp_path / "main.asm"
+        src2 = tmp_path / "music.asm"
+        src1.write_text("; stub\n")
+        src2.write_text("; stub\n")
+        out = tmp_path / "game.nes"
+        cfg = tmp_path / "nes.cfg"
+        cfg.write_text("; stub\n")
+
+        with patch.object(self.wrapper, "check_toolchain") as mock_check, \
+             patch.object(self.wrapper, "assemble") as mock_assemble, \
+             patch.object(self.wrapper, "link") as mock_link:
+            result = self.wrapper.build([src1, src2], out, cfg, tmp_path)
+
+        assert result is True
+        mock_check.assert_called_once()
+        assert mock_assemble.call_count == 2
+        mock_link.assert_called_once()
+        linked_objects = mock_link.call_args[0][0]
+        assert [p.name for p in linked_objects] == ["main.o", "music.o"]
+
+    def test_build_propagates_assemble_failure_without_linking(self, tmp_path):
+        src = tmp_path / "bad.asm"
+        src.write_text("; bad\n")
+        out = tmp_path / "game.nes"
+        cfg = tmp_path / "nes.cfg"
+        cfg.write_text("; stub\n")
+
+        with patch.object(self.wrapper, "check_toolchain"), \
+             patch.object(self.wrapper, "assemble", side_effect=CompilationError("boom", tool="ca65", exit_code=1)), \
+             patch.object(self.wrapper, "link") as mock_link:
+            with pytest.raises(CompilationError):
+                self.wrapper.build([src], out, cfg, tmp_path)
+        mock_link.assert_not_called()
+
+    def test_build_propagates_link_failure(self, tmp_path):
+        src = tmp_path / "main.asm"
+        src.write_text("; stub\n")
+        out = tmp_path / "game.nes"
+        cfg = tmp_path / "nes.cfg"
+        cfg.write_text("; stub\n")
+
+        with patch.object(self.wrapper, "check_toolchain"), \
+             patch.object(self.wrapper, "assemble"), \
+             patch.object(self.wrapper, "link", side_effect=CompilationError("boom", tool="ld65", exit_code=1)):
+            with pytest.raises(CompilationError):
+                self.wrapper.build([src], out, cfg, tmp_path)
