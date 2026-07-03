@@ -229,6 +229,34 @@ class TestEnhancedTempoMap(unittest.TestCase):
             self.assertNotIsInstance(context.exception, ZeroDivisionError)
             self.assertIn("positive", str(context.exception))
 
+    def test_zero_or_negative_tempo_at_tick_zero_raises_validation_error(self):
+        # Regression (TEMPO-08 / #208): add_tempo_change's tick==0 branch used
+        # to replace the initial tempo directly and return before
+        # _validate_basic_tempo ever ran, so a MIDI file whose first
+        # set_tempo carried 0/negative microseconds at tick 0 was accepted
+        # silently -- tempo=0 collapses every event before the next real
+        # change onto frame 0; negative tempo produces negative frame indices
+        # for the whole song (the same symptom as #93, via tick 0 instead).
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000, validation_config=self.default_config)
+
+        for bad_tempo in (0, -1, -500000):
+            with self.assertRaises(TempoValidationError) as context:
+                tempo_map.add_tempo_change(0, bad_tempo)
+            self.assertIn("positive", str(context.exception))
+
+        # Out-of-range (but positive) tempo at tick 0 must also be rejected.
+        with self.assertRaises(TempoValidationError) as context:
+            tempo_map.add_tempo_change(0, 3000000)  # 20 BPM, below min_tempo_bpm
+        self.assertIn("outside valid range", str(context.exception))
+
+        # A rejected tick-0 change must not have mutated the initial tempo.
+        self.assertEqual(tempo_map.tempo_changes[0], (0, 500000))
+
+        # A valid replacement at tick 0 still works.
+        tempo_map.add_tempo_change(0, 400000)  # 150 BPM
+        self.assertEqual(tempo_map.tempo_changes[0], (0, 400000))
+
     def test_validate_tempo_change_sibling_also_guards_zero_tempo(self):
         # Sibling validator (#209): _validate_tempo_change has the same
         # unguarded division as _validate_basic_tempo, even though nothing
@@ -302,9 +330,11 @@ class TestEnhancedTempoMap(unittest.TestCase):
             validation_config=self.default_config
         )
 
-        # Test tempo change at tick 0 (now allowed to replace initial tempo)
-        tempo_map.add_tempo_change(0, 200000)  # Should work - replaces initial tempo
-        self.assertEqual(tempo_map.get_tempo_at_tick(0), 200000)
+        # Test tempo change at tick 0 (now allowed to replace initial tempo,
+        # but still subject to the same BPM-range validation as any other
+        # tick -- #208/TEMPO-08)
+        tempo_map.add_tempo_change(0, 400000)  # 150 BPM, within [60, 200]
+        self.assertEqual(tempo_map.get_tempo_at_tick(0), 400000)
 
         # Test tempo change at maximum valid BPM
         max_tempo = int(60_000_000 / self.default_config.max_tempo_bpm)  # 300000 (200 BPM)
