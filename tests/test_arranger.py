@@ -41,6 +41,28 @@ class TestArrangerRoleAnalysis(unittest.TestCase):
         self.assertEqual(roles['high'], MusicalRole.MELODY)
 
 
+class TestDrumTrackAnalysisNoDeadAttribute(unittest.TestCase):
+    """Regression (#207/ARR-12): _analyze_drum_track used to set an ad-hoc
+    `analysis.notes` instance attribute -- not a declared TrackAnalysis
+    field, and nothing ever read it (the only `.notes` reader in arranger/ is
+    the distinct ArrangementPlan.notes list). Pin that a drum track with
+    kicks/snares no longer carries this dead, misleading attribute."""
+
+    def test_drum_track_with_kicks_and_snares_has_no_notes_attribute(self):
+        events = {
+            'drums': [
+                {'frame': 0, 'note': 36, 'volume': 100, 'type': 'note_on', 'channel': 9},   # kick
+                {'frame': 5, 'note': 36, 'volume': 0, 'type': 'note_off', 'channel': 9},
+                {'frame': 10, 'note': 38, 'volume': 100, 'type': 'note_on', 'channel': 9},  # snare
+                {'frame': 15, 'note': 38, 'volume': 0, 'type': 'note_off', 'channel': 9},
+            ]
+        }
+        plan, _, _ = analyze_midi_events(events)
+        track = plan.tracks[0]
+        self.assertTrue(track.is_drum_track)
+        self.assertFalse(hasattr(track, 'notes'))
+
+
 class TestArrangerGMProgramHint(unittest.TestCase):
     """Regression (#86 / ARR-03): `program` used to be hardcoded to 0 in
     analyze_midi_events and never updated, making the entire GM instrument
