@@ -81,6 +81,8 @@ def parse_midi_to_frames(midi_path):
               f"change(s); affected sections will play at the preceding tempo.")
 
     # Second pass: process notes efficiently
+    dropped_note_events = 0
+    last_drop_reason = None
     for i, track in enumerate(mid.tracks):
         current_tick = 0
         track_name = f"track_{i}"
@@ -121,9 +123,21 @@ def parse_midi_to_frames(midi_path):
                         "program": channel_programs.get(msg.channel, 0),
                         "tempo": tempo_map.get_tempo_at_tick(current_tick)
                     })
-                except Exception:
-                    # Skip problematic events to avoid crashes
+                except Exception as e:
+                    # Nothing on this path is expected to raise today (frame
+                    # math is pure arithmetic, tempo lookup returns a stored
+                    # value) -- this is defense against a future regression,
+                    # not a known failure mode. A dropped note changes the
+                    # song, so it must never vanish silently; count and warn
+                    # rather than swallow it (#124/SAFE-07).
+                    dropped_note_events += 1
+                    last_drop_reason = f"{type(e).__name__}: {e}"
                     continue
+
+    if dropped_note_events:
+        print(f"Warning: dropped {dropped_note_events} note event(s) due to "
+              f"unexpected parse error(s) (last: {last_drop_reason}); "
+              f"the ROM may be missing notes.")
 
     # Return ONLY events - no expensive pattern/loop analysis
     # Pattern detection should be done in a separate step if needed
