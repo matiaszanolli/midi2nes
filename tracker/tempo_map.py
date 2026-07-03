@@ -116,7 +116,13 @@ class TempoMap:
     def add_tempo_change(self, tick: int, tempo: int):
         """Add a tempo change at the specified tick"""
         self.tempo_changes.append((tick, tempo))
-        self.tempo_changes.sort()
+        # Sort by tick ONLY (not the full tuple): Python's sort is stable, so
+        # keying on tick alone preserves insertion order among tied ticks. A
+        # bare .sort() compares the full (tick, tempo) tuple, which tie-breaks
+        # on numeric tempo value instead of "last event wins" MIDI semantics
+        # (#210) — the just-appended entry must sort after any earlier
+        # same-tick entries, not wherever its tempo value happens to fall.
+        self.tempo_changes.sort(key=lambda c: c[0])
         self._time_cache = {}
         self._tempo_index = None
 
@@ -378,6 +384,15 @@ class EnhancedTempoMap(TempoMap):
 
     def _validate_basic_tempo(self, change: TempoChange):
         """Validate basic tempo properties"""
+        # Non-positive tempo divides to inf/ZeroDivisionError below instead of
+        # failing the BPM-range check like every other invalid tempo — reject
+        # it as a TempoValidationError first so parser_fast.py's
+        # `except TempoValidationError: continue` can drop it non-fatally (#209).
+        if change.tempo <= 0:
+            raise TempoValidationError(
+                f"Tempo must be positive (microseconds per quarter note), got {change.tempo}"
+            )
+
         # Check BPM range
         bpm = round(60_000_000 / change.tempo, 6)
         if not (self.validation_config.min_tempo_bpm <= bpm <= 
@@ -401,6 +416,13 @@ class EnhancedTempoMap(TempoMap):
 
     def _validate_tempo_change(self, change: TempoChange):
         """Validate a tempo change against configuration rules"""
+        # Same zero/negative guard as _validate_basic_tempo (#209) — sibling
+        # validator, same unguarded division otherwise.
+        if change.tempo <= 0:
+            raise TempoValidationError(
+                f"Tempo must be positive (microseconds per quarter note), got {change.tempo}"
+            )
+
         # First check BPM range
         bpm = round(60_000_000 / change.tempo, 6)
         if not (self.validation_config.min_tempo_bpm <= bpm <= 
@@ -632,7 +654,10 @@ class EnhancedTempoMap(TempoMap):
             aligned_changes.append((int(best_tick), tempo))
             
         if aligned_changes:
-            self.tempo_changes = sorted(aligned_changes)
+            # Same tick-only key as add_tempo_change (#210) — a bare sorted()
+            # on (tick, tempo) tuples would tie-break by tempo value instead
+            # of preserving the original (insertion) order for tied ticks.
+            self.tempo_changes = sorted(aligned_changes, key=lambda c: c[0])
             self.optimization_stats['frame_alignments'] = alignments_made
 
     def optimize_tempo_changes(self):
