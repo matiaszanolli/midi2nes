@@ -200,18 +200,43 @@ switch_dpcm_bank:
                 f"$8000 window ({self.PRG_WINDOW_SIZE:,} bytes)."
             )
 
-        # BANK_NN (sequence bytecode) and DPCM_NN both load into the PRG_BANK pool.
+        # BANK_NN (sequence bytecode) and DPCM_NN both load into the SAME
+        # physical PRG_BANK_NN region for a given NN (generate_linker_config
+        # deliberately shares it), but the exporter and the DPCM packer assign
+        # bank indices independently. Checking each segment's size against the
+        # 8 KB window in isolation lets two segments that individually fit
+        # silently overflow their shared bank when combined — group by bank
+        # index and sum before comparing (#212).
+        bank_totals: Dict[int, Dict[str, int]] = {}
         max_bank = -1
         for seg, size in segment_sizes.items():
             if not seg or not (seg.startswith('BANK_') or seg.startswith('DPCM_')):
                 continue
-            if size > self.PRG_WINDOW_SIZE:
+            try:
+                bank_idx = int(seg.rsplit('_', 1)[1])
+            except (IndexError, ValueError):
+                continue
+            max_bank = max(max_bank, bank_idx)
+            bank_totals.setdefault(bank_idx, {})[seg] = size
+
+        for bank_idx in sorted(bank_totals):
+            contributors = bank_totals[bank_idx]
+            combined = sum(contributors.values())
+            if combined <= self.PRG_WINDOW_SIZE:
+                continue
+            if len(contributors) == 1:
+                (seg, size), = contributors.items()
                 errors.append(f"segment {seg} ({size:,} bytes) exceeds the 8 KB bank size "
                               f"({self.PRG_WINDOW_SIZE:,} bytes).")
-            try:
-                max_bank = max(max_bank, int(seg.rsplit('_', 1)[1]))
-            except (IndexError, ValueError):
-                pass
+            else:
+                detail = " + ".join(f"{size:,} bytes {seg}"
+                                     for seg, size in sorted(contributors.items()))
+                errors.append(
+                    f"bank {bank_idx}: {detail} = {combined:,} bytes exceeds the shared "
+                    f"8 KB bank ({self.PRG_WINDOW_SIZE:,} bytes) — BANK_NN and DPCM_NN "
+                    f"load into the same PRG_BANK_{bank_idx:02d} region."
+                )
+
         if max_bank >= self.SWAP_BANK_COUNT:
             errors.append(
                 f"music data needs bank {max_bank}, but MMC3 defines only {self.SWAP_BANK_COUNT} "

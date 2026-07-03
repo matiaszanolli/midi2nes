@@ -113,11 +113,15 @@ SEGMENTS {
     lsr a
     sta $E000"""
 
-    def generate_post_process_commands(self, is_windows: bool = False) -> str:
-        """MMC1 needs vector table fixup for 128KB ROM."""
-        python_cmd = "python" if is_windows else "python3"
-        # Fix vectors: copy from linker output position to correct MMC1 position
-        return f'{python_cmd} -c "import sys; d=open(\'game.nes\',\'r+b\'); d.seek(0xFFFA); v=d.read(6); d.seek(0x2000A); d.write(v); d.close()"\n'
+    # No post-link vector fixup: generate_linker_config's `VECTORS: load =
+    # PRGFIXED, start = $FFFA` already tells ld65 to place the vectors at CPU
+    # address $FFFA within PRGFIXED, which resolves to file offset 0x2000A —
+    # ld65 gets this right unassisted. A previous fixup step copied 6 bytes
+    # from file offset 0xFFFA (which falls inside the switchable PRGSWAP
+    # region, not the vectors) onto the correctly-placed vectors at 0x2000A,
+    # overwriting valid reset/NMI/IRQ addresses with PRGSWAP fill data and
+    # bricking every MMC1 ROM built via build.sh (#213). Falls back to
+    # BaseMapper.generate_post_process_commands (no-op).
 
     def get_data_capacity(self) -> int:
         # 112KB in switchable banks, minus overhead

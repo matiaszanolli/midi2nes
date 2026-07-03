@@ -367,7 +367,7 @@ class TestBuildScriptGeneration:
 
     def test_build_script_honors_selected_mapper(self, project_dir, minimal_music_asm):
         """The generated build.sh must come from the selected mapper, not a
-        hardcoded MMC3 template (#18). MMC1 needs its vector fixup post-process."""
+        hardcoded MMC3 template (#18)."""
         from mappers.mmc1 import MMC1Mapper
 
         builder = NESProjectBuilder(str(project_dir))
@@ -377,10 +377,28 @@ class TestBuildScriptGeneration:
         build_script = project_dir / "build.sh" if os.name != 'nt' else project_dir / "build.bat"
         content = build_script.read_text()
 
-        # MMC1 relocates the reset/NMI/IRQ vectors to file offset 0x2000A.
-        assert '0x2000A' in content
         # Must match the mapper's own script byte-for-byte.
         assert content == MMC1Mapper().generate_build_script(os.name == 'nt')
+
+    def test_mmc1_build_script_has_no_vector_fixup(self, project_dir, minimal_music_asm):
+        """Regression (MAP-2 / #213): the old post-link fixup copied 6 bytes
+        from file offset 0xFFFA (inside the switchable PRGSWAP region) onto
+        the correctly-placed vectors at 0x2000A, overwriting valid
+        reset/NMI/IRQ addresses with PRGSWAP fill data. generate_linker_config's
+        `VECTORS: load = PRGFIXED, start = $FFFA` already places vectors
+        correctly, so no post-link fixup is needed."""
+        from mappers.mmc1 import MMC1Mapper
+
+        builder = NESProjectBuilder(str(project_dir))
+        builder.set_mapper(MMC1Mapper())
+        builder.prepare_project(str(minimal_music_asm))
+
+        build_script = project_dir / "build.sh" if os.name != 'nt' else project_dir / "build.bat"
+        content = build_script.read_text()
+
+        assert '0x2000A' not in content
+        assert '0xFFFA' not in content
+        assert not MMC1Mapper().generate_post_process_commands(os.name == 'nt')
 
     def test_mmc3_build_script_has_no_vector_fixup(self, project_dir, minimal_music_asm):
         """MMC3 keeps the vectors in its fixed last bank, so the build script
