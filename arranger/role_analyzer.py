@@ -183,13 +183,6 @@ class VoiceRoleAnalyzer:
         analysis.priority = 8  # Drums are important
         analysis.confidence = 1.0
 
-        # Check for kick drums that need DPCM
-        has_kicks = any(n.pitch in [35, 36] for n in notes)
-        has_snares = any(n.pitch in [38, 40] for n in notes)
-
-        if has_kicks or has_snares:
-            analysis.notes = "Uses DPCM for kicks/snares"
-
         return analysis
 
     def _calculate_max_polyphony(self, notes: List[NoteInfo]) -> int:
@@ -314,7 +307,12 @@ class VoiceRoleAnalyzer:
         for track in plan.tracks:
             assigned = False
 
-            # Drums always get noise + potentially DPCM
+            # Drums always get noise + potentially DPCM. Only skip the
+            # standard "couldn't be assigned" bookkeeping below when at least
+            # one of the two was actually claimed here -- a second drum track
+            # finding both already taken used to hit an unconditional
+            # `continue`, vanishing with no dropped_tracks entry and no
+            # plan.notes diagnostic, unlike every other overflow (#205/ARR-10).
             if track.is_drum_track:
                 if not noise_assigned:
                     plan.noise_tracks.append(track.track_id)
@@ -323,65 +321,66 @@ class VoiceRoleAnalyzer:
                 if not dpcm_assigned:
                     plan.dpcm_tracks.append(track.track_id)
                     dpcm_assigned = True
-                continue
-
-            # Try preferred channel first
-            if track.preferred_channel == NESChannel.TRIANGLE:
-                if not triangle_assigned:
-                    plan.triangle_tracks.append(track.track_id)
-                    triangle_assigned = True
                     assigned = True
 
-            elif track.preferred_channel == NESChannel.PULSE1:
-                if not pulse1_assigned:
-                    plan.pulse1_tracks.append(track.track_id)
-                    pulse1_assigned = True
-                    assigned = True
-                elif not pulse2_assigned:
-                    plan.pulse2_tracks.append(track.track_id)
-                    pulse2_assigned = True
-                    assigned = True
-                    plan.notes.append(f"Track {track.track_id} ({track.name}): Pulse1 full, using Pulse2")
+            else:
+                # Try preferred channel first
+                if track.preferred_channel == NESChannel.TRIANGLE:
+                    if not triangle_assigned:
+                        plan.triangle_tracks.append(track.track_id)
+                        triangle_assigned = True
+                        assigned = True
 
-            elif track.preferred_channel == NESChannel.PULSE2:
-                if not pulse2_assigned:
-                    plan.pulse2_tracks.append(track.track_id)
-                    pulse2_assigned = True
-                    assigned = True
-                elif not pulse1_assigned:
-                    plan.pulse1_tracks.append(track.track_id)
-                    pulse1_assigned = True
-                    assigned = True
-                    plan.notes.append(f"Track {track.track_id} ({track.name}): Pulse2 full, using Pulse1")
+                elif track.preferred_channel == NESChannel.PULSE1:
+                    if not pulse1_assigned:
+                        plan.pulse1_tracks.append(track.track_id)
+                        pulse1_assigned = True
+                        assigned = True
+                    elif not pulse2_assigned:
+                        plan.pulse2_tracks.append(track.track_id)
+                        pulse2_assigned = True
+                        assigned = True
+                        plan.notes.append(f"Track {track.track_id} ({track.name}): Pulse1 full, using Pulse2")
 
-            elif track.preferred_channel in (NESChannel.ANY_PULSE, NESChannel.FLEXIBLE):
-                if not pulse1_assigned:
-                    plan.pulse1_tracks.append(track.track_id)
-                    pulse1_assigned = True
-                    assigned = True
-                elif not pulse2_assigned:
-                    plan.pulse2_tracks.append(track.track_id)
-                    pulse2_assigned = True
-                    assigned = True
+                elif track.preferred_channel == NESChannel.PULSE2:
+                    if not pulse2_assigned:
+                        plan.pulse2_tracks.append(track.track_id)
+                        pulse2_assigned = True
+                        assigned = True
+                    elif not pulse1_assigned:
+                        plan.pulse1_tracks.append(track.track_id)
+                        pulse1_assigned = True
+                        assigned = True
+                        plan.notes.append(f"Track {track.track_id} ({track.name}): Pulse2 full, using Pulse1")
 
-            # If still not assigned, try any available channel
-            if not assigned:
-                if track.role == MusicalRole.BASS and not triangle_assigned:
-                    plan.triangle_tracks.append(track.track_id)
-                    triangle_assigned = True
-                    assigned = True
-                elif not pulse1_assigned:
-                    plan.pulse1_tracks.append(track.track_id)
-                    pulse1_assigned = True
-                    assigned = True
-                elif not pulse2_assigned:
-                    plan.pulse2_tracks.append(track.track_id)
-                    pulse2_assigned = True
-                    assigned = True
-                elif not triangle_assigned and track.role != MusicalRole.MELODY:
-                    plan.triangle_tracks.append(track.track_id)
-                    triangle_assigned = True
-                    assigned = True
+                elif track.preferred_channel in (NESChannel.ANY_PULSE, NESChannel.FLEXIBLE):
+                    if not pulse1_assigned:
+                        plan.pulse1_tracks.append(track.track_id)
+                        pulse1_assigned = True
+                        assigned = True
+                    elif not pulse2_assigned:
+                        plan.pulse2_tracks.append(track.track_id)
+                        pulse2_assigned = True
+                        assigned = True
+
+                # If still not assigned, try any available channel
+                if not assigned:
+                    if track.role == MusicalRole.BASS and not triangle_assigned:
+                        plan.triangle_tracks.append(track.track_id)
+                        triangle_assigned = True
+                        assigned = True
+                    elif not pulse1_assigned:
+                        plan.pulse1_tracks.append(track.track_id)
+                        pulse1_assigned = True
+                        assigned = True
+                    elif not pulse2_assigned:
+                        plan.pulse2_tracks.append(track.track_id)
+                        pulse2_assigned = True
+                        assigned = True
+                    elif not triangle_assigned and track.role != MusicalRole.MELODY:
+                        plan.triangle_tracks.append(track.track_id)
+                        triangle_assigned = True
+                        assigned = True
 
             # Track couldn't be assigned
             if not assigned:

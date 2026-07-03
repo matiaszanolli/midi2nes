@@ -106,13 +106,20 @@ def analyze_midi_events(
 
         # Check for drum track. GM percussion lives on MIDI channel 10 (index 9),
         # which parser_fast now preserves on each event (#85); fall back to the
-        # track-name heuristic for sources that don't carry channel info.
+        # track-name heuristic only when no event carries channel info -- a
+        # known, non-percussion channel is authoritative and must not be
+        # overridden by a name that merely happens to contain "drum" (e.g. a
+        # reference/scratch track name), which used to reroute a pitched
+        # track's actual content through the drum/noise path (#206/ARR-11).
         track_channel = next(
             (e['channel'] for e in events if e.get('channel') is not None), None
         )
-        if (track_channel == 9
-                or 'drum' in str(track_name).lower()
-                or track_name == '9' or track_name == 9):
+        if track_channel is not None:
+            is_drum_track = track_channel == 9
+        else:
+            is_drum_track = ('drum' in str(track_name).lower()
+                              or track_name == '9' or track_name == 9)
+        if is_drum_track:
             analyzer.mark_drum_track(track_idx)
 
         # GM program hint for role/timbre analysis (#86): parser_fast now
