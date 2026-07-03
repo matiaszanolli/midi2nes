@@ -142,15 +142,21 @@ class NESEmulatorCore:
                 # Noise frames must carry the data the exporters turn into APU
                 # writes (#9): `note` = 4-bit period index ($400E low nibble),
                 # mode bit folded into `control` bit 6 (the engine reads it as
-                # the duty/mode bit), and a scaled `volume`. Drum hits are sparse
-                # single-frame triggers so the channel re-fires once, then decays
-                # via the length counter.
+                # the duty/mode bit), and a scaled `volume`. Both playback paths
+                # force constant-volume + halt ($30) on $400C, so there is no
+                # hardware envelope or length-counter decay to rely on (#162/
+                # NH-19) -- emit a short software volume ramp across several
+                # frames instead. The macro/frame-table serializers already
+                # read `volume` per frame, so a per-hit ramp here becomes a
+                # real vol_seq/frame-table decay for free downstream.
                 noise_frames = {}
                 # Same monophonic same-frame collapse as the tonal channels (#96):
                 # keep one hit per frame and count the drops instead of letting the
                 # last write silently win.
                 events, _ = self._collapse_same_frame_events(events, 'noise')
-                for e in events:
+                sorted_events = sorted(events, key=lambda ev: ev['frame'])
+                NOISE_DECAY_FRAMES = 6  # ~100ms decay simulating a drum strike
+                for i, e in enumerate(sorted_events):
                     velocity = e.get('velocity', e.get('volume', 0))
                     if velocity <= 0:
                         continue
@@ -159,12 +165,25 @@ class NESEmulatorCore:
                     period = max(1, self.midi_to_nes_pitch(e['note'], 'noise'))
                     mode = e.get('noise_mode', 0) & 1
                     v_clamped = min(127, max(0, velocity))
-                    volume = max(1, int(15 * math.pow(v_clamped / 127.0, 1.5)))
-                    noise_frames[e['frame']] = {
-                        "note": period,
-                        "control": mode << 6,
-                        "volume": volume,
-                    }
+                    peak_volume = max(1, int(15 * math.pow(v_clamped / 127.0, 1.5)))
+
+                    start_frame = e['frame']
+                    end_frame = start_frame + NOISE_DECAY_FRAMES
+                    # A re-trigger cuts the previous strike's decay short
+                    # rather than blending into it.
+                    if i + 1 < len(sorted_events):
+                        next_frame = sorted_events[i + 1]['frame']
+                        if next_frame > start_frame:
+                            end_frame = min(end_frame, next_frame)
+
+                    span = end_frame - start_frame
+                    for offset in range(span):
+                        decayed_volume = max(1, round(peak_volume * (span - offset) / span))
+                        noise_frames[start_frame + offset] = {
+                            "note": period,
+                            "control": mode << 6,
+                            "volume": decayed_volume,
+                        }
                 processed[channel_name] = noise_frames
             elif channel_name == 'dpcm':
                 # DPCM frames carry `note` = sample_id + 1 (the engine recovers

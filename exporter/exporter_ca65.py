@@ -129,7 +129,6 @@ class CA65Exporter(BaseExporter):
         lines.append('last_pulse1_note: .res 1')
         lines.append('last_pulse2_note: .res 1')
         lines.append('last_triangle_note: .res 1')
-        lines.append('last_noise_note: .res 1')
         lines.append('last_dpcm_note: .res 1')
         lines.append('')
 
@@ -653,11 +652,15 @@ class CA65Exporter(BaseExporter):
                 '    sta temp_ptr+1',
                 '    ldy #0',
                 '    lda (temp_ptr),y',
-                '    cmp last_noise_note',
-                '    beq @done            ; unchanged - let length counter decay',
-                '    sta last_noise_note',
                 '    beq @silence         ; note 0 -> silence',
-                '    ; New hit - write $400C from noise_ctrl',
+                '    ; Active hit -- rewrite $400C/$400E/$400F every frame from',
+                '    ; the tables, even while the period is unchanged from the',
+                '    ; last frame. The length counter is always halted and constant',
+                '    ; volume always set (#162/NH-19), so there is no hardware',
+                '    ; decay to lean on -- emulator_core.py bakes a software volume',
+                '    ; ramp into noise_ctrl per frame, and $400E/$400F writes never',
+                '    ; reset the noise phase (docs/APU_NOISE_REFERENCE.md section 6),',
+                '    ; so writing unconditionally is both safe and required.',
                 '    lda #<noise_ctrl',
                 '    clc',
                 '    adc frame_counter',
@@ -677,9 +680,8 @@ class CA65Exporter(BaseExporter):
                 '    sta temp_ptr+1',
                 '    lda (temp_ptr),y',
                 '    sta $400E',
-                '    lda #$08             ; length counter load (resets envelope)',
+                '    lda #$08             ; length counter load (harmless: halted)',
                 '    sta $400F',
-                '@done:',
                 '    rts',
                 '@silence:',
                 '    lda #$30             ; constant volume 0 - silence noise',

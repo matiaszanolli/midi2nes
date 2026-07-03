@@ -81,6 +81,54 @@ class TestNoiseDpcmReachAPU(unittest.TestCase):
         self.assertIn('sta $400E', content)   # noise period/mode
         self.assertIn('noise_note:', content)
 
+    def test_noise_hit_decays_over_multiple_frames(self):
+        # Regression (#162/NH-19): both playback paths force the length-counter
+        # halt bit and constant-volume flag, so there is no hardware decay for a
+        # single-frame hit to ride on. process_all_tracks must bake a software
+        # volume ramp across several frames instead.
+        mapped = {'noise': [{'frame': 0, 'note': 38, 'velocity': 127}]}
+        frames = self.core.process_all_tracks(mapped)
+        noise = frames['noise']
+        self.assertGreater(len(noise), 1)
+        ordered_frames = sorted(noise)
+        volumes = [noise[f]['volume'] for f in ordered_frames]
+        self.assertEqual(volumes, sorted(volumes, reverse=True))
+        self.assertGreater(volumes[0], volumes[-1])
+        # The period (drum pitch) must stay constant across the decay -- only
+        # volume ramps down.
+        periods = {noise[f]['note'] for f in ordered_frames}
+        self.assertEqual(len(periods), 1)
+
+    def test_noise_retrigger_cuts_previous_decay_short(self):
+        # A second hit must cut the first hit's decay short, not blend with it.
+        mapped = {'noise': [{'frame': 0, 'note': 38, 'velocity': 127},
+                             {'frame': 2, 'note': 40, 'velocity': 100}]}
+        frames = self.core.process_all_tracks(mapped)
+        noise = frames['noise']
+        self.assertEqual(noise[0]['note'], noise[1]['note'])
+        self.assertNotEqual(noise[1]['note'], noise[2]['note'])
+
+    def test_direct_path_play_noise_rewrites_ctrl_unconditionally(self):
+        # Regression (#162/NH-19): play_noise used to skip $400C/$400E/$400F
+        # whenever the period was unchanged from the previous frame, assuming
+        # a hardware decay that can't happen (halted length counter, bypassed
+        # envelope). It must rewrite the control byte every active frame so a
+        # software volume ramp is actually heard.
+        mapped = {'noise': [{'frame': 0, 'note': 38, 'velocity': 127}]}
+        frames = self.core.process_all_tracks(mapped)
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            self.exporter.export_direct_frames(frames, out, standalone=True)
+            content = Path(out).read_text()
+        finally:
+            if os.path.exists(out):
+                os.remove(out)
+        play_noise = content.split('.proc play_noise', 1)[1].split('.endproc', 1)[0]
+        self.assertNotIn('last_noise_note', play_noise)
+        self.assertNotIn('last_noise_note', content)
+        self.assertIn('sta $400C', play_noise)
+        self.assertIn('sta $400F', play_noise)
+
     def test_direct_path_emits_dpcm_trigger(self):
         mapped = {'dpcm': [{'frame': 0, 'note': 36, 'velocity': 100, 'sample_id': 1}]}
         frames = self.core.process_all_tracks(mapped)
@@ -669,11 +717,15 @@ class TestSameFrameNoteCollapse(unittest.TestCase):
 
     def test_collapse_applies_to_noise_channel(self):
         # CHANNEL: the same collapse covers the noise branch of process_all_tracks,
-        # not just the tonal channels — two same-frame hits keep only one frame.
+        # not just the tonal channels — two same-frame hits keep only one hit's
+        # decay, not two hits blended together (#162/NH-19 made a single hit span
+        # several frames, so this no longer collapses to a single frame key).
         out = self.core.process_all_tracks(
             {'noise': [{'frame': 5, 'note': 38, 'velocity': 40},
                        {'frame': 5, 'note': 40, 'velocity': 90}]})
-        self.assertEqual(list(out['noise'].keys()), [5])
+        self.assertEqual(min(out['noise'].keys()), 5)
+        periods = {d['note'] for d in out['noise'].values()}
+        self.assertEqual(len(periods), 1)  # one surviving hit (the louder one)
 
 
 if __name__ == '__main__':
