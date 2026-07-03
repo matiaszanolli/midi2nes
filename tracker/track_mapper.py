@@ -18,27 +18,58 @@ def group_notes_by_frame(events):
     return grouped
 
 
+def _find_matching_note_off(sorted_events, start_frame, note):
+    """Find the frame of the first note-off (velocity/volume == 0) for `note`
+    strictly after start_frame. Returns None if the source track never closes
+    this note (e.g. synthetic event lists with only note-ons)."""
+    for e in sorted_events:
+        if e['frame'] <= start_frame:
+            continue
+        vel = e.get('volume', e.get('velocity', 0))
+        if vel == 0 and e.get('note') == note:
+            return e['frame']
+    return None
+
+
 def apply_arpeggio_fallback(events, max_notes=3, style="default"):
-    """Convert simultaneous notes into arpeggio bundles with chord detection."""
+    """Convert simultaneous notes into arpeggio bundles with chord detection.
+
+    When the source track carries real note-off events, matching note-offs
+    are emitted for each arpeggiated note at the original chord's end frame
+    (#197/NH-27) -- otherwise compile_channel_to_frames has no note-off to
+    pair with and always falls back to the fixed default sustain, which is
+    exactly the NH-20 regression this closes for the harmony/pulse2 channel.
+    """
     grouped_notes = group_notes_by_frame(events)
+    sorted_events = sorted(events, key=lambda e: e['frame'])
     arpeggiated = []
 
     for frame, notes in sorted(grouped_notes.items()):
         if len(notes) <= 1:
+            note = notes[0]
             arpeggiated.append({
                 "frame": frame,
-                "note": notes[0],
+                "note": note,
                 "velocity": 100,
                 "arpeggio": False
             })
+            off_frame = _find_matching_note_off(sorted_events, frame, note)
+            if off_frame is not None:
+                arpeggiated.append({
+                    "frame": max(off_frame, frame + 1),
+                    "note": note,
+                    "velocity": 0,
+                    "arpeggio": False
+                })
         else:
             notes = notes[:max_notes]  # Limit to max_notes
-            
+
             # Detect chord and get appropriate pattern
             chord_info = detect_chord(notes)
             pattern_type = get_arpeggio_pattern(chord_info, style)
             pattern_notes = apply_arpeggio_pattern(notes, pattern_type)
-            
+
+            last_onset = {}
             for i, note in enumerate(pattern_notes):
                 arpeggiated.append({
                     "frame": frame + i,
@@ -48,6 +79,18 @@ def apply_arpeggio_fallback(events, max_notes=3, style="default"):
                     "arpeggio_index": i,
                     "arpeggio_total": len(pattern_notes),
                     "chord_type": chord_info["type"] if chord_info else "unknown"
+                })
+                last_onset[note] = frame + i
+
+            for note in set(notes):
+                off_frame = _find_matching_note_off(sorted_events, frame, note)
+                if off_frame is None:
+                    continue
+                arpeggiated.append({
+                    "frame": max(off_frame, last_onset[note] + 1),
+                    "note": note,
+                    "velocity": 0,
+                    "arpeggio": True
                 })
 
     return sorted(arpeggiated, key=lambda x: x['frame'])

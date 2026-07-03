@@ -68,6 +68,23 @@ class TestArrangerFrameContract(unittest.TestCase):
         self.assertEqual(out['dpcm'][0]['note'], 5)        # sample 4 + 1
         self.assertEqual(out['dpcm'][0]['volume'], 15)
 
+    @patch('arranger.pipeline_integration.allocate_with_arpeggiation')
+    def test_dpcm_high_sample_id_not_collapsed_to_95(self, mock_alloc):
+        """Regression (#196/EXP-08): the arranger used to clamp `note` at 95
+        (the pre-#67 formula), so any sample_id >= 94 collapsed to the same
+        wrong drum. It must match nes/emulator_core.py's 255 ceiling."""
+        mock_alloc.return_value = {
+            'pulse1': {}, 'pulse2': {}, 'triangle': {},
+            'noise': {},
+            'dpcm': {0: {'sample': 200}},
+        }
+        out = arrange_for_nes({'drums': [
+            {'frame': 0, 'note': 38, 'volume': 100, 'type': 'note_on', 'channel': 9},
+            {'frame': 2, 'note': 38, 'volume': 0, 'type': 'note_off', 'channel': 9},
+        ]})
+
+        self.assertEqual(out['dpcm'][0]['note'], 201)  # sample 200 + 1, not clamped to 95
+
 
 if __name__ == '__main__':
     unittest.main()

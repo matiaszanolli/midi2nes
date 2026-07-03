@@ -132,6 +132,52 @@ class TestArpeggioFallback(unittest.TestCase):
         frames = [e["frame"] for e in result]
         self.assertEqual(frames, sorted(frames))
 
+
+class TestArpeggioFallbackNoteOffs(unittest.TestCase):
+    """Regression (#197/NH-27): apply_arpeggio_fallback used to drop note-off
+    events entirely, so compile_channel_to_frames's NH-20 note-off search
+    could never find a match and always fell back to the fixed 4-frame
+    sustain -- the exact pre-#160 bug, scoped to the harmony/pulse2 channel."""
+
+    def test_chord_with_real_note_offs_emits_matching_note_offs(self):
+        # Same shape as the issue's own reproduction: a two-note chord at
+        # frame 0 held until frame 120.
+        events = [
+            {"frame": 0, "note": 64, "velocity": 90},
+            {"frame": 0, "note": 67, "velocity": 90},
+            {"frame": 120, "note": 64, "velocity": 0},
+            {"frame": 120, "note": 67, "velocity": 0},
+        ]
+        result = apply_arpeggio_fallback(events)
+
+        note_ons = [e for e in result if e["velocity"] > 0]
+        note_offs = [e for e in result if e["velocity"] == 0]
+        self.assertEqual(sorted(e["note"] for e in note_ons), [64, 67])
+        self.assertEqual(sorted(e["note"] for e in note_offs), [64, 67])
+        self.assertTrue(all(e["frame"] == 120 for e in note_offs))
+
+    def test_chord_without_note_offs_still_falls_back_to_default_sustain(self):
+        # No note-off in the source at all (as in the older tests above) --
+        # must not fabricate one; compile_channel_to_frames's default sustain
+        # fallback is still the intended behavior here.
+        events = [
+            {"frame": 0, "note": 60, "velocity": 100},
+            {"frame": 0, "note": 64, "velocity": 100},
+        ]
+        result = apply_arpeggio_fallback(events)
+        self.assertTrue(all(e["velocity"] > 0 for e in result))
+
+    def test_single_note_with_real_note_off_emits_matching_note_off(self):
+        events = [
+            {"frame": 0, "note": 60, "velocity": 100},
+            {"frame": 40, "note": 60, "velocity": 0},
+        ]
+        result = apply_arpeggio_fallback(events)
+        note_offs = [e for e in result if e["velocity"] == 0]
+        self.assertEqual(len(note_offs), 1)
+        self.assertEqual(note_offs[0]["frame"], 40)
+        self.assertEqual(note_offs[0]["note"], 60)
+
 class TestGroupNotesByFrame(unittest.TestCase):
     def test_basic_grouping(self):
         events = [
@@ -260,9 +306,21 @@ class TestMultiTrackChannelAllocation(unittest.TestCase):
         pulse2_source_notes = sorted(
             e["note"] for e in midi_events["track_1"] if e["volume"] > 0
         )
-        pulse2_notes = sorted(e["note"] for e in result["pulse2"])
-        self.assertEqual(pulse2_notes, pulse2_source_notes)
+        pulse2_note_ons = sorted(
+            e["note"] for e in result["pulse2"] if e["velocity"] > 0
+        )
+        self.assertEqual(pulse2_note_ons, pulse2_source_notes)
         self.assertEqual(result["triangle"], [])
+
+        # #197/NH-27: track_1 carries real note-offs, so apply_arpeggio_fallback
+        # must now emit matching note-off events for pulse2 instead of relying
+        # on compile_channel_to_frames's fixed default sustain.
+        pulse2_note_offs = [e for e in result["pulse2"] if e["velocity"] == 0]
+        self.assertEqual(len(pulse2_note_offs), len(pulse2_note_ons))
+        source_off_frames = sorted(
+            e["frame"] for e in midi_events["track_1"] if e["volume"] == 0
+        )
+        self.assertEqual(sorted(e["frame"] for e in pulse2_note_offs), source_off_frames)
 
 
 if __name__ == '__main__':

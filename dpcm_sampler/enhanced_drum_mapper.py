@@ -305,8 +305,13 @@ class EnhancedDrumMapper:
                             dpcm_events
                         )
                 else:
+                    # process_all_tracks (nes/emulator_core.py) requires a
+                    # `note` key on every noise event to derive a period via
+                    # midi_to_nes_pitch(); carry the drum's own MIDI note
+                    # rather than dropping it (#195/NH-26).
                     noise_events.append({
                         "frame": frame,
+                        "note": midi_note,
                         "velocity": velocity
                     })
                     
@@ -364,8 +369,11 @@ class EnhancedDrumMapper:
                 "pattern_id": pattern_id
             })
         else:
+            # Same contract as the non-pattern path above: process_all_tracks
+            # needs a `note` key to derive a noise period (#195/NH-26).
             noise_out.append({
                 "frame": frame,
+                "note": midi_note,
                 "velocity": velocity
             })
 
