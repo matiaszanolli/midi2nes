@@ -6,7 +6,24 @@ import os
 # Add the project root directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from nes.envelope_processor import EnvelopeProcessor, NESEmulatorCore
+from nes.envelope_processor import EnvelopeProcessor
+
+
+class TestNoDuplicateEmulatorCore(unittest.TestCase):
+    """Regression (#38/NH-10): nes/envelope_processor.py used to carry a second,
+    dead copy of NESEmulatorCore whose vibrato path added pitch_mod after
+    clamping with no re-clamp (a latent 11-bit overflow trap if it were ever
+    wired in). The duplicate is removed; nes.emulator_core.NESEmulatorCore
+    stays the sole implementation."""
+
+    def test_envelope_processor_does_not_export_emulator_core(self):
+        import nes.envelope_processor as envelope_processor_module
+        self.assertFalse(hasattr(envelope_processor_module, "NESEmulatorCore"))
+
+    def test_live_emulator_core_is_the_only_one(self):
+        from nes.emulator_core import NESEmulatorCore
+        self.assertIsNotNone(NESEmulatorCore)
+
 
 class TestEnvelopeProcessor(unittest.TestCase):
     def setUp(self):
@@ -350,188 +367,6 @@ class TestEnvelopeProcessor(unittest.TestCase):
             self.assertGreaterEqual(volume, 0)
             self.assertLessEqual(volume, 15)
 
-
-class TestNESEmulatorCore(unittest.TestCase):
-    """Test NESEmulatorCore functionality"""
-    
-    def setUp(self):
-        """Set up test fixtures"""
-        self.emulator = NESEmulatorCore()
-        
-    def test_initialization(self):
-        """Test that NESEmulatorCore initializes correctly"""
-        self.assertIsNotNone(self.emulator.pitch_processor)
-        self.assertIsNotNone(self.emulator.envelope_processor)
-        
-    def test_compile_channel_to_frames_basic(self):
-        """Test basic channel compilation to frames"""
-        # Test events with basic note data
-        events = [
-            {'frame': 0, 'note': 60, 'velocity': 100},
-            {'frame': 10, 'note': 64, 'velocity': 80},
-            {'frame': 20, 'note': 67, 'velocity': 120}
-        ]
-        
-        frames = self.emulator.compile_channel_to_frames(
-            events, channel_type='pulse1', sustain_frames=8
-        )
-        
-        # Should have frames for each note
-        self.assertGreater(len(frames), 0)
-        
-        # Check that first note starts at frame 0
-        self.assertIn(0, frames)
-        
-        # Check that frames contain expected data
-        frame_0 = frames[0]
-        self.assertIn('pitch', frame_0)
-        self.assertIn('control', frame_0)
-        self.assertIn('note', frame_0)
-        self.assertEqual(frame_0['note'], 60)
-        
-    def test_compile_channel_pulse_vs_other(self):
-        """Test compilation differences between pulse and other channels"""
-        events = [{'frame': 0, 'note': 60, 'velocity': 100}]
-        
-        # Test pulse channel
-        pulse_frames = self.emulator.compile_channel_to_frames(
-            events, channel_type='pulse1', sustain_frames=4
-        )
-        
-        # Test non-pulse channel  
-        triangle_frames = self.emulator.compile_channel_to_frames(
-            events, channel_type='triangle', sustain_frames=4
-        )
-        
-        # Pulse channels should have 'control', others should have 'volume'
-        pulse_frame = pulse_frames[0]
-        triangle_frame = triangle_frames[0]
-        
-        self.assertIn('control', pulse_frame)
-        self.assertNotIn('volume', pulse_frame)
-        
-        self.assertIn('volume', triangle_frame)
-        self.assertNotIn('control', triangle_frame)
-        
-        # Check volume scaling for non-pulse channel
-        import math
-        expected_volume = max(1, int(15 * math.pow(100 / 127.0, 1.5)))
-        self.assertEqual(triangle_frame['volume'], expected_volume)
-        
-    def test_compile_channel_with_effects(self):
-        """Test channel compilation with effects"""
-        events = [
-            {
-                'frame': 0, 
-                'note': 60, 
-                'velocity': 100,
-                'envelope_type': 'piano',
-                'effects': {
-                    'duty_sequence': 'follin_lead',
-                    'vibrato': {'speed': 4, 'depth': 2}
-                }
-            }
-        ]
-        
-        frames = self.emulator.compile_channel_to_frames(
-            events, channel_type='pulse1', sustain_frames=6
-        )
-        
-        # Should have frames with effects applied
-        self.assertGreater(len(frames), 0)
-        
-        frame_0 = frames[0]
-        self.assertIn('effects', frame_0)
-        self.assertEqual(frame_0['effects']['duty_sequence'], 'follin_lead')
-        
-    def test_compile_channel_note_overlap_handling(self):
-        """Test how overlapping notes are handled"""
-        events = [
-            {'frame': 0, 'note': 60, 'velocity': 100},  # Note starts at frame 0
-            {'frame': 5, 'note': 64, 'velocity': 80}    # Next note at frame 5
-        ]
-        
-        # With sustain_frames=10, first note would normally go to frame 10
-        # But second note starts at frame 5, so first note should end at frame 5
-        frames = self.emulator.compile_channel_to_frames(
-            events, channel_type='pulse1', sustain_frames=10
-        )
-        
-        # Check that we have frames for both notes
-        notes_at_frames = {}
-        for frame_num, frame_data in frames.items():
-            notes_at_frames[frame_num] = frame_data['note']
-            
-        # First note should be at frames 0-4
-        for frame in [0, 1, 2, 3, 4]:
-            if frame in notes_at_frames:
-                self.assertEqual(notes_at_frames[frame], 60)
-                
-        # Second note should start at frame 5
-        if 5 in notes_at_frames:
-            self.assertEqual(notes_at_frames[5], 64)
-            
-    def test_compile_channel_zero_velocity_events(self):
-        """Test that zero velocity events are skipped"""
-        events = [
-            {'frame': 0, 'note': 60, 'velocity': 0},    # Should be skipped
-            {'frame': 5, 'note': 64, 'velocity': 100},  # Should be included
-            {'frame': 10, 'note': 67, 'velocity': 0}    # Should be skipped
-        ]
-        
-        frames = self.emulator.compile_channel_to_frames(
-            events, channel_type='pulse1', sustain_frames=4
-        )
-        
-        # Should only have frames for the middle event
-        frame_notes = [frames[f]['note'] for f in sorted(frames.keys()) if 'note' in frames[f]]
-        self.assertEqual(len(set(frame_notes)), 1)  # Only one unique note
-        self.assertEqual(frame_notes[0], 64)  # Should be the middle event
-        
-    def test_compile_channel_sorted_events(self):
-        """Test that events are properly sorted by frame"""
-        # Provide events in non-chronological order
-        events = [
-            {'frame': 20, 'note': 67, 'velocity': 120},
-            {'frame': 0, 'note': 60, 'velocity': 100}, 
-            {'frame': 10, 'note': 64, 'velocity': 80}
-        ]
-        
-        frames = self.emulator.compile_channel_to_frames(
-            events, channel_type='pulse1', sustain_frames=5
-        )
-        
-        # Check that frames are in correct order and have expected notes
-        sorted_frames = sorted(frames.keys())
-        
-        # Should start with frame 0 (first chronological event)
-        self.assertEqual(sorted_frames[0], 0)
-        self.assertEqual(frames[0]['note'], 60)
-        
-        # Should have frame 10 for second event
-        if 10 in frames:
-            self.assertEqual(frames[10]['note'], 64)
-            
-        # Should have frame 20 for third event  
-        if 20 in frames:
-            self.assertEqual(frames[20]['note'], 67)
-            
-    def test_midi_to_nes_pitch_delegation(self):
-        """Test that MIDI to NES pitch conversion is delegated to pitch processor"""
-        # This tests that the emulator calls the pitch processor
-        # We can't easily test the actual conversion without knowing the implementation,
-        # but we can test that it doesn't crash and returns a reasonable value
-        events = [{'frame': 0, 'note': 60, 'velocity': 100}]
-        
-        frames = self.emulator.compile_channel_to_frames(
-            events, channel_type='pulse1', sustain_frames=1
-        )
-        
-        # Should have a frame with pitch data
-        self.assertIn(0, frames)
-        self.assertIn('pitch', frames[0])
-        self.assertIsInstance(frames[0]['pitch'], (int, float))
-        
 
 if __name__ == '__main__':
     unittest.main()

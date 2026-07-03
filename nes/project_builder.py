@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from mappers import BaseMapper, get_mapper
+from core.exceptions import ExportError
 
 
 class NESProjectBuilder:
@@ -97,6 +98,18 @@ class NESProjectBuilder:
         # otherwise music.asm references engine-only symbols it never defines
         # (ptr1/temp1/instrument_table/ntsc_period_*) and won't assemble (issue #50).
         is_bytecode = "MMC3 Macro Bytecode" in music_content
+
+        # Bytecode mode has no fallback definition of frame_counter (and other
+        # engine zeropage vars): main.asm's reset routine writes to it
+        # unconditionally, relying entirely on audio_engine.asm's ZEROPAGE
+        # block being pulled in later by .include. Fail loudly here, before
+        # any project files are written, rather than let a missing/relocated
+        # engine surface as a cryptic "undefined symbol" from ca65 (#37/M-11).
+        if is_bytecode and not (Path(__file__).parent / "audio_engine.asm").exists():
+            raise ExportError(
+                "audio_engine.asm is required for bytecode-mode projects but is missing",
+                f"expected at {Path(__file__).parent / 'audio_engine.asm'}"
+            )
 
         # Import the sequence tracking ZP variables (bytecode runtime only)
         if is_bytecode:

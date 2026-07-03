@@ -522,6 +522,38 @@ class TestErrorHandling:
         assert project_dir.exists()
         assert (project_dir / "main.asm").exists()
 
+    def test_bytecode_mode_requires_audio_engine(self, project_dir, temp_dir, monkeypatch):
+        """Regression (#37/M-11): bytecode-mode main.asm writes to frame_counter
+        unconditionally in reset, relying entirely on audio_engine.asm's
+        ZEROPAGE block being pulled in later via .include. If that file were
+        ever missing, this must fail loudly here -- before any project files
+        are written -- rather than let it surface as a cryptic "undefined
+        symbol" from ca65 much later."""
+        from nes.project_builder import ExportError
+        from pathlib import Path as _Path
+
+        bytecode_music_asm = temp_dir / "music.asm"
+        bytecode_music_asm.write_text(
+            "; CA65 Exporter: MMC3 Macro Bytecode mode\n"
+            ".segment \"CODE\"\ninit_music:\n    rts\nupdate_music:\n    rts\n"
+        )
+
+        real_exists = _Path.exists
+
+        def fake_exists(self):
+            if self.name == "audio_engine.asm":
+                return False
+            return real_exists(self)
+
+        monkeypatch.setattr(_Path, "exists", fake_exists)
+
+        builder = NESProjectBuilder(str(project_dir))
+        with pytest.raises(ExportError):
+            builder.prepare_project(str(bytecode_music_asm))
+
+        # No half-written project should be left behind.
+        assert not (project_dir / "main.asm").exists()
+
 
 class TestReturnValues:
     """Test function return values."""
