@@ -194,5 +194,76 @@ class TestNoiseChannelContention(unittest.TestCase):
         self.assertTrue(result["noise"])
 
 
+class TestMultiTrackChannelAllocation(unittest.TestCase):
+    """Regression (#48/REG-08): the multi-track branch of
+    assign_tracks_to_nes_channels (track_mapper.py ~206-240) ranks tracks by
+    average pitch and assigns melody->pulse1, harmony->pulse2 (with arpeggio
+    fallback), bass->triangle, drum-named->noise. This was entirely
+    unverified -- a regression (e.g. bass routed to a pulse channel) would
+    ship green."""
+
+    DPCM_INDEX = "tests/fixtures/test_dpcm_index.json"
+
+    def test_four_track_allocation_by_average_pitch(self):
+        midi_events = {
+            "melody": [
+                {"frame": 0, "note": 84, "velocity": 100},
+                {"frame": 10, "note": 88, "velocity": 100},
+            ],
+            "harmony": [
+                {"frame": 0, "note": 64, "velocity": 100},
+                {"frame": 0, "note": 67, "velocity": 100},
+            ],
+            "bass": [
+                {"frame": 0, "note": 36, "velocity": 100},
+                {"frame": 10, "note": 40, "velocity": 100},
+            ],
+            "drum_kit": [
+                {"frame": 0, "note": 50, "velocity": 100},
+            ],
+        }
+
+        result = assign_tracks_to_nes_channels(midi_events, self.DPCM_INDEX)
+
+        # Highest average pitch (melody, avg 86) -> pulse1, untouched.
+        self.assertEqual(result["pulse1"], midi_events["melody"])
+
+        # Next highest (harmony, avg 65.5) -> pulse2, passed through the
+        # arpeggio fallback (simultaneous notes at frame 0 get spread out).
+        pulse2_notes = sorted(e["note"] for e in result["pulse2"])
+        self.assertEqual(pulse2_notes, [64, 67])
+        self.assertTrue(all(e.get("arpeggio") for e in result["pulse2"]))
+
+        # Lowest average pitch (bass, avg 38) -> triangle, not a pulse channel.
+        self.assertEqual(result["triangle"], midi_events["bass"])
+
+        # Remaining drum-named track -> noise.
+        self.assertEqual(result["noise"], midi_events["drum_kit"])
+        self.assertEqual(result["pulse1"], midi_events["melody"])
+        self.assertNotEqual(result["triangle"], midi_events["drum_kit"])
+
+    def test_real_midi_two_track_pitch_ranking(self):
+        # test_midi/multiple_tracks.mid has exactly 2 tracks: track_0 (avg
+        # pitch ~63.7, a chord melody) and track_1 (avg pitch 50.0, a lower
+        # ostinato). With only 2 tracks both pulse1 and pulse2 are claimed
+        # before the triangle-assignment step runs, so the lower track lands
+        # on pulse2 (with arpeggio fallback), not triangle -- pinning that
+        # real-world behavior against a regression.
+        from tracker.parser_fast import parse_midi_to_frames
+
+        parsed = parse_midi_to_frames("test_midi/multiple_tracks.mid")
+        midi_events = parsed["events"]
+
+        result = assign_tracks_to_nes_channels(midi_events, self.DPCM_INDEX)
+
+        self.assertEqual(result["pulse1"], midi_events["track_0"])
+        pulse2_source_notes = sorted(
+            e["note"] for e in midi_events["track_1"] if e["volume"] > 0
+        )
+        pulse2_notes = sorted(e["note"] for e in result["pulse2"])
+        self.assertEqual(pulse2_notes, pulse2_source_notes)
+        self.assertEqual(result["triangle"], [])
+
+
 if __name__ == '__main__':
     unittest.main()
