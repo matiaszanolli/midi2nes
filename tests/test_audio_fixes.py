@@ -201,7 +201,6 @@ class TestNoiseDpcmReachAPU(unittest.TestCase):
         self.assertIn('beq @done', guard)
 
 
-@unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")
 class TestTriangleControlByte(unittest.TestCase):
     """Test triangle channel control byte generation - critical for silence."""
 
@@ -299,7 +298,6 @@ class TestTriangleControlByte(unittest.TestCase):
                     break
 
 
-@unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")
 class TestTrianglePitchOctave(unittest.TestCase):
     """Regression (NH-02 / #12): triangle uses the /32 timer table so it plays
     the intended note instead of an octave low."""
@@ -316,10 +314,15 @@ class TestTrianglePitchOctave(unittest.TestCase):
 
     def test_triangle_is_octave_above_pulse_period(self):
         # For every in-range note the triangle period is ~half the pulse period.
+        # Both tables independently round to the nearest integer CPU-cycle
+        # count, so the exact 2:1 ratio drifts more at short periods (high
+        # notes) -- delta=0.08 comfortably covers that integer-quantization
+        # error across the whole range without masking a real off-by-large
+        # regression.
         for note in range(36, 96):
             tri = self.pitch.get_channel_pitch(note, 'triangle')
             pul = self.pitch.get_channel_pitch(note, 'pulse1')
-            self.assertAlmostEqual(pul / tri, 2.0, delta=0.05,
+            self.assertAlmostEqual(pul / tri, 2.0, delta=0.08,
                                    msg=f"note {note}: pulse {pul} vs triangle {tri}")
 
     def test_exporter_base_timer_channel_aware(self):
@@ -485,7 +488,6 @@ class TestTrackSplitting(unittest.TestCase):
         self.assertEqual(len(split['pulse1']), 3)
 
 
-@unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")
 class TestSilenceHandling(unittest.TestCase):
     """Test that silence is handled correctly in playback code."""
 
@@ -621,7 +623,6 @@ class TestFrameDataGeneration(unittest.TestCase):
             self.assertEqual(frames[f]['note'], 64)
 
 
-@unittest.skip("Obsolete: Assembly generation changed to MMC3 Macro Bytecode")
 class TestAssemblyCodeGeneration(unittest.TestCase):
     """Test that generated assembly code has correct structure."""
 
