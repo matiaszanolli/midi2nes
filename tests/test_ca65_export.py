@@ -223,6 +223,29 @@ class TestCA65Export(unittest.TestCase):
         self.assertEqual(self.exporter._encode_macro_offset(127), 0x7F)
         self.assertEqual(self.exporter._encode_macro_offset(-128), 0x80)
 
+    def test_compress_macro_never_emits_loop_control_byte(self):
+        # Regression (#163/NH-21): the live EVAL_MACRO evaluator
+        # (nes/audio_engine.asm) only implements the $FF end/sustain control
+        # byte -- it has no branch for $FE (loop) at all, so a $FE byte is
+        # read as ordinary data and the following loop_start operand is
+        # consumed as the next frame's value, desyncing the stream. A merged
+        # run of alternating values (e.g. a 60Hz drum-roll/tremolo re-strike
+        # pattern) used to make loop compression win on size and emit $FE.
+        alternating = [15, 12, 10, 8, 10, 12, 10, 8, 10, 12]
+        compressed = self.exporter._compress_macro(alternating)
+        self.assertNotIn(0xFE, compressed)
+        self.assertEqual(compressed[-1], 0xFF)
+        self.assertEqual(compressed[:-1], alternating)
+
+    def test_compress_macro_sustain_compression_unaffected(self):
+        # Sustain compression ($FF) must still work for a constant tail.
+        data = [15, 14, 13, 10, 10, 10, 10]
+        compressed = self.exporter._compress_macro(data)
+        self.assertEqual(compressed, [15, 14, 13, 10, 0xFF])
+
+    def test_compress_macro_empty_data(self):
+        self.assertEqual(self.exporter._compress_macro([]), [0xFF])
+
     def test_pitch_macro_data_avoids_control_bytes(self):
         # Regression (EXP-01 / #77): small downward pitch bends (offset -1, -2)
         # used to encode to $FF/$FE *as data*, which the engine reads as
