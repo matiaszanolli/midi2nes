@@ -30,7 +30,9 @@ def find_test_files(directory: str, pattern: str = "*.mid") -> List[str]:
         print(f"Warning: Directory {directory} does not exist")
         return []
     
-    files = list(search_dir.glob(pattern))
+    # Sorted so results are deterministic across runs/platforms (#117) —
+    # Path.glob's traversal order is filesystem-dependent otherwise.
+    files = sorted(search_dir.glob(pattern))
     return [str(f) for f in files if f.is_file()]
 
 

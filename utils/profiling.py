@@ -12,6 +12,39 @@ import threading
 import weakref
 
 
+# Reference-counted tracemalloc start/stop shared by every profiler in this
+# module (and benchmarks/performance_suite.py's PerformanceProfiler). Each
+# profiler previously called the bare, process-global tracemalloc.start()/
+# stop() independently, so a @profile_memory_usage-decorated function called
+# inside a PerformanceContext (or any other nesting) had its inner stop() tear
+# down tracing for the still-running outer profiler — the outer's later
+# get_traced_memory() then raised, was swallowed by a bare except, and it
+# silently fell back to reporting current RSS instead of the traced peak
+# (#118). Only the outermost acquire starts tracing and only the outermost
+# release stops it.
+_tracemalloc_depth = 0
+_tracemalloc_lock = threading.Lock()
+
+
+def _tracemalloc_acquire():
+    """Start tracemalloc if not already tracing; bump the nesting depth."""
+    global _tracemalloc_depth
+    with _tracemalloc_lock:
+        if _tracemalloc_depth == 0 and not tracemalloc.is_tracing():
+            tracemalloc.start()
+        _tracemalloc_depth += 1
+
+
+def _tracemalloc_release():
+    """Drop the nesting depth; only stop tracemalloc once the outermost
+    profiler releases it."""
+    global _tracemalloc_depth
+    with _tracemalloc_lock:
+        _tracemalloc_depth = max(0, _tracemalloc_depth - 1)
+        if _tracemalloc_depth == 0 and tracemalloc.is_tracing():
+            tracemalloc.stop()
+
+
 @dataclass
 class ProfileResult:
     """Result of a profiling operation."""
@@ -162,13 +195,18 @@ def profile_memory_usage(
             
             # Start monitoring
             memory_before = process.memory_info().rss / 1024 / 1024  # MB
+            # cpu_percent() with no interval= is a non-blocking, advisory-only
+            # reading (returns 0.0 on the process's first call ever, per
+            # psutil's docs) rather than a precise delta over this call — an
+            # interval= would add real blocking latency to every profiled
+            # call, which is worse than an advisory number here (#118).
             cpu_before = process.cpu_percent() if include_cpu else 0
             
             if monitor:
                 monitor.start_monitoring()
             
-            # Start tracemalloc for detailed memory tracking
-            tracemalloc.start()
+            # Start tracemalloc for detailed memory tracking (nesting-safe, #118)
+            _tracemalloc_acquire()
             start_time = time.perf_counter()
             
             success = True
@@ -192,9 +230,16 @@ def profile_memory_usage(
                 try:
                     current_trace, peak_trace = tracemalloc.get_traced_memory()
                     peak_memory_traced = peak_trace / 1024 / 1024  # MB
-                    tracemalloc.stop()
-                except:
+                except RuntimeError:
+                    # tracemalloc isn't tracing (shouldn't happen with the
+                    # nesting-safe acquire/release below, but keep a fallback).
                     peak_memory_traced = memory_after
+                finally:
+                    # Nesting-safe release (#118): only actually stops
+                    # tracemalloc once every acquirer has released it, so an
+                    # outer profiler's own get_traced_memory() above is never
+                    # blinded by this call.
+                    _tracemalloc_release()
                 
                 # Get peak memory from continuous monitoring
                 monitor_stats = monitor.stop_monitoring() if monitor else {"peak_mb": memory_after}
@@ -282,23 +327,24 @@ class PerformanceContext:
         self.start_time = time.perf_counter()
         self.start_memory = self.process.memory_info().rss / 1024 / 1024  # MB
         self.monitor.start_monitoring()
-        tracemalloc.start()
+        _tracemalloc_acquire()  # nesting-safe (#118)
         return self
-        
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit the performance monitoring context and report results."""
         # Calculate metrics
         duration = (time.perf_counter() - self.start_time) * 1000  # ms
         end_memory = self.process.memory_info().rss / 1024 / 1024  # MB
         memory_delta = end_memory - self.start_memory
-        
+
         # Get detailed memory info
         try:
             current_trace, peak_trace = tracemalloc.get_traced_memory()
             peak_memory_traced = peak_trace / 1024 / 1024  # MB
-            tracemalloc.stop()
-        except:
+        except RuntimeError:
             peak_memory_traced = end_memory
+        finally:
+            _tracemalloc_release()  # nesting-safe (#118)
         
         # Get monitoring statistics
         monitor_stats = self.monitor.stop_monitoring()

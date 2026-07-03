@@ -94,39 +94,47 @@ class TestPerformanceProfiler:
         assert profiler._start_cpu is None
         assert profiler._peak_memory == 0
     
-    @patch('benchmarks.performance_suite.tracemalloc')
+    @patch('utils.profiling.tracemalloc')
     @patch('benchmarks.performance_suite.time.perf_counter')
     def test_profiler_context_manager_success(self, mock_time, mock_tracemalloc):
         """Test profiler context manager with successful operation."""
+        import utils.profiling as profiling_module
+        profiling_module._tracemalloc_depth = 0  # isolate from other tests (#118)
+        mock_tracemalloc.is_tracing.side_effect = [False, True]  # not-tracing at acquire, tracing at release
+
         profiler = PerformanceProfiler()
         mock_time.side_effect = [0.0, 0.1]  # start, end times
         mock_tracemalloc.get_traced_memory.return_value = (1024*1024, 2*1024*1024)  # 1MB, 2MB
-        
+
         # Mock process memory info
         profiler.process.memory_info = Mock(return_value=Mock(rss=50*1024*1024))  # 50MB
         profiler.process.cpu_percent = Mock(return_value=10.0)
-        
+
         with profiler.profile("test_stage"):
             pass  # Simulate work
-        
+
         mock_tracemalloc.start.assert_called_once()
         mock_tracemalloc.stop.assert_called_once()
-    
-    @patch('benchmarks.performance_suite.tracemalloc')
+
+    @patch('utils.profiling.tracemalloc')
     @patch('benchmarks.performance_suite.time.perf_counter')
     def test_profiler_context_manager_exception(self, mock_time, mock_tracemalloc):
         """Test profiler context manager with exception."""
+        import utils.profiling as profiling_module
+        profiling_module._tracemalloc_depth = 0  # isolate from other tests (#118)
+        mock_tracemalloc.is_tracing.side_effect = [False, True]  # not-tracing at acquire, tracing at release
+
         profiler = PerformanceProfiler()
         mock_time.side_effect = [0.0, 0.1]
         mock_tracemalloc.get_traced_memory.return_value = (1024*1024, 2*1024*1024)
-        
+
         profiler.process.memory_info = Mock(return_value=Mock(rss=50*1024*1024))
         profiler.process.cpu_percent = Mock(return_value=10.0)
-        
+
         with pytest.raises(ValueError):
             with profiler.profile("test_stage"):
                 raise ValueError("Test error")
-        
+
         mock_tracemalloc.start.assert_called_once()
         mock_tracemalloc.stop.assert_called_once()
 
@@ -168,6 +176,9 @@ class TestPerformanceBenchmark:
                 assert result == {"events": [], "meta": {}}
                 mock_parse.assert_called_once_with(temp_path)
                 assert profile_result.stage == "parse"
+                # Regression (#117): _end_profiling must run exactly once, not
+                # once inside profile() and again at the call site.
+                mock_end.assert_called_once()
         finally:
             os.unlink(temp_path)
     
@@ -188,6 +199,7 @@ class TestPerformanceBenchmark:
             result, profile_result = benchmark.benchmark_map_stage(parsed_data)
             assert result == {"mapped": "data"}
             assert profile_result.stage == "map"
+            mock_end.assert_called_once()
     
     @patch('benchmarks.performance_suite.NESEmulatorCore')
     def test_benchmark_frames_stage(self, mock_emulator_class):
@@ -209,8 +221,9 @@ class TestPerformanceBenchmark:
             assert result == {"frames": "data"}
             mock_emulator.process_all_tracks.assert_called_once_with(mapped_data)
             assert profile_result.stage == "frames"
+            mock_end.assert_called_once()
     
-    @patch('benchmarks.performance_suite.EnhancedPatternDetector')
+    @patch('benchmarks.performance_suite.ParallelPatternDetector')
     @patch('benchmarks.performance_suite.EnhancedTempoMap')
     def test_benchmark_pattern_detection(self, mock_tempo_map_class, mock_detector_class):
         """Test benchmarking pattern detection."""
@@ -242,6 +255,7 @@ class TestPerformanceBenchmark:
             assert result == {"patterns": {}, "references": {}, "stats": {}}
             mock_detector.detect_patterns.assert_called_once()
             assert profile_result.stage == "pattern_detection"
+            mock_end.assert_called_once()
     
     @patch('benchmarks.performance_suite.CA65Exporter')
     def test_benchmark_export_stage(self, mock_exporter_class):
@@ -271,6 +285,7 @@ class TestPerformanceBenchmark:
                     result, profile_result = benchmark.benchmark_export_stage(frames_data, patterns_data)
                     mock_exporter.export_tables_with_patterns.assert_called_once()
                     assert profile_result.stage == "export"
+                    mock_end.assert_called_once()
     
     def test_benchmark_stage_function_wrapper(self):
         """Test the generic benchmark_pipeline_stage method."""
