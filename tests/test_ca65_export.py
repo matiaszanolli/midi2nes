@@ -114,6 +114,28 @@ class TestCA65Export(unittest.TestCase):
         self.assertIn('jmp @silence', end_of_stream,
                       "end_of_stream must fall into the channel's silence write")
 
+    def test_pulse_sustain_does_not_rewrite_4003_every_frame(self):
+        # Regression (#161/NH-18): $4003/$4007 restart the pulse sequencer's
+        # phase on every write (regardless of whether the value changes), so
+        # writing them unconditionally on every sustain frame of a held note
+        # produces an audible click at 60Hz. The engine must gate the write on
+        # the cached value actually changing, and force a rewrite at note
+        # onset (@is_note) so a genuine new note still retriggers.
+        engine_path = Path(__file__).parent.parent / "nes" / "audio_engine.asm"
+        text = engine_path.read_text()
+
+        p1_write = text.split('@write_pulse1:', 1)[1].split('@write_pulse2:', 1)[0]
+        self.assertIn('cmp last_written_hi', p1_write)
+        self.assertIn('sta $4003', p1_write)
+
+        p2_write = text.split('@write_pulse2:', 1)[1].split('@write_triangle:', 1)[0]
+        self.assertIn('cmp last_written_hi', p2_write)
+        self.assertIn('sta $4007', p2_write)
+
+        is_note = text.split('@is_note:', 1)[1].split('@process_macros:', 1)[0]
+        self.assertIn('sta last_written_hi, x', is_note,
+                      "a new note must force the timer-high write even if the period repeats")
+
     def test_standalone_header_tracks_selected_mapper(self):
         # Regression (NH-09 / #36): the standalone iNES header must come from the
         # selected mapper, not a hardcoded MMC1 byte. Default is MMC3.

@@ -32,6 +32,11 @@ macro_steps_vol:    .res 5
 macro_steps_arp:    .res 5
 macro_steps_pitch:  .res 5
 macro_steps_duty:   .res 5
+; Last hardware value written to $4003/$4007 (pulse1/pulse2 only; slots 2-4
+; unused). Writing $4003/$4007 always restarts the pulse phase regardless of
+; whether the value changes, so we gate the write on value equality and force
+; a rewrite ($FF sentinel) whenever a new note is triggered (#161/NH-18).
+last_written_hi:    .res 5
 
 .segment "ZEROPAGE"
 
@@ -163,6 +168,8 @@ audio_init:
     lda #0
     sta frame_wait, x
     sta current_note, x
+    lda #$FF
+    sta last_written_hi, x
     dex
     bpl @clear_loop
     rts
@@ -288,14 +295,21 @@ audio_update:
     
 @is_note:
     sta current_note, x
-    
+
     ; Reset all macro sequence steps to 0
     lda #0
     sta macro_steps_vol, x
     sta macro_steps_arp, x
     sta macro_steps_pitch, x
     sta macro_steps_duty, x
-    
+
+    ; Force this note's first frame to (re)write $4003/$4007 even if the
+    ; period happens to match the previous note -- a genuine new note must
+    ; still retrigger (#161/NH-18 only suppresses same-value writes during
+    ; sustain, not at note onset).
+    lda #$FF
+    sta last_written_hi, x
+
     lda current_len, x
     sta frame_wait, x
     ; Wait length-1 frames since we process and play immediately on this frame
@@ -363,7 +377,9 @@ audio_update:
     cpx #1
     beq @write_pulse2
     cpx #2
-    beq @write_triangle
+    bne @write_noise_dispatch
+    jmp @write_triangle   ; @write_triangle is now out of BEQ's +/-127 range
+@write_noise_dispatch:
     jmp @write_noise
 
 @write_pulse1:
@@ -385,8 +401,7 @@ audio_update:
     sta $4002
     lda ntsc_period_high, y
     ora #$08
-    sta $4003
-    jmp @next_channel
+    jmp @p1_write_hi
 @p1_pitch_mod:
     lda ntsc_period_low, y
     clc
@@ -395,9 +410,19 @@ audio_update:
     lda ntsc_period_high, y
     adc temp_pitch_hi
     ora #$08      ; Length counter halt
+@p1_write_hi:
+    ; $4003 always restarts the pulse sequencer phase, so only write it when
+    ; the value actually changed -- otherwise a held note re-clicks every
+    ; frame (#161/NH-18). $4002 (low byte) never resets phase and is always
+    ; written above. (@next_channel is out of BEQ's +/-127 range, so branch
+    ; around the write instead of branching directly to it.)
+    cmp last_written_hi+0
+    beq @p1_skip_hi
     sta $4003
+    sta last_written_hi+0
+@p1_skip_hi:
     jmp @next_channel
-    
+
 @write_pulse2:
     lda temp_duty
     lsr
@@ -417,8 +442,7 @@ audio_update:
     sta $4006
     lda ntsc_period_high, y
     ora #$08
-    sta $4007
-    jmp @next_channel
+    jmp @p2_write_hi
 @p2_pitch_mod:
     lda ntsc_period_low, y
     clc
@@ -427,7 +451,13 @@ audio_update:
     lda ntsc_period_high, y
     adc temp_pitch_hi
     ora #$08
+@p2_write_hi:
+    ; Same phase-reset guard as pulse1 (#161/NH-18).
+    cmp last_written_hi+1
+    beq @p2_skip_hi
     sta $4007
+    sta last_written_hi+1
+@p2_skip_hi:
     jmp @next_channel
     
 @write_triangle:
