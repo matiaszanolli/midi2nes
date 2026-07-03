@@ -9,7 +9,7 @@ Audit the output-format generators in `exporter/` — the stage that turns the
 `frames` dict into something a build toolchain or external tracker consumes. The
 default `python main.py input.mid output.nes` run goes through the CA65 path
 (`exporter/exporter_ca65.py` → `music.asm` → `nes/project_builder.py` → CC65), so
-that path carries the most weight; NSF and FamiTracker are secondary outputs that
+that path carries the most weight; NSF and FamiStudio are secondary outputs that
 must stay consistent with it for the same input.
 
 Shared protocol: `.claude/commands/_audit-common.md` — read the **export contract**
@@ -19,6 +19,12 @@ there. The bytecode this stage must emit is specified in `docs/AUDIO_BYTECODE_SP
 and the macro semantics in `docs/MACRO_USAGE_GUIDE.md` — treat both as the target the
 6502 engine plays back. Severity rubric: `.claude/commands/_audit-severity.md`. Do not
 restate either file; apply them.
+
+A recent bug-fixing sprint closed most of the exporter findings from the prior audit
+(`AUDIT_EXPORTERS_2026-06-29.md`). Several dimensions below have been reframed from
+"here is a live bug" to "verify the fix holds / check edge cases" — don't re-report
+a closed issue as new without re-confirming against current code first (see the
+dedup protocol in `_audit-common.md`).
 
 ## Parameters (from $ARGUMENTS)
 - `--focus <dims>` — comma-separated dimension numbers (e.g. `--focus 1,5`). Default: all.
@@ -37,19 +43,22 @@ The text `export_tables_with_patterns` and `export_direct_frames` write in
   `pulse2_sequence`, `triangle_sequence`, `noise_sequence`, `dpcm_sequence`,
   `ntsc_period_low`, `ntsc_period_high`, `instrument_table`, the `dpcm_*_table`s)
   has a matching definition; `macro_vol_*`/`macro_arp_*`/`macro_pitch_*`/`macro_duty_*`
-  referenced from `instrument_table` `.word` rows all exist.
+  referenced from `instrument_table` `.word` rows (`exporter_ca65.py:1082-1085`) all exist.
 - Segments emitted (`CODE_8000`, `BANK_{NN}`, `DPCM`, and in `export_direct_frames`
   `HEADER`/`ZEROPAGE`/`BSS`/`RODATA`/`CODE`/`VECTORS`) are all declared in the linker
   config `nes/project_builder.py` writes — a segment the exporter emits but `nes.cfg`
   has no MEMORY/SEGMENT for is a link failure. Cross-check `docs/MAPPER_MMC3_REFERENCE.md`.
-- `.importzp ptr1, temp1, temp2, frame_counter` (pattern path) vs
-  `.importzp frame_counter, temp_ptr` (direct path): confirm the importing names are
-  exported/`.global`'d by `nes/project_builder.py`'s `main.asm`. A mismatched zeropage
+- `.importzp ptr1, temp1, temp2, frame_counter` (pattern path, `:885`) vs
+  `.importzp frame_counter, temp_ptr` (direct path, `:118`): confirm the importing names
+  are exported/`.global`'d by `nes/project_builder.py`'s `main.asm`. A mismatched zeropage
   symbol is a link failure.
-- The `non-standalone` branch emits `.import audio_init, audio_update` and jumps to
-  them — confirm those exist in the engine the builder ships.
-- `.byte $FE, ${next_bank:02X}, <{label}, >{label}` bank-jump lines: the forward label
-  is defined in the next `BANK_{NN}` segment in the same file — verify it always is.
+- The `non-standalone` branch (`:1180-1194`) emits `.import audio_init, audio_update` and
+  jumps to them — confirm those exist in the engine the builder ships.
+- `.byte $FE, ${next_bank:02X}, <{label}, >{label}` bank-jump lines (`:1152`): the forward
+  label is defined in the next `BANK_{NN}` segment in the same file (`:1155-1158`) — verify
+  it always is, including when `MAX_SEQUENCE_BANK` is reached (the code now raises
+  `ValueError` instead of silently overflowing the bank budget, `:1144-1151` — confirm this
+  guard still fires for every over-budget path, not just this one call site).
 
 A label/segment that fails to assemble or link = HIGH (wrong output on every ROM
 through this path).
@@ -58,40 +67,52 @@ through this path).
 `export_direct_frames` writes literal APU stores (`sta $4000`/`$4002`/`$4003` for
 pulse1, `$4004`–`$4007` pulse2, `$4008`/`$400A`/`$400B` triangle). The named
 constants `APU_PULSE1_CTRL`…`APU_STATUS` at the top of `exporter/exporter_ca65.py`
-define $4000–$4015. Check:
+(`:8-31`) define $4000–$4015. Check:
 - Each channel writes its own register block, not another channel's (off-by-$4 bugs).
 - The triangle path never writes a duty/volume-shaped control byte — triangle has no
   volume or duty (`docs/APU_TRIANGLE_REFERENCE.md`). Note `export_direct_frames` builds
-  triangle `control` as `0x80 | (volume * 7)`; confirm that targets the linear-counter
-  semantics ($4008) and is not treated as a pulse volume nibble.
-- `ora #$08` before the timer-hi store sets the length-counter reload bit — confirm
-  that is the intended $4003/$4007/$400B bit per `docs/APU_LENGTH_COUNTER_REFERENCE.md`.
-- `$4015` channel-enable and `$4017` frame-counter init in the standalone reset and the
-  `init_music` block match `docs/NES_APU_REFERENCE.md` / `docs/APU_FRAME_COUNTER_REFERENCE.md`.
-- The `NSFExporter` `add_init_routine` / `_generate_play_routine` in
-  `exporter/exporter_nsf.py` hand-assemble opcodes — verify the `STA $4000,X` / `CPX #$0F`
-  loop actually targets $4000–$400F and the `BNE`/`BEQ` branch offsets are correct (a
-  wrong relative offset is silently broken machine code).
+  triangle `control` as `0x80 | (volume * 7)` (`:196`); confirm that targets the
+  linear-counter semantics ($4008) and is not treated as a pulse volume nibble.
+- `ora #$08` (`:487`) before the timer-hi store sets the length-counter reload bit —
+  confirm that is the intended $4003/$4007/$400B bit per
+  `docs/APU_LENGTH_COUNTER_REFERENCE.md`.
+- `$4015` channel-enable and `$4017` frame-counter init (`:313`) in the standalone reset
+  and the `init_music` block match `docs/NES_APU_REFERENCE.md` /
+  `docs/APU_FRAME_COUNTER_REFERENCE.md`.
+- **Verify fix (#78, closed)**: continuation (sustain) frames must reuse the *same*
+  per-channel pitch table as the frame that started the note. `midi_note_to_timer_value`
+  is called with the `channel` argument on both the note-start path (`:1027`, comment at
+  `:990`) and the continuation path (`:1041-1044`, explicit regression comment citing
+  #78) — omitting `channel` previously defaulted triangle to the pulse `/16` table and
+  bent every sustained triangle note flat. Confirm no other call site (e.g. a future
+  refactor) reintroduces a channel-less call inside the continuation branch.
+- **Verify fix (#81, closed)**: the old `NSFExporter._generate_play_routine` /
+  `_serialize_compressed_data` hand-assembled opcodes (with a `BEQ`/`BNE` offset bug and
+  JSON-as-data) no longer exist in `exporter/exporter_nsf.py` — `export()`/`export_nsf()`
+  (`:74-81`) now raise `NotImplementedError` immediately instead of emitting broken machine
+  code. Confirm nothing still calls the deleted private methods, and that `NSFHeader`/
+  `NSFMacroPacker` (retained as scaffolding, `:84-153`) are dead code with no live caller
+  that would trip over their draft state.
 
 Wrong register address or triangle driven with volume/duty = HIGH.
 
 ### Dimension 3: Pattern-vs-Empty Export Paths
 `run_export` in `main.py` calls `export_tables_with_patterns` with `patterns={}` when
-no `--patterns` file is given, and `export_tables_with_patterns` early-returns to
-`export_direct_frames` when `not patterns`. So there are **two completely different
-emitters** (literal frame tables vs macro bytecode) selected by truthiness of
-`patterns`. Check:
+no `--patterns` file is given, and `export_tables_with_patterns` early-returns
+(`exporter_ca65.py:877-878`) to `export_direct_frames` when `not patterns`. So there are
+**two completely different emitters** (literal frame tables vs macro bytecode) selected
+by truthiness of `patterns`. Check:
 - Both paths produce assembly the same `nes/project_builder.py` can build — they emit
   *different* segments and *different* exported symbols (the direct path has no
   `*_sequence`/`instrument_table`; the macro path has no `*_note`/`*_control` tables).
   If the builder/engine expects one shape, the other path is silently broken. This is at
   least HIGH; if the builder accepts it but the song is wrong, CRITICAL.
-- `export_tables_with_patterns` ignores its `references` argument entirely after the
-  early return (grep: `references` is a parameter but the macro path re-derives events
-  from `frames`). Confirm whether pattern/reference compression is actually applied or
-  whether "pattern mode" silently expands everything — a mismatch with the
-  `compression_ratio` reported upstream is misleading (MEDIUM) or, if it changes the
-  song vs the detected patterns, CRITICAL.
+- `export_tables_with_patterns` still ignores its `references` argument entirely — this is
+  now explicitly documented in the method's own docstring (`:872-875`, citing #4) as
+  intentional: the macro path re-derives events from `frames`, and pattern/reference
+  compression is analysis/metrics only. Confirm the docstring's claim still matches
+  behavior (grep `references` inside the method body — it should appear only in the
+  signature/docstring) rather than re-reporting this as a new finding.
 - The empty-patterns path is the default `python main.py input.mid out.nes` run — a
   regression there hits every user.
 
@@ -99,95 +120,144 @@ emitters** (literal frame tables vs macro bytecode) selected by truthiness of
 Every `.byte ${val:02X}` must receive 0–255; `.word` rows must receive valid 16-bit
 labels. Hunt for values that can exceed a byte without clamping in
 `exporter/exporter_ca65.py`:
-- `f'    .byte $80, ${inst_id:02X} ; CMD_INSTRUMENT'` — `inst_id` is `len(instrument_defs)`
-  growth; a song with >255 unique instruments emits `${256:02X}` = `$100` (3 hex digits),
-  which `ca65` rejects or truncates. Same risk for the macro-pool indices in
-  `instrument_table` `.word` rows if a macro id is used as a raw byte anywhere.
-- `_compress_macro` emits `[0xFE, loop_start]` where `loop_start` is a raw frame index —
-  a macro longer than 255 frames emits an out-of-range loop byte. Same for the sustain/
-  loop control bytes colliding with real data values (a legitimate volume/pitch value of
-  `0xFF`/`0xFE` would be read as End/Loop — confirm the value domains can't reach the
-  control bytes).
+- **Still open — EXP-04 (#80)**: `.byte $80, ${inst_id:02X} ; CMD_INSTRUMENT` at `:1164`
+  receives `inst_id = instruments[inst]`, an unbounded counter (`instruments[inst] =
+  len(instrument_defs)` at `:1022`/`:1078`) — a song with >256 unique
+  (vol,arp,pitch,duty) instrument tuples formats `${256:02X}` as `$100` (3 hex digits),
+  which `ca65` rejects. Same risk for `loop_start`: `_compress_macro` (`:816-864`)
+  computes `loop_start = n - (repeats + 1) * p_len` (`:857`) and emits
+  `data[:loop_start + p_len] + [0xFE, loop_start]` (`:859`); the macro byte list
+  (including that raw `loop_start` operand) is later formatted `${val:02X}` in the
+  macro-def emission loop at `:1092` with no upper-bound check — a macro longer than
+  ~256 frames with a late loop point emits the same 3-hex-digit `.byte`. Neither site has
+  an assert/guard added; this is a genuine still-open gap, not fixed by the recent sprint.
+- **Verify fix (#77, closed)**: a legitimate volume/pitch/arp value of `0xFF`/`0xFE` can no
+  longer collide with the End/Loop control bytes. `_encode_macro_offset` (`:71-84`) clamps
+  every signed pitch/arp offset to `[-128, 127]` and then snaps the two colliding
+  encodings away from the reserved bytes (`MACRO_CTRL_END = 0xFF`, `MACRO_CTRL_LOOP =
+  0xFE` at `:68-69`): `-1 (0xFF) -> 0x00`, `-2 (0xFE) -> 0xFD`. Confirm every pitch/arp
+  encode site (note-start `:1028`/`:1030`, continuation `:1043`/`:1045`) routes through
+  this helper rather than formatting a raw offset directly.
 - The `CMD_DMC_LEVEL` ($87) emitter was removed as a dead path (#72/D-09): no stage
-  produced `dmc_level`. If it is ever re-added, confirm the emitted level is range-
-  checked to the 7-bit $4011 domain (`docs/APU_DMC_REFERENCE.md`, 0–127).
-- `pitch_offset` is masked `& 0xFF` after clamping to ±127 — verify the engine reads it
-  as signed (a `& 0xFF` of a negative is fine only if the 6502 side treats it as two's
-  complement; `docs/AUDIO_BYTECODE_SPEC.md` §2.3 says pitch macros are offsets).
-- `note` clamped to `note > 95 → 95`; spec note range is `$00–$5F` (0–95). 95 = `$5F`,
-  in range — but confirm the clamp is silent (a dropped/retuned high note changes the
-  song; a *silent* clamp on common input could be CRITICAL, a logged one is MEDIUM).
+  produces `dmc_level`, and grepping `exporter_ca65.py` for `$87`/`CMD_DMC_LEVEL` now
+  turns up nothing. Note the engine (`nes/audio_engine.asm`) still contains an unreachable
+  `@cmd_dmc_level` handler for it (and an unreachable `@cmd_dpcm_play` for `$85`) — that's
+  dead-code tech debt on the engine side (see `/audit-tech-debt`), not an exporter bug; if
+  DMC-level control is ever reintroduced here, confirm the emitted level is range-checked
+  to the 7-bit $4011 domain (`docs/APU_DMC_REFERENCE.md`, 0–127).
+- **Verify fix (nes-hardware #158, closed, touches this file)**: `note` is now clamped on
+  *both* ends before it's baked into the bytecode stream and fed back into
+  `midi_note_to_timer_value`: `elif note > 95: note = 95` (`:987`) and, for tone channels
+  other than noise, `elif channel != 'noise' and 0 < note < 24: note = 24` (`:989`, added
+  so the runtime base-period lookup and the pitch offset agree on the same note — a
+  sub-C1 note previously produced `base_timer = 0` and a pitch offset that overflowed the
+  11-bit timer). Confirm both clamps still hold and that a clamped note is at least
+  logged/counted somewhere upstream — a silent clamp on common input is the boundary
+  between MEDIUM and CRITICAL per the severity rubric.
 
 Any out-of-range `.byte` = HIGH (won't assemble or wraps to a wrong value).
 
 ### Dimension 5: Bytecode-Spec Conformance
 Cross-check the bytes `export_tables_with_patterns` emits against
 `docs/AUDIO_BYTECODE_SPEC.md` §3 (the command table) and §2 (data structures):
-- Length+note encoding: code emits `${(write_dur - 1) + 0x60:02X}, ${note:02X}` with
-  `write_dur = min(rem_dur, 32)`. Spec §3 Length Commands are `$60–$7F` = length
-  `value-$60+1` (1–32 frames) — verify the cap of 32 and the `-1` bias match, and that
-  notes still fall in the `$00–$5F` note range so the engine doesn't read a note as a
-  length/command.
-- Command opcodes: code emits `$80` (CMD_INSTRUMENT — matches spec), `$87` for DMC
-  level, and `$FE`+bank+ptr for a **bank jump**. But spec §3 defines DPCM as `$85`
-  (`CMD_DPCM_PLAY`) and song jump as `$84` (`CMD_JUMP`); `$FE` in spec §2.3 is the
-  **macro loop** control byte, and there is no `$87` or bank-jump opcode documented.
-  Flag every emitted opcode that has no spec entry or contradicts one — the engine and
-  the doc must agree on what `$FE`/`$87` mean, or playback is wrong (HIGH; CRITICAL if
-  it silently changes the song). Confirm by reading the actual engine source the builder
-  ships before asserting.
+- Length+note encoding: code emits `${(write_dur - 1) + 0x60:02X}, ${note:02X}`
+  (`:1176`) with `write_dur = min(rem_dur, 32)` (`:1171`). Spec §3 Length Commands are
+  `$60–$7F` = length `value-$60+1` (1–32 frames) — verify the cap of 32 and the `-1` bias
+  match, and that notes still fall in the `$00–$5F` note range so the engine doesn't read
+  a note as a length/command.
+- **Still open, narrower than originally filed — EXP-07 (#83)**: the exporter's *live*
+  command set today is `$80` (`CMD_INSTRUMENT`, matches spec §3) and `$FE`+bank+ptr_lo+
+  ptr_hi (a **sequence-level bank jump**, `:1152`) plus the `$FF` end-of-stream
+  terminator. The `$87`/`CMD_DMC_LEVEL` half of the originally-reported mismatch is now
+  moot — that emitter was already removed (#72; see Dimension 4) — but the doc/code gap
+  on `$FE` remains: §3 still lists `$84 CMD_JUMP` and `$85 CMD_DPCM_PLAY`, which this
+  export path never emits (the engine has unreachable handlers for both, per Dimension
+  4), and has **no entry** distinguishing the sequence-level `$FE` bank-jump (`exporter_
+  ca65.py:1152`, decoded by `nes/audio_engine.asm:267-276` `@cmd_bank_jump`) from the
+  in-macro `$FE` loop-control byte §2.3 documents. Exporter and engine agree with each
+  other on `$FE`'s sequence-level meaning, so there is no runtime bug — this is doc-rot
+  (LOW), not a playback break. Update the finding to describe this narrower, current gap
+  rather than the original `$87` framing.
+- **Related, do not duplicate**: NH-21 (#163, nes-hardware audit) covers a different `$FE`
+  hazard — inside macros, `_compress_macro`'s loop encoding (`$FE, loop_start`) is chosen
+  correctly per Dimension 6 below, but the shipped `EVAL_MACRO` routine only checks for
+  `$FF` and would misread a loop-compressed macro as data. That is a macro-*runtime*
+  decode bug (engine-side); this dimension's finding is about the sequence-level `$FE`
+  command being undocumented, not undecodable. Cross-reference both, report once.
 - Channel order and the `$FF` (end-of-stream) terminator per channel match the song-
   header pointer order in spec §2.1 (`pulse1, pulse2, triangle, noise, dpcm`).
 
 ### Dimension 6: Macro Emission
 Per `docs/MACRO_USAGE_GUIDE.md` and `docs/AUDIO_BYTECODE_SPEC.md` §2.3, the four macro
 kinds and the instrument-pointer table must be emitted correctly:
-- `instrument_table` rows are `.word macro_vol_{v}, macro_arp_{a}, macro_pitch_{p}, macro_duty_{d}`
-  — order must be Vol, Arp, Pitch, Duty (spec §2.2). Note `export_tables_with_patterns`
-  builds the instrument tuple as `(vol, arp, pitch, duty)` but indexes `inst` as
-  `(vol_macros[v_seq], arp_macros[a_seq], pitch_macros[p_seq], duty_macros[d_seq])` and
-  unpacks `v_id, a_id, p_id, d_id` — verify the macro-def list it appends to and the
-  index it stores stay in the same order (a transposed pair points an instrument at the
-  wrong macro kind = wrong timbre, HIGH).
+- `instrument_table` rows are `.word macro_vol_{v}, macro_arp_{a}, macro_pitch_{p},
+  macro_duty_{d}` (`:1085`) — order must be Vol, Arp, Pitch, Duty (spec §2.2). Verified:
+  the instrument tuple is built as `(vol_macros[v_seq], arp_macros[a_seq],
+  pitch_macros[p_seq], duty_macros[d_seq])` (`:1023`) and unpacked as `v_id, a_id, p_id,
+  d_id = inst` (`:1084`) in the same order — no transposition today. Re-check this on any
+  future refactor of the instrument tuple; a transposed pair points an instrument at the
+  wrong macro kind = wrong timbre (HIGH).
 - Macro value domains (spec §2.3): Volume macros absolute 0–15; Arpeggio macros
   semitone offsets; Pitch macros timer offsets; all terminated by `$FF` (sustain) or
-  `$FE,<offset>` (loop). Confirm `_compress_macro`'s `$FF`/`$FE` insertion matches and
-  that the index-0 `macro_*_0 = ($FF,)` null/sustain macro exists (spec §2.2 `macro_null`).
+  `$FE,<offset>` (loop). `_compress_macro` (`:816-864`) picks whichever of sustain-
+  compression or loop-compression is shorter; the reserved-byte encoding from Dimension 4
+  (#77) keeps data values out of `$FE`/`$FF`'s way. Confirm the index-0 `macro_*_0 =
+  ($FF,)` null/sustain macro exists (`:936-943`, spec §2.2 `macro_null`).
 - Macro dedup: the `vol_macros`/`duty_macros`/`arp_macros`/`pitch_macros` dicts dedupe by
   tuple — verify identical shapes collapse to one def (the guide's stated ROM-saving
   property) and that a `_compress_macro` round-trip can't change the played values
   (lossy macro compression that changes volume/pitch = CRITICAL per the severity rubric).
+- **Related, do not duplicate**: NH-21 (#163) found that even though `_compress_macro`'s
+  loop encoding is emitted correctly (per this dimension), the shipped `EVAL_MACRO` never
+  decodes `$FE` inside a macro — only constant (sustain-encoded) macros are safe today.
+  That's an engine-decode bug, tracked there; this dimension only checks emission
+  correctness against the spec's data-structure rules.
 
 ### Dimension 7: Cross-Exporter Consistency
 For the same `frames` input, NSF (`exporter/exporter_nsf.py`) and FamiStudio
 (`exporter/exporter_famistudio.py`) should describe the same song the CA65 path
-produces. (The old FamiTracker-text path — `exporter/exporter.py` +
-`exporter/pattern_exporter.py` — was deleted as dead + frame-space-buggy, #101.) Check:
-- `NSFExporter._serialize_compressed_data` serializes channel data as **JSON text**
-  embedded in the NSF binary (`json.dumps(...).encode('utf-8')`) — that is not 6502-
-  executable data; flag whether the NSF output is actually a playable NSF or a stub
-  (the `NSFMacroPacker` docstring calls itself "Draft logic … will eventually replace
-  the JSON-based serialization"). A format that claims to be NSF but can't play = HIGH.
+produces. (The old FamiTracker-text path — *exporter/exporter.py* +
+*exporter/pattern_exporter.py* — was deleted as dead + frame-space-buggy, #101; neither
+file exists in the repo anymore.) Check:
+- **Verify fix (#81, closed)**: `NSFExporter.export()` and `export_nsf()`
+  (`exporter/exporter_nsf.py:74-81`) now raise `NotImplementedError` with a message citing
+  #81, instead of serializing channel data as JSON text embedded in the NSF binary. The
+  `NSFHeader`/`NSFMacroPacker` classes remain as unused scaffolding for a future real
+  implementation — confirm nothing calls them expecting working output, and that raising
+  loudly (rather than writing a broken file) is preserved on any future change here.
+- **Verify fix (#79, closed — see also Dimension 8)**: confirm no remaining call path
+  reaches the NSF exporter from the CLI; `main.py`'s `export` subcommand only offers
+  `--format ca65` today.
 - Channel-set agreement: CA65 macro path handles `pulse1/pulse2/triangle/noise/dpcm`;
-  confirm FamiStudio doesn't silently drop channels the CA65 path keeps.
-- Note/volume conversion: `midi_note_to_famistudio` octave math vs
-  `CA65Exporter.midi_note_to_timer_value` valid range (24–119). A note in range for one
-  exporter and silently dropped/mis-octaved in another is an inconsistency (MEDIUM,
-  HIGH if a common note is dropped).
-- This dimension overlaps `/audit-tech-debt` Dimension 1 (the four exporters duplicating
+  `exporter_famistudio.py` iterates the identical five-channel list (`:151`) — confirmed
+  consistent, no channel silently dropped.
+- **Verify fix (#82, closed)**: `midi_note_to_famistudio` (`exporter_famistudio.py:165-
+  171`) now clamps `octave = max(0, min(7, (note // 12) - 1))` into FamiStudio's valid
+  0–7 range (previously produced negative octaves for MIDI notes 0–11). The dpcm branch
+  (`:103-112`) also now falls back to `max(0, event.get('note', 1) - 1)` when
+  `event['sample_id']` is absent, instead of raising `KeyError` (the frames dict encodes
+  DPCM triggers as `note = sample_id + 1`, not a `sample_id` key). Cross-check against
+  `CA65Exporter.midi_note_to_timer_value`'s valid range (24–119, `exporter_ca65.py:51`) —
+  confirm a note in range for one exporter is still in range (post-clamp) for the other,
+  not silently re-pitched to a different octave than the ROM plays.
+- This dimension overlaps `/audit-tech-debt` Dimension 1 (the exporters duplicating
   serialization). Report duplication there; report *behavioral divergence* here.
 
 ### Dimension 8: Format-String / CLI-Choices Mismatch
-`main.py` `run_export` branches on `args.format`. The argparse parser declares
-`p_export.add_argument('--format', choices=['nsf', 'ca65'], default='ca65')`, but
-`run_export` checks `if args.format == "nsftxt":` for the NSF branch. Since `"nsftxt"`
-is **not** an allowed choice, the NSF branch is **unreachable** and `--format nsf`
-falls through to the `elif args.format == "ca65":` — verify this and trace what
-`--format nsf` actually does (likely nothing, or the ca65 branch). A format the CLI
-advertises that silently does the wrong thing (or nothing) is HIGH. Also confirm no
-other dispatch site (`config` defaults at `main.py` line ~721 references
-`export.nsf.load_address`) assumes NSF export works. Re-read both the argparse
-definition and `run_export` before reporting — confirm the exact string mismatch.
+**Verify fix (#79, closed)**: `main.py`'s `export` subcommand now declares
+`p_export.add_argument('--format', choices=['ca65'], default='ca65')` (`main.py:814`),
+with `nsf` intentionally absent (comment at `:812-813` citing #79/#81) rather than
+present-but-unreachable. `run_export` (`:272-306`) only branches on `if args.format ==
+"ca65":` (`:292`) — the old `if args.format == "nsftxt":` dead branch (dispatching on a
+string argparse never allowed) is gone. Requesting `--format nsf` now fails argparse
+validation up front with a clear CLI error instead of silently no-op'ing. Check:
+- No other dispatch site still assumes NSF export works. `run_config_validate`
+  (`main.py:~1008`) prints `f"NSF load address: 0x{config_manager.get('export.nsf.
+  load_address'):04X}"` under `--verbose` — this reads a `default_config.yaml` value with
+  no live consumer (`NSFExporter` always raises `NotImplementedError`); confirm this is at
+  worst cosmetic (LOW) and not advertised anywhere as a working feature.
+- If NSF export is ever reintroduced, re-verify the new dispatch string exactly matches
+  a value in `choices=[...]` — this is precisely the class of bug #79 was.
 
 ## Cross-Dimension Dedup
 A single root cause can surface across dimensions (an out-of-range `.byte` is both a

@@ -20,7 +20,7 @@ report; they never call `gh issue create`.
 
 ### 1. Load + parse the report
 
-Read `$ARGUMENTS` (e.g. `docs/audits/AUDIT_PATTERNS_2026-06-28.md`). Each finding block
+Read `$ARGUMENTS` (e.g. a report named `docs/audits/AUDIT_<TYPE>_<DATE>.md`). Each finding block
 follows _audit-common's Base Per-Finding Format: `### <ID>: <Title>` then `Severity`,
 `Dimension`, `Location`, `Status`, `Description`, `Evidence`, `Impact`, `Related`,
 `Suggested Fix`. Extract those fields per finding; ID + Severity + Location + Status

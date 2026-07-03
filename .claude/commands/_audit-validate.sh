@@ -81,7 +81,7 @@ for f in $FILES; do
         # Only consider tokens that end in a known source/doc extension.
         # (A bare `dir/name` with no extension — repo slugs, slash-commands — is not a file ref.)
         [[ "$tok" =~ $EXT_RE ]] || continue
-        for expanded in $(expand_braces "$tok"); do
+        while IFS= read -r expanded; do
             cand="$(strip_range "$expanded")"
             should_skip "$cand" && continue
             CHECKED=$((CHECKED+1))
@@ -91,7 +91,7 @@ for f in $FILES; do
                 echo "STALE  $f -> $cand"
                 STALE=$((STALE+1))
             fi
-        done
+        done < <(expand_braces "$tok")
     done < <(grep -oE '`[^`]+`' "$f" | sed 's/`//g')
 done
 

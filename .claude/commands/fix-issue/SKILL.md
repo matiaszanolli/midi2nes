@@ -12,7 +12,7 @@ contracts, NES constraints) and `CLAUDE.md` (build/test commands, conventions).
 ```bash
 gh issue view $ARGUMENTS --repo matiaszanolli/midi2nes --json title,body,labels,state
 ```
-Save details to `.claude/issues/$ARGUMENTS/ISSUE.md` (immutable snapshot — no `State:` field;
+Save details to _.claude/issues/$ARGUMENTS/ISSUE.md_ (immutable snapshot — no `State:` field;
 GitHub stays authoritative).
 
 ## Phase 2: Classify Domain

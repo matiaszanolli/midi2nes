@@ -33,102 +33,178 @@ abort (and instead produces a broken or silently-wrong ROM). Grep:
 ```bash
 grep -rnE 'except\s*:|except Exception' --include='*.py' main.py tracker/ nes/ exporter/ compiler/ config/
 ```
-Hot spots to confirm: `run_full_pipeline` in `main.py` wraps the entire 8-step pipeline
-in one broad `except Exception as e` (`main.py:488`) that only prints + `sys.exit(1)` —
-distinguishes nothing between an `InvalidMIDIError` and a real bug. The DPCM-pack block
-(`main.py:374`–`411`) catches everything and continues with `print(... Warning ...)`,
-so a corrupt `dpcm_index.json` yields a ROM missing its drums with no failure. The
-parallel→sequential fallback at `main.py:314`–`327` catches bare `Exception` — verify
-it is the *documented* fallback (`_audit-common.md` Multiprocessing rule) and not
-masking a real bug. Severity: swallowing on a recoverable/optional path = LOW–MEDIUM;
+Hot spots to confirm: `run_full_pipeline` in `main.py` still wraps the entire 8-step
+pipeline in one broad `try`/`except Exception as e` (`main.py:501`–`735`) that prints
+the message and `sys.exit(1)`, without discriminating by exception type. This is less
+concerning than it looks: every failure surface underneath now raises a specific,
+informative typed exception (`InvalidMIDIError`, `ConfigurationError`, `ToolchainError`,
+`CompilationError`, `ValidationError`) whose message this catch-all simply relays, so
+the user-facing output is meaningful even though the `except` clause itself still can't
+distinguish failure classes programmatically — still worth a LOW–MEDIUM finding
+(defense-in-depth / testability), not a live "swallows a real bug" bug.
+The DPCM-pack block (`main.py:625`–`676`, `try:` at `:627`, `except Exception as e:` at
+`:667`) **no longer just warns and silently continues** — it builds a
+`dpcm_pack_warning` string and prints it prominently (`⚠️ Warning: ...` at `:672`,
+echoed again in the final success banner at `:725`–`726`) so a corrupt/partial
+`dpcm_index.json` no longer ships a drumless ROM with an easy-to-miss message (fixed,
+#123 — see Dimension 8 for the step-by-step `run_export` counterpart at
+`main.py:317`–`345`, which got identical treatment). Verify: does the warning fire on
+*every* path that can leave DPCM unpacked, or is there a code path inside the `try`
+that could still exit early without setting `dpcm_pack_warning`? The parallel→sequential
+fallback (`main.py:557`–`580`, catches bare `Exception` at `:562`) is unchanged
+behavior (just line-shifted) — confirm it is still the *documented* fallback
+(`_audit-common.md` Multiprocessing rule) and not masking a real bug, and that the
+lossy-resample warning (`:573`–`579`) still fires whenever the fallback had to
+downsample. Severity: swallowing on a recoverable/optional path = LOW–MEDIUM;
 swallowing where the song is silently changed (dropped DPCM, dropped channel) escalates
 per `_audit-severity.md`.
 
 ### Dimension 2: Malformed-Input Resilience
-Both parsers call `mido.MidiFile(...)` with **no guard** — `tracker/parser_fast.py:14`
-and `tracker/parser.py:11`. A truncated, empty, or non-MIDI file raises a raw `mido`
-exception / `OSError` / `EOFError` / `EOFError`-wrapped error, not the project's
-`InvalidMIDIError` (defined in `core/exceptions.py`), so the user sees a stack trace
-instead of a clean message. Inside `parser_fast.py`, the per-event `except Exception:
-continue` (`tracker/parser_fast.py:77`) silently drops any note event that fails frame
-conversion — confirm whether a dropped `note_on`/`note_off` can change the song (data
-loss → escalate). Check that `run_full_pipeline` validates the input is a real MIDI
-file beyond `Path.exists()` (`main.py:232`). Grep for other unguarded `mido.MidiFile`
-and `open(`/`read_text()` on user-supplied paths.
+`mido.MidiFile(...)` is now **guarded** in both parsers (fixed, #121, commit
+`c62bb56`): `tracker/parser_fast.py:15`–`20` and `tracker/parser.py:12`–`17` both wrap
+the call — `FileNotFoundError` is re-raised as-is (a missing file, not a MIDI-validity
+issue), while `(EOFError, OSError, ValueError)` is converted to `InvalidMIDIError`
+(`core/exceptions.py:38`) so the user gets a clean message instead of a raw `mido`
+traceback. `nes/song_bank.py` no longer calls `mido.MidiFile` directly at all — its
+`add_song_from_midi` was switched to `tracker.parser_fast.parse_midi_to_frames`
+(commit `d8f6a0e`, #33/#34), so it inherits the same guard for free. Verify fix
+completeness: confirm no code path still constructs `mido.MidiFile` unguarded anywhere
+in the repo (grep is the fastest check).
+Inside `parser_fast.py`, the per-event `except Exception as e: ... continue`
+(`tracker/parser_fast.py:126`) no longer silently drops a note event (fixed, #124,
+SAFE-07 — see Dimension 1): it increments `dropped_note_events`, records
+`last_drop_reason`, and prints a `Warning: dropped N note event(s)...` summary after
+the track loop (`:137`–`140`). Verify edge cases the fix might not cover: this path is
+documented as "defense against a future regression, not a known failure mode" — if an
+audit or test run actually triggers a drop, treat it as a real bug to escalate (data
+loss = at least HIGH per `_audit-severity.md`), not just a logged warning to accept.
+`run_full_pipeline` still validates the input only via `Path.exists()`
+(`main.py:471`) — unchanged; deeper content validation is now delegated to
+`parse_fast`'s new `InvalidMIDIError` guard, which is a reasonable division of labor
+(cheap existence check up front, real validation where the file is actually opened).
+Grep for any other unguarded `mido.MidiFile` and `open(`/`read_text()` on
+user-supplied paths as a final check.
 
 ### Dimension 3: Subprocess / CC65 Safety
-`compiler/cc65_wrapper.py` shells out to `ca65`/`ld65`. Confirm (currently looks
-correct — verify it stays correct, and flag any regression):
-- No `shell=True` and the command is a list, not a string (no shell-injection surface).
-- Missing-tool detection: `check_toolchain()` (`compiler/cc65_wrapper.py:34`) uses
-  `shutil.which` + `--version` and raises `ToolchainError`. Verify `assemble()` /
-  `link()` are never reachable without `check_toolchain()` first — `build()`
-  (`compiler/cc65_wrapper.py:207`) calls it, but a direct `assemble()` call does not.
-- Nonzero exit handling: `assemble()` (`:139`) and `link()` (`:194`) check
-  `result.returncode != 0` and raise `CompilationError` with stderr. A path that drops
-  the return code or stderr is **HIGH** (`_audit-severity.md`: "CC65 nonzero exit /
-  stderr ignored"). Also check `subprocess.run` calls that omit a `timeout` (a hung
-  assembler hangs the whole CLI) and the `--version` probes at `:55`/`:66` that ignore
-  a nonzero return without surfacing stderr.
+`compiler/cc65_wrapper.py` shells out to `ca65`/`ld65`. Confirmed still correct — flag
+any regression:
+- No `shell=True` anywhere in the repo (confirmed via
+  `grep -rnE 'shell=True' --include='*.py' .`) and every command is built as a list.
+- Missing-tool detection: `check_toolchain()` (`compiler/cc65_wrapper.py:34`–`81`) uses
+  `shutil.which` + a `--version` probe via the *resolved* path (`:57`–`67` for ca65,
+  `:69`–`79` for ld65) and raises `ToolchainError`. `get_version()` (`:83`–`117`) now
+  guards its own probes the same way. Verify `assemble()`/`link()` are never reachable
+  without `check_toolchain()` having run first: `ROMCompiler.compile()`
+  (`compiler/compiler.py:94`) and `CC65Wrapper.build()`
+  (`compiler/cc65_wrapper.py:238`–`272`, calls it at `:260`) both call it up front — a
+  *direct* `assemble()`/`link()` call on a bare `CC65Wrapper` instance still would not,
+  but nothing in `main.py`'s call paths does that (LOW, defense-in-depth only).
+- Nonzero exit handling: `assemble()` (`:119`–`173`) and `link()` (`:175`–`236`) check
+  `result.returncode != 0` and raise `CompilationError` with stderr/stdout (`:162`–`168`,
+  `:225`–`231`). A path that drops the return code or stderr is still **HIGH**
+  (`_audit-severity.md`: "CC65 nonzero exit / stderr ignored").
+- Timeouts: **fixed** (#122, commit `c62bb56`). `subprocess.run` calls that previously
+  had no `timeout` (the hung-assembler-hangs-the-CLI failure mode) now all pass one:
+  `timeout=10` on the `--version` probes in `check_toolchain()`/`get_version()`, and
+  `timeout=120` on the real `assemble()`/`link()` calls (`:153`, `:216`), each wrapped in
+  `except subprocess.TimeoutExpired` that raises a clean `ToolchainError`/
+  `CompilationError` instead of hanging. Verify edge cases: 120s is a fixed budget —
+  confirm it's generous enough for the largest real projects the compiler handles, and
+  that a legitimate slow build isn't misclassified as a hang.
 
 ### Dimension 4: Unsafe Deserialization (yaml / pickle / eval / exec)
 ```bash
 grep -rnE 'eval\(|exec\(|yaml\.load\(|pickle\.load|os\.system|shell=True' --include='*.py' .
 ```
-Current state: config loading uses `yaml.safe_load` (`config/config_manager.py:117`) —
-**confirm it stays `safe_load`**; a switch to `yaml.load` without `SafeLoader` on a
-user-supplied config is HIGH (arbitrary object construction). Flag any new `eval`/`exec`
-on user input (HIGH), any `pickle.load` of attacker-influenceable data, and any
-multiprocessing path that pickles untrusted args (cross-ref `_audit-common.md`
-Multiprocessing rule for `ParallelPatternDetector` in
-`tracker/pattern_detector_parallel.py`).
+Current state: this grep returns **no matches anywhere in the repo** — confirmed
+clean. Config loading uses `yaml.safe_load` (`config/config_manager.py:119`, line
+shifted from the SAFE-08 fix's added comment) — **confirm it stays `safe_load`**; a
+switch to `yaml.load` without `SafeLoader` on a user-supplied config would be HIGH
+(arbitrary object construction). Flag any new `eval`/`exec` on user input (HIGH), any
+`pickle.load` of attacker-influenceable data, and any multiprocessing path that pickles
+untrusted args (cross-ref `_audit-common.md` Multiprocessing rule for
+`ParallelPatternDetector` in `tracker/pattern_detector_parallel.py`).
 
 ### Dimension 5: JSON-Intermediate Guards
-Every pipeline stage round-trips JSON. The subcommand entry points read user-supplied
-paths with **no existence check and no parse guard**: `run_map` (`main.py:41`),
-`run_frames` (`main.py:49`), `run_export` (`main.py:67` and `:72` for `--patterns`),
-`run_detect_patterns` (`main.py:126`) all do `json.loads(Path(args.input).read_text())`
-bare — a missing file raises `FileNotFoundError`, a truncated/garbage file raises
-`json.JSONDecodeError`, both as raw tracebacks. Also check **key access** after load:
-`run_map` does `midi_data["events"]` and `run_export` does `pattern_data['patterns']` /
-`['references']` (`main.py:89`) with no `KeyError` guard — a stage fed the wrong JSON
-(an inter-stage contract break per `_audit-common.md`) crashes with `KeyError` rather
-than a clear "this isn't a patterns file" message.
+**Fixed** (#120, SAFE-01, commit `0a6f863`). A new `load_json_stage(path,
+required_keys, stage_name)` helper (`main.py:36`–`65`) now guards every step-by-step
+subcommand's inter-stage JSON read: existence (clean `[ERROR] ... input not found`
+instead of a raw `FileNotFoundError`), parse errors (`json.JSONDecodeError` caught and
+reported), a dict-type check, and a required-keys check — all exiting with a clear
+message (including "is this the right stage's JSON?") and code 1 instead of a raw
+traceback.
+- `run_map` (`main.py:76`): `load_json_stage(args.input, ['events'], 'parse')` — the
+  downstream `midi_data["events"]` access (`:80`) is now safe because `'events'` is a
+  required key checked up front.
+- `run_frames` (`main.py:87`): `load_json_stage(args.input, [], 'map')`.
+- `run_export` (`main.py:276` for `args.input`; `main.py:284` for `args.patterns`,
+  required keys `['patterns', 'references']`) — the downstream
+  `pattern_data['patterns']`/`['references']` access (`:295`–`296`) is now guarded.
+- `run_detect_patterns` (`main.py:354`).
+Verify fix completeness: confirm every subcommand that reads inter-stage JSON goes
+through `load_json_stage` (it currently does, across all four call sites above), and
+flag any future subcommand that reverts to a bare `json.loads(...).read_text()`.
 
 ### Dimension 6: File / Resource Handling & Temp Cleanup
 Check that file handles use context managers and temp dirs are cleaned up.
-`run_full_pipeline` correctly uses `with tempfile.TemporaryDirectory(...)`
-(`main.py:258`), which auto-cleans — confirm nothing escapes it. Verify `open(...)`
-sites use `with` (e.g. the DPCM `open(music_asm, 'a')` at `main.py:403`, the
-benchmark `open(results_file, 'w')` at `main.py:793`, and `config/config_manager.py`
-`save()` at `:238`). Flag any bare `open()` without `with` that can leak a handle on
-exception. Note the backup/restore dance around `output_rom` (`main.py:244`–`247`,
-`:436`–`439`, `:463`–`466`) — confirm the `.nes.backup` is removed on success (search
-for cleanup; if it is left behind on every run, that is a resource/cleanliness LOW).
+`run_full_pipeline` still correctly uses
+`with tempfile.TemporaryDirectory(prefix="midi2nes_")` (`main.py:498`, line-shifted),
+which auto-cleans — confirm nothing escapes it. All the named `open(...)` sites still
+use `with`: the step-by-step DPCM append (`main.py:339`), the full-pipeline DPCM append
+(`main.py:652`), the benchmark `open(results_file, 'w')` (`main.py:1080`), and
+`config/config_manager.py` `save()` (`:245`). No bare `open()` without `with` found in
+these paths.
+Backup/restore around `output_rom`: creation is at `main.py:482`–`486` (only when
+`output_rom` already exists); restore is centralized in a `_restore_backup()` helper
+(`main.py:166`–`171`) invoked from a single `finally:` block (`main.py:743`–`747`) that
+fires whenever `build_succeeded` is still `False` (a `sys.exit(1)` inside the `try`
+still unwinds through `finally`). On success the backup is explicitly deleted —
+`backup_path.unlink(missing_ok=True)` (`main.py:732`–`733`) — so the `.nes.backup` is
+**not** left behind on a successful run; it is only retained (to support a restore)
+after a failed one. This resolves what was previously an open question — confirmed
+correct as implemented.
 
 ### Dimension 7: Exception-Type Discipline
 The project defines a typed hierarchy in `core/exceptions.py` (`MIDI2NESError` base;
 `InvalidMIDIError`, `CompilationError`, `ValidationError`, `ToolchainError`,
-`DataTooLargeError`, `ConfigurationError`, …). Flag code that raises bare `Exception`/
-`ValueError` where a typed exception exists, or catches broad `Exception` where it
-could catch a specific subclass and let real bugs propagate. Example: `_load_from_file`
-in `config/config_manager.py:118` catches `Exception` and re-raises as a generic
-`ValueError` instead of the available `ConfigurationError` — callers can't distinguish a
-missing file from malformed YAML. Cross-ref Dimension 2 (parsers raising raw `mido`
-errors instead of `InvalidMIDIError`). Severity: usually LOW–MEDIUM (defense-in-depth /
-maintainability) unless the wrong type causes a real failure to be swallowed.
+`DataTooLargeError`, `ConfigurationError`, …). **Fixed** (#125, SAFE-08, commit
+`de998dd`): `_load_from_file` in `config/config_manager.py:115`–`126` now catches only
+the two expected failure classes, `(OSError, yaml.YAMLError)` — narrowed from a bare
+`except Exception` — and raises `ConfigurationError(f"Failed to load configuration
+from {path}: {e}")` instead of a generic `ValueError`. This is a double improvement:
+callers can now distinguish a config-load failure by type, and a genuine unrelated bug
+(e.g. a `TypeError` in later config processing) is no longer folded into the same
+generic error — it now propagates as itself. Cross-ref Dimension 2: parsers now raise
+the typed `InvalidMIDIError` instead of a raw `mido` error (also fixed, #121).
+Verify fix completeness / remaining edge cases: `save()`
+(`config/config_manager.py:241`) still raises a bare `ValueError("No path specified for
+saving configuration")`, and `validate()` (`:280`) still raises a bare `ValueError` on
+validation failure — neither was in scope of #125 (which covered *load* failures only)
+but both remain a LOW opportunity to align with `ConfigurationError`/`ValidationError`
+for consistency with the rest of the module. Severity: usually LOW–MEDIUM
+(defense-in-depth / maintainability) unless the wrong type causes a real failure to be
+swallowed.
 
 ### Dimension 8: Partial-Output-on-Failure
 A pipeline that fails mid-way must not leave a half-written `.nes` / `.asm` that a user
-mistakes for a good build. `run_full_pipeline` builds the ROM inside the temp dir and
-only `shutil.copy(...)` to the final `output_path` on success (`compiler/compiler.py:144`),
-which is the safe pattern — **verify** no stage writes directly to `args.output` before
-the final step. Check the subcommand exporters: `run_export` writes `args.output` then
-**appends** DPCM assembly in a separate `try` (`main.py:118`) — if the append fails after
-the main write, a partial/truncated `.asm` is left with only a warning. Check the
-backup-restore on compile/validate failure (`main.py:436`, `:463`) actually restores the
-prior good ROM and does not leave the broken one. Flag any writer that opens the final
-output path, then can raise before completing it.
+mistakes for a good build. `run_full_pipeline` still builds the ROM inside the temp dir
+and only reaches the final path via `shutil.copy(rom_path, output_path)` in
+`ROMCompiler.compile()` (`compiler/compiler.py:144`) — unchanged, still the safe
+pattern. Check the subcommand exporters: `run_export` writes `args.output` via
+`exporter.export_tables_with_patterns(...)` (`main.py:301`–`308`) then **appends** DPCM
+assembly in a separate `try` (`main.py:317`–`345`) — the structural risk is unchanged
+(a DPCM-pack failure after the main write leaves an ASM file without the DPCM append),
+but the consequence is now loudly surfaced — `⚠️  NO DRUMS: ...` (`main.py:348`–`349`)
+— instead of a warning a user could scroll past, which meaningfully mitigates (if not
+eliminates) the risk (#123). The full-pipeline DPCM block (`main.py:625`–`676`) got the
+identical treatment, with the warning echoed again in the final summary
+(`main.py:725`–`726`). Check the backup-restore on compile/validate failure: now
+centralized in the single `finally` block described in Dimension 6
+(`main.py:743`–`747`) rather than duplicated at multiple call sites — confirm it still
+restores the prior good ROM and never leaves the broken one in place (it does). Flag
+any writer that opens the final output path directly and can raise before completing
+it (e.g. `exporter/exporter_ca65.py`'s `with open(output_path, 'w')` sites) as a
+lower-priority hardening item if not already covered above.
 
 ## Cross-Dimension Dedup
 One root cause can surface across dimensions (the unguarded `json.loads` is both a
@@ -159,3 +235,4 @@ Then suggest:
 ```
 /audit-publish docs/audits/AUDIT_SAFETY_<TODAY>.md
 ```
+</content>

@@ -24,7 +24,15 @@ which is a separate LOW finding).
 
 The hot files for this audit:
 `nes/emulator_core.py`, `nes/pitch_table.py`, `nes/envelope_processor.py`,
-and the serializer `exporter/exporter_ca65.py`.
+`nes/audio_engine.asm` (the live bytecode playback engine), and the serializer
+`exporter/exporter_ca65.py`.
+
+> **Note on recent history**: this repo just closed ~100 issues in a bug-fixing sprint.
+> Several hardware bugs previously tracked here (NH-01..NH-10, NH-15..NH-20) are now
+> **fixed** — the bullets below describe the current (fixed) behavior and ask you to
+> verify the fix is complete/holds under edge cases, rather than hunt for the original
+> bug. A smaller set (NH-11, NH-14, NH-21..NH-25) is still **open** — keep hunting those
+> at full strength. Don't assume either list is exhaustive; re-derive from the code.
 
 ## Parameters (from $ARGUMENTS)
 - `--focus <dims>` — comma-separated dimension numbers (e.g. `--focus 1,5,9`). Default: all.
@@ -44,18 +52,41 @@ Pulse channels live at `$4000–$4007` (`exporter/exporter_ca65.py` defines
   `(duty_cycle & 0x03) << 6` and the constant-volume flag `0x10` (bit 4) is set —
   confirm both, and that the 4-bit volume occupies bits 0–3 (`volume & 0x0F`).
 - The duty ID reaching `get_envelope_control_byte` is one of the four legal NES
-  duties (0–3 → 12.5/25/50/75%). Cross-check the packing against
-  `docs/APU_PULSE_REFERENCE.md` §4 Duty Cycles — flag any value outside 0–3 or an
-  8-bit "duty" being written into the 2-bit field (the old `PULSE_DUTY_CYCLES`
-  constant was that trap; removed in #108).
-- Timer write order in the play_pulse routine (`exporter/exporter_ca65.py`, around the
-  `sta $4002`/`sta $4003` and `sta $4006`/`sta $4007` writes): note the phase-reset
-  click quirk in `docs/APU_PULSE_REFERENCE.md` §3 / `docs/NES_APU_REFERENCE.md` §2.1 —
-  rewriting Timer High (`$4003`/`$4007`) every frame on a held note is a MEDIUM
-  (audible popping), not just cosmetic.
-- Sweep ($4001/$4005): if the engine never writes sweep, confirm it is disabled/zeroed
-  at init (`docs/APU_PULSE_REFERENCE.md` §2). A stale sweep left enabled silently bends
-  pitch — HIGH.
+  duties (0–3 → 12.5/25/50/75%). The old `PULSE_DUTY_CYCLES` 8-bit constant that
+  contradicted the 2-bit field is confirmed **removed** (#108/NH-15 — `grep -rn
+  PULSE_DUTY_CYCLES` across the repo returns nothing outside history). Verify no
+  new duty producer reintroduces an out-of-0–3 value.
+- Timer write order / phase-reset click (`docs/APU_PULSE_REFERENCE.md` §3 "Critical
+  Side Effects" / `docs/NES_APU_REFERENCE.md` §2.1): rewriting Timer High
+  (`$4003`/`$4007`) restarts the pulse sequencer's phase regardless of the value
+  written. This is **fixed in the live bytecode engine** — `nes/audio_engine.asm`
+  caches the last-written high byte per pulse channel (`last_written_hi`, `.res 5`)
+  and only issues `sta $4003`/`sta $4007` when the value changed (`@p1_write_hi`/
+  `@p2_write_hi`, #161/NH-18), forcing a rewrite at genuine note onset via the
+  cmp-then-branch guard. The direct-export path (`exporter/exporter_ca65.py`'s
+  `play_pulse1`/`play_pulse2` procs) never had this bug — its `@sustain` label is a
+  bare `rts` that touches no registers when the note is unchanged. Verify the
+  bytecode engine's guard holds across bank switches / instrument changes.
+- Sweep (`$4001`/`$4005`): confirmed disabled at **both** init sites — the standalone
+  `reset` proc and the project-builder `init_music` routine
+  (`exporter/exporter_ca65.py`, `lda #$08` / `sta $4001` / `sta $4005`). `$08` =
+  `EPPP.NSSS` with `E` (enable, bit 7) clear, which disables the unit per
+  `docs/APU_PULSE_REFERENCE.md` §2 regardless of the stray negate bit — confirm this
+  reading and that no other code path re-enables sweep afterward (a stale sweep left
+  enabled silently bends pitch — HIGH per Special Rules).
+- **Open (NH-25, #167)**: the direct-export `play_pulse1`/`play_pulse2` "new note"
+  path writes the control byte straight from `pulse1_control`/`pulse2_control`
+  (`sta $4000`/`sta $4004`), which is `duty_bits | 0x10 | volume` from
+  `get_envelope_control_byte` — **bit 5 (length-counter halt) is never set**.
+  `docs/APU_LENGTH_COUNTER_REFERENCE.md` §5 "Engine Implementation Notes" mandates
+  the halt flag always be set so the 60Hz software model isn't undercut by the
+  hardware length counter. The same routine's timer-hi write (`ora #$08` before
+  `sta $4003`/`sta $4007`) reloads a real (short) length-counter value on every new
+  note. Now that NH-20 (#160) is fixed and real note durations flow through instead
+  of a 4-frame cap, a direct-export note held longer than the reloaded length-counter
+  value **will** be cut off mid-note by hardware, independent of continued frame
+  writes — this is no longer a purely latent/masked bug. Verify whether this
+  actually reproduces with a long sustained note through `--no-patterns` export.
 
 ### Dimension 2: Triangle — the no-volume / no-duty invariant + linear counter
 This is the highest-yield dimension. The Triangle channel (`$4008–$400B`) has **no
@@ -63,105 +94,175 @@ volume and no duty** (`docs/APU_TRIANGLE_REFERENCE.md` §1; `docs/NES_APU_REFERE
 §2.2). Verify, skeptically:
 - `nes/emulator_core.py:process_all_tracks` routes `triangle` through
   `compile_channel_to_frames` with `default_duty=None` (the `'pulse' in channel_name`
-  test). Confirm the non-pulse branch is taken and **no `control`/duty byte** is emitted
-  for triangle. Any path that writes a duty or 4-bit volume into a triangle register
-  ($4008/$400B) is **HIGH** per the Special Rules table.
-- In `exporter/exporter_ca65.py` the `play_triangle` proc writes `$4008` (linear
-  counter), `$400A`, `$400B`. Check what value is stored to `$4008`: it must be a linear
-  counter / control value (`docs/APU_TRIANGLE_REFERENCE.md` §4 The Linear Counter), not
-  a borrowed pulse "volume/duty" control byte. Grep for a `$30`-style "zero volume,
-  duty" constant leaking into the triangle path — that is meaningless for triangle and a
-  finding.
-- Note-off: the doc-recommended halt is linear-counter halt or ultrasonic pitch
-  (`docs/APU_TRIANGLE_REFERENCE.md` §5). If silencing instead writes a volume, flag it.
+  test). Confirm the non-pulse branch is taken — the emitted frame dict for triangle
+  carries only `pitch`/`volume`/`arpeggio`/`note`, **no `control`/duty key at all**.
+  Any path that writes a duty or 4-bit volume into a triangle register ($4008/$400B)
+  is **HIGH** per the Special Rules table.
+- In `exporter/exporter_ca65.py`'s `export_direct_frames`, the triangle control byte
+  is derived independently from `volume` (`0x80 | (volume * 7)` when nonzero, `0x00`
+  when silent) — this is a real linear-counter reload
+  (`docs/APU_TRIANGLE_REFERENCE.md` §4), not a borrowed pulse control byte. Confirm
+  no `$30`-style "duty + constant volume" constant leaks into the triangle path.
+- Note-off: `nes/audio_engine.asm`'s `@silence_tri` writes `$80` (halt bit set, zero
+  reload — "Linear Counter Halt", per `docs/APU_TRIANGLE_REFERENCE.md` §5) and the
+  direct-export `@silence` label writes `$00` to `$4008`; the "new note" fallthrough
+  (relevant to NH-14 below) also writes `$00` at true rest frames. Confirm none of
+  these paths writes a pulse-style volume into `$4008`.
 
 ### Dimension 3: Noise — period table & mode flag
 Noise is at `$400C–$400F`; frequency is a **4-bit index** into a 16-entry table, mode is
 bit 7 of `$400E` (`docs/APU_NOISE_REFERENCE.md` §3–§4; `docs/NES_APU_REFERENCE.md` §2.3).
-Verify:
-- `NOISE_PERIOD_TABLE` in `nes/pitch_table.py` has exactly 16 entries (indices 0–15) and
-  `get_noise_period` / `PitchProcessor._get_noise_period` clamp the index to `0..15`.
-  Note the two implementations disagree (module `get_noise_period` does **not** invert;
-  `PitchProcessor._get_noise_period` returns `15 - scaled`) — reconcile which one the
-  pipeline actually uses and whether higher MIDI note → higher pitch is preserved
-  (`docs/APU_NOISE_REFERENCE.md` §3, lower period = higher frequency).
-- `process_all_tracks` hardcodes `"noise_mode": 0` (white noise). Confirm bit-7 mode is
-  reachable at all, and that the period index is actually carried into the noise frame —
-  grep whether `process_all_tracks`'s noise branch even computes a period (it appears to
-  emit only `noise_mode`/`volume`, dropping pitch). A dropped period is wrong output =
-  HIGH if it makes every drum the same pitch.
+NH-04 (#20) — the module/instance disagreement and the dropped period — is **fixed**;
+verify it holds:
+- `get_noise_period` in `nes/pitch_table.py` is now the single source of truth: it
+  clamps the note to `CHANNEL_RANGES["noise"]` (24–60), scales to 0–15, and inverts
+  (`15 - scaled`) so a higher MIDI note maps to a *lower* index → higher frequency
+  (`docs/APU_NOISE_REFERENCE.md` §3). `PitchProcessor._get_noise_period` now delegates
+  to this same function instead of carrying a divergent second implementation —
+  confirm both call sites still agree.
+- `nes/emulator_core.py:process_all_tracks`'s `noise` branch now computes a real
+  period via `self.midi_to_nes_pitch(e['note'], 'noise')` (floored at 1, since 0 is
+  the bytecode rest sentinel) and reads `noise_mode` from the event
+  (`e.get('noise_mode', 0) & 1`) instead of hardcoding mode 0 — confirm the mode bit
+  is still reachable end-to-end (does any producer ever set `noise_mode: 1`, or is
+  it dead-but-correct plumbing?).
+- NH-19 (#162, noise decay) is fixed: `process_all_tracks` now bakes a
+  `NOISE_DECAY_FRAMES = 6` software volume ramp per hit (`peak_volume * (span -
+  offset) / span`, floored at 1), cut short by a re-trigger. Verify the ramp still
+  reaches audible decay (not all frames rounding to the same value) and that a
+  rapid re-trigger correctly truncates the previous hit's tail rather than
+  overlapping it.
 
 ### Dimension 4: DPCM / DMC — level handling
 DMC is at `$4010–$4013`; direct level load is `$4011` (7-bit, `docs/APU_DMC_REFERENCE.md`
-§2–§3). Verify:
-- `process_all_tracks`'s `dpcm` branch carries `sample_id` and a `volume` of 15/0. DMC
-  has no 4-bit volume register — a "volume" of 15 must map to a real DMC action (enable
-  via `$4015` bit 4, or a `$4011` level load), not a pulse-style volume. Check how the
-  exporter / `exporter/exporter_ca65.py` translates the dpcm frame; a `volume` that goes
-  nowhere is a silent drop (the recent `DMC level handling` commits touched this — verify
-  the level value stays in 0–127 / 7-bit, `docs/APU_DMC_REFERENCE.md` §3).
+§2–§3). NH-05 (#24) — "level has a consumer but no producer, not 7-bit clamped" — is
+**fixed by removing the dead path** rather than wiring it up (#71/#72). Verify:
+- `nes/emulator_core.py:process_all_tracks`'s `dpcm` branch emits `volume: 15` as a
+  boolean-ish trigger gate (consumed only to decide whether the sample fires that
+  frame), not as a level to write to `$4011` — there is no "DMC volume" register on
+  real hardware, so this is correct as long as nothing downstream reinterprets it as
+  a level.
+- `nes/audio_engine.asm` and `nes/mmc3_init.asm` both write `$4011` **only** to reset
+  the DMC DAC to 0 at init (preventing the documented Triangle/Noise mixing-DC-offset
+  quirk) — confirm this is the only live `$4011` write.
+- The `@cmd_dmc_level` handler in `nes/audio_engine.asm` (reads a 7-bit level operand
+  and writes it to `$4011`) still exists, but `exporter/exporter_ca65.py` never emits
+  the `CMD_DMC_LEVEL`/`$87` opcode that would trigger it (confirmed by
+  `tests/test_ca65_export.py::test_dmc_level_command_path_removed`). This consumer is
+  now dead code with no producer — flag as LOW (dead code) unless you find a
+  resurrected producer.
 - Sample address/length alignment ($4012/$4013) and the `$C000–$FFFF` residency
-  constraint (`docs/APU_DMC_REFERENCE.md` §4; `docs/NES_APU_REFERENCE.md` §2.4) — if the
-  generated project can place samples outside that window, note it (cross-refs the mapper
-  audit).
+  constraint (`docs/APU_DMC_REFERENCE.md` §4; `docs/NES_APU_REFERENCE.md` §2.4) — if
+  the generated project can place samples outside that window, note it (cross-refs
+  the mapper audit).
 
 ### Dimension 5: Per-channel pitch-table correctness + 11-bit clamp
 The pulse and triangle channels do **not** share a period table — for the same 11-bit
 period the pulse sounds one octave above the triangle (`docs/APU_PITCH_TABLE_REFERENCE.md`
-§1; `docs/NES_APU_REFERENCE.md` §2.2 "Triangle … one octave lower"). Verify:
-- `nes/pitch_table.py` actually provides **distinct** tables and selects by channel.
-  `PitchProcessor.get_channel_pitch` currently indexes a single `self.note_table` for
-  both pulse and triangle (only `noise` branches off). If triangle reuses the pulse
-  timer with no octave compensation, triangle plays an octave wrong — HIGH (wrong pitch
-  on every triangle note). State this against `docs/APU_PITCH_TABLE_REFERENCE.md` §1.
-- Every timer is clamped to 11-bit `$0–$7FF`: `generate_note_table` /
-  `_generate_note_table` do `max(0, min(timer, 0x07FF))`, and `apply_pitch_bend` clamps
-  the bent result. Hunt for any pitch path (vibrato in
-  `EnvelopeProcessor.get_pitch_modification` added to `pitch` in
-  `compile_channel_to_frames`) that can push the value **above $7FF or below 0 without
-  re-clamping** — an unclamped timer is HIGH per the Special Rules table.
+§1; `docs/NES_APU_REFERENCE.md` §2.2 "Triangle … one octave lower"). NH-02/NH-03
+(#12/#16) are **fixed**; verify:
+- `nes/pitch_table.py` now builds both tables from one parameterized
+  `generate_note_table(divider)` — `NES_NOTE_TABLE` (divider 16, pulse) and
+  `NES_TRIANGLE_TABLE` (divider 32, triangle) — and `PitchProcessor.get_channel_pitch`
+  branches on `channel_type == "triangle"` to index `self.triangle_table` instead of
+  the shared pulse table. Confirm both the frame-generation path
+  (`nes/emulator_core.py`) and the exporter's own base-timer lookup
+  (`CA65Exporter.midi_note_to_timer_value`, which branches on `channel == 'triangle'`
+  to pick `NES_TRIANGLE_TABLE`) stay on the same table so the pitch and the base
+  timer it's differenced against don't scale-mismatch (#16).
+- Every timer is clamped to 11-bit `$0–$7FF` **and floored at 8** (not 0):
+  `generate_note_table` does `max(8, min(timer, 0x07FF))` — the floor-at-8 is
+  deliberate, since `t < 8` silences pulse/triangle
+  (`docs/APU_PULSE_REFERENCE.md` §3/§7); `apply_pitch_bend` re-applies the same
+  `max(8, min(…, 0x07FF))` clamp after bending.
+- NH-16 (#158, sub-C1 notes) is fixed: `CA65Exporter.midi_note_to_timer_value` now
+  clamps the note to `24–119` instead of returning a bare `0` for out-of-range notes,
+  so the `+127`-clamped pitch-offset macro can no longer wrap the 11-bit timer.
+  Verify the clamp bounds (`24`, `119`) are still consistent with `CHANNEL_RANGES`
+  elsewhere.
+- **Open / re-verify**: the skill previously flagged an `EnvelopeProcessor.
+  get_pitch_modification` vibrato path adding to an already-clamped pitch with no
+  re-clamp — that entire method and its dead-copy `NESEmulatorCore` host were
+  **removed** (#37/#38/NH-10; see Cross-Dimension Dedup note below), so this specific
+  described path no longer exists. The *live* additive-pitch site is now
+  `nes/audio_engine.asm`'s macro evaluator: `EVAL_MACRO 4, macro_steps_pitch, ...`
+  produces `temp_pitch`/`temp_pitch_hi` (sign-extended), which is added via
+  `adc temp_pitch` / `adc temp_pitch_hi` directly onto `ntsc_period_low`/`_high` (or
+  the triangle table) before `sta $4002/$4003` etc., with **no re-clamp to `$7FF`**
+  afterward. This is currently inert — no pipeline stage ever emits a nonzero pitch
+  macro delta (see NH-24, Dimension 7) — but is a latent 11-bit-overflow trap
+  structurally identical to the one already fixed in the dead duplicate core. Flag as
+  a verify-only item unless you can show a live producer of nonzero `pitch_seq`.
 - The `t < 8` silence quirk (`docs/APU_PULSE_REFERENCE.md` §3 / `docs/NES_APU_REFERENCE.md`
-  §2.1): timers under 8 silence the channel. Flag if low notes silently mute.
+  §2.1): timers under 8 silence the channel; confirmed floored at 8 (above). Flag if
+  any new code path can still push a nonzero pitch below 8.
 
 ### Dimension 6: Velocity → 4-bit volume mapping
 APU volume is 4-bit (0–15) on pulse/noise (`docs/APU_PULSE_REFERENCE.md` §1;
-`docs/APU_NOISE_REFERENCE.md` §2); MIDI velocity is 0–127. Verify the mapping in
-`nes/envelope_processor.py:get_envelope_control_byte` and the non-pulse branch of
-`nes/emulator_core.py:compile_channel_to_frames`:
-- Output is clamped to `0..15` (`min(15, …)` / `max(0, min(15, base_volume))`).
-- The `pow(velocity/127, 1.5)` curve (logarithmic-to-linear) keeps non-zero velocities
-  audible: `max(1, …)` so a quiet-but-present note never collapses to 0. A curve that
-  under/overshoots but stays in range is MEDIUM; emitting >15 is HIGH.
-- Check the dead/contradictory expression in `compile_channel_to_frames`'s pulse branch
-  (`min(15, velocity // 8) if velocity == 0 else …` — the `velocity == 0` case is
-  unreachable because the loop `continue`s on velocity 0). Flag as LOW dead code, MEDIUM
-  if it masks a real volume bug.
+`docs/APU_NOISE_REFERENCE.md` §2); MIDI velocity is 0–127. NH-08 (#34, dead/contradictory
+pulse-volume expression) is **fixed** — `nes/emulator_core.py:compile_channel_to_frames`'s
+pulse branch and non-pulse branch both now use a single clean expression,
+`max(1, int(15 * math.pow(velocity / 127.0, 1.5)))` (velocity 0 is filtered out earlier
+by the `continue` on note-off, so the old unreachable `velocity == 0` ternary arm is
+gone). Verify:
+- Output stays clamped to `0..15` in all three computation sites: `emulator_core.py`'s
+  two branches and `envelope_processor.py:get_envelope_control_byte`'s
+  `min(15, round((envelope_volume * midi_volume) / 15.0))` combination step (both
+  factors are already ≤15, so the product/15 can't exceed 15, but confirm the
+  `round()` can't tip it to 16 at the boundary).
+- The `pow(velocity/127, 1.5)` curve keeps non-zero velocities audible via
+  `max(1, …)` — a curve that under/overshoots but stays in range is MEDIUM; emitting
+  outside `0..15` is HIGH.
 
 ### Dimension 7: Envelope / ADSR behavior
 The engine bypasses the hardware envelope and drives constant volume per frame
 (`docs/APU_ENVELOPE_REFERENCE.md` §4 Constant Volume Output, §5 Engine Implementation).
-Verify in `nes/envelope_processor.py`:
-- The constant-volume flag (bit 4, `0x10`) is set whenever a per-frame volume is written
-  (`get_envelope_control_byte`) — otherwise the hardware envelope decays the note
-  unexpectedly (`docs/APU_ENVELOPE_REFERENCE.md` §4). Missing flag = HIGH (wrong output).
-- `get_envelope_value` ADSR phases (attack/decay/sustain/release) stay in `0..15` and the
-  percussion special-case (`sustain == 0 and release == 0`) reaches exactly 0 at note end
-  without dividing by zero (note the `note_duration - 1 - attack_end` denominator —
-  check the 1-frame-note edge case).
-- ADSR values in `self.envelope_definitions` are 4-bit-representable and consistent with
-  the engine-driven model in `docs/APU_ENVELOPE_REFERENCE.md` §5.
+**Open (NH-24, #166)**: the ADSR/effects/arpeggio plumbing is inert. Verify in
+`nes/envelope_processor.py` and its only caller (`nes/emulator_core.py`):
+- `compile_channel_to_frames` calls `get_envelope_control_byte(envelope_type,
+  frame_offset, ..., default_duty, None, velocity)` with the `effects` argument
+  **hardcoded to `None`** — tremolo and `duty_sequence` are therefore unreachable
+  from any real pipeline run (only tests exercise them directly). `envelope_type`
+  defaults to `event.get('envelope_type', 'default')`, and `grep -rn
+  "envelope_type" --include=*.py .` outside `tests/` shows **no producer** (parser,
+  track_mapper, or arranger) ever sets this key — every real note plays the flat
+  `"default"` envelope `(attack=0, decay=0, sustain=15, release=0)`. Confirm this is
+  still true after any arranger/instrument work and flag as a real (if inert-for-now)
+  missing-feature finding, not just dead code — the whole `piano`/`pad`/`pluck`/
+  `percussion` envelope catalog and the vibrato/duty-sequence effects table are
+  unreachable production code.
+- The constant-volume flag (bit 4, `0x10`) is still set unconditionally in
+  `get_envelope_control_byte` — confirm this remains true (missing it would be HIGH,
+  wrong output).
+- The percussion-envelope division `(frame_offset - attack_end) / (note_duration - 1
+  - attack_end)` in `get_envelope_value` has a real divide-by-zero shape for a
+  1-frame note, but since no producer ever selects `envelope_type="percussion"` (per
+  the point above) this path is currently unreachable in production — confirm that
+  remains true, or it becomes a live crash risk the moment an envelope producer is
+  wired up.
+- Cross-ref Dimension 1 (NH-25): the length-counter halt bit is a related "constant
+  output, no hardware decay" concern but lives on the pulse *control byte* path, not
+  here.
 
 ### Dimension 8: 60Hz frame timing & frame counter init
 Playback is one frame entry per 1/60s NMI tick; the frame counter `$4017` must be
 initialized to disable the hardware sequencer interfering with the NMI engine
-(`docs/APU_FRAME_COUNTER_REFERENCE.md` §3–§4; `docs/NES_APU_REFERENCE.md` §3.2). Verify:
-- `exporter/exporter_ca65.py` init writes `lda #$40` / `sta $4017` (5-step, IRQ
-  disabled). Confirm the value matches the doc's recommended init and that it runs before
-  playback. A missing/zero `$4017` init lets the frame IRQ fire — HIGH (timing
-  interference), CRITICAL if it can crash the engine.
+(`docs/APU_FRAME_COUNTER_REFERENCE.md` §2–§3; `docs/NES_APU_REFERENCE.md` §3.2). Verify:
+- Both init sites (`exporter/exporter_ca65.py`'s standalone `reset` proc and the
+  project-builder `init_music`) write `lda #$40` / `sta $4017` before playback starts
+  — `$40` = `%01000000`, i.e. Mode bit (bit 7) clear = **4-step mode**, Interrupt
+  Inhibit (bit 6) set = frame IRQ disabled (`docs/APU_FRAME_COUNTER_REFERENCE.md` §2
+  Register Map, §3 Sequencer Modes). This is the correct value.
+- **Open (NH-22, #164)**: `init_music`'s comment on that line still reads `; Frame
+  counter mode 1, disable frame IRQ` — `$40` is **mode 0** (4-step), not mode 1
+  (5-step is `$C0`/`$80`). The standalone `reset` proc's `sta $4017` carries no such
+  comment, so this doc-rot is scoped to the `init_music` routine only. LOW severity
+  (comment-only; the byte value itself is correct) — fix the comment, don't touch
+  the value.
 - The frame model is one-entry-per-tick (`compile_channel_to_frames` iterates integer
-  frames). Flag any float tempo→frame accumulation that drifts off the 60Hz grid over a
-  song (HIGH; cross-refs the tempo audit, but the *engine* must consume integer frames).
+  frames `range(start_frame, end_frame)`). Flag any float tempo→frame accumulation
+  that drifts off the 60Hz grid over a song (HIGH; cross-refs the tempo audit, but
+  the *engine* must consume integer frames).
 
 ### Dimension 9: Register addresses & $4015 enable correctness
 All APU writes must land in `$4000–$4017`; channel enables are `$4015` (`---D NT21`),
@@ -171,29 +272,42 @@ for `$4015` length-counter side effects). Verify in `exporter/exporter_ca65.py`:
   window and map to the correct channel/function. Grep every `sta $40xx` in the emitted
   proc bodies and confirm none writes outside `$4000–$4017` or to the wrong channel's
   register.
-- The init sequence enables the channels it plays via `$4015` (the `sta $4015` writes
-  around the `$4017` init). Writing 0 to a channel's `$4015` bit silences it immediately
-  (`docs/NES_APU_REFERENCE.md` §3.1); a channel the song uses but never enabled in
-  `$4015` is silent — HIGH.
+- Both init sites enable channels via `$4015 = $0F` (Pulse1/Pulse2/Triangle/Noise) and
+  leave DMC (bit 4) off until a sample actually triggers, at which point `@write_dpcm`
+  (`nes/audio_engine.asm`) / `play_dpcm` (`exporter/exporter_ca65.py`) write `$1F`.
+  Confirm every channel the song actually uses is covered by one of these two paths —
+  a channel used but never enabled in `$4015` is silent (HIGH).
 
 ### Dimension 10: Value-range clamping across the board
 A sweep for *every* numeric value that reaches a register, independent of the dimension
 that produces it. For each of {note, timer, volume, duty, noise index, dmc level},
 confirm a clamp exists on the path from Python value to emitted byte:
-- timers → `$0–$7FF` (Dim 5), volumes/duty → 4-bit / 2-bit masks (Dim 1/6), noise index
-  → `0–15` (Dim 3), dmc level → 7-bit (Dim 4).
-- Pay special attention to *additive* modifications applied after the clamp (vibrato
-  pitch_mod added to an already-clamped `pitch`; tremolo added to `base_volume` before
-  the final `max(0,min(15,…))`). An additive step downstream of the clamp re-opens the
-  range — HIGH if it can exceed hardware range, per the Special Rules table.
+- timers → `$0–$7FF` floored at `8` (Dim 5), volumes/duty → 4-bit / 2-bit masks
+  (Dim 1/6), noise index → `0–15` (Dim 3), dmc level → not applicable post-fix (Dim 4;
+  the "level" is a trigger gate now, not a register value).
+- **Live unclamped-add sites to re-verify** (both currently fed only zero deltas per
+  NH-24, but structurally unguarded): `nes/audio_engine.asm`'s pitch macro add
+  (`adc temp_pitch` / `adc temp_pitch_hi` onto the period tables, no post-add clamp to
+  `$7FF`) and its arpeggio add (`clc; lda current_note, x; adc temp_arp; sta
+  temp_note` — an 8-bit add with no range check before `temp_note` is used to index
+  the 128-entry period tables via `ldy temp_note`). Both are additive steps
+  *downstream* of the table's own clamp, matching the pattern already fixed once in
+  the dead duplicate core (#38/NH-10) — HIGH if either ever receives a live nonzero
+  input without a guard being added first.
 
 ## Cross-Dimension Dedup
-One root cause (e.g. the shared `note_table` used for both pulse and triangle) may surface
-under several dimensions (pitch-table correctness *and* the triangle invariant). Report it
-once, in the most actionable dimension, and cross-reference. Note that
-`nes/envelope_processor.py` also defines a second, near-duplicate `NESEmulatorCore` — if a
-finding lives in the dead copy vs. the live `nes/emulator_core.py`, say which is on the
-pipeline path (`process_all_tracks` is the live entry per `_audit-common.md`).
+One root cause (e.g. the shared triangle/pulse pitch table, now fixed) may surface
+under several dimensions (pitch-table correctness *and* the triangle invariant). Report
+it once, in the most actionable dimension, and cross-reference.
+
+Historical note: `nes/envelope_processor.py` used to define a second, near-duplicate
+`NESEmulatorCore` (with a vibrato path that added `pitch_mod` to an already-clamped
+pitch, no re-clamp) plus the `get_pitch_modification` method that was its only caller.
+Both were **removed** in #37/#38 (NH-10) — `nes/envelope_processor.py` now contains only
+`EnvelopeProcessor`. `nes/emulator_core.py`'s `process_all_tracks` remains the single
+live entry point per `_audit-common.md`; if you find any lingering reference to the old
+dead copy (docs, tests, comments), it's stale and should be flagged LOW (doc-rot), not
+re-litigated as a hardware bug.
 
 ## Output
 Write to: **`docs/audits/AUDIT_NES_HARDWARE_<TODAY>.md`** (YYYY-MM-DD). Structure:

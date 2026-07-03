@@ -31,11 +31,35 @@ serialization; per-channel handling copy-pasted across `nes/`; the two parsers
 (`tracker/pattern_detector.py` vs `tracker/pattern_detector_parallel.py`). `grep` for
 near-identical blocks; report the canonical home.
 
+Two prior instances of exactly this pattern are now fixed — verify they haven't
+regressed before hunting for new ones:
+- The copy-pasted `_find_pattern_matches` between `tracker/pattern_detector.py` and
+  `tracker/pattern_detector_parallel.py` (TD-03/#131) is gone: the parallel module now
+  has its own O(n) grouping helper, `_collect_length_candidates`, shared between its
+  parallel and serial (`_detect_patterns_serial`) code paths, and both detectors share
+  `score_pattern` from `tracker/pattern_detector.py` (#100/#103/#104). The sequential
+  `EnhancedPatternDetector._find_pattern_matches` (`tracker/pattern_detector.py:291`)
+  still exists on its own — it does variation/transposition-aware matching the O(n)
+  grouping can't, so this is now a deliberate algorithmic split, not copy-paste drift.
+- The duplicate MIDI-note→note-name converter (TD-07/#134, `midi_note_to_ft` in the old
+  *exporter/exporter.py*) was removed entirely as dead code in commit `2bcb780`.
+  `exporter/exporter_famistudio.py:midi_note_to_famistudio` (line 165) is now the sole
+  implementation of that conversion — confirm no second copy has reappeared (e.g. in
+  `exporter/exporter_ca65.py`, which only has the unrelated
+  `midi_note_to_timer_value` at line 47) before reporting a new instance of TD-07.
+
 ### Dimension 2: Dead Code & Cruft
-Unused functions/imports/modules, unreachable branches, root-level scratch files
-(`implementation_examples.py`, `show_greeting.py`, `*.s`/`*.nes`/`*.log` artifacts checked
-into the tree). Confirm no caller via `grep -rn` before flagging. Distinguish "dead" from
-"only called by tests".
+Unused functions/imports/modules, unreachable branches, root-level scratch files, or
+`*.s`/`*.nes`/`*.log` artifacts checked into the tree. Confirm no caller via `grep -rn`
+before flagging. Distinguish "dead" from "only called by tests".
+
+Five such root scripts (*implementation_examples.py*, *show_greeting.py*,
+*batch_test.py*, *nes_devflow.py*, *generate_test_midi.py*) plus a duplicate,
+unrelated-implementation *check_rom.py* at the repo root were removed in commit
+`535b7ae` (TD-04/#132, TD-05/#133 — closed). The repo root now holds only
+`main.py`, `constants.py`, and `validate_rom.py` at the top level. Treat this as
+fixed and reframe the check as: confirm no new stray root-level script, duplicate
+`check_rom.py`/`validate_rom.py`, or other dead module has been reintroduced since.
 
 ### Dimension 3: Stale Documentation & Comments
 A `docs/*.md`, docstring, or comment that contradicts the code. Highest-value targets:
@@ -49,6 +73,12 @@ hardware behavior is MEDIUM.
 grep -rnE 'TODO|FIXME|HACK|XXX' --include='*.py' .
 ```
 Report markers that describe real unfinished work (not just notes). Group by subsystem.
+One known, still-open marker: the DPCM `.incbin` TODO in the macro-bytecode export path
+at `exporter/exporter_ca65.py:892` (TD-08/#137). It is stale rather than describing
+real unfinished work — the actual `.incbin` lines and lookup tables are produced by
+`dpcm_sampler/dpcm_packer.py`'s `generate_assembly` and appended to `music.asm` in
+`main.py:653` (and `main.py:340` on the `compile`/`prepare` path). Confirm this is
+still the only TODO/FIXME/HACK/XXX in non-test source before reporting new ones.
 
 ### Dimension 5: Stub & Placeholder Implementations
 Functions that `return None`/`pass`/raise `NotImplementedError`, or hardcode a value where
@@ -66,10 +96,25 @@ Bare `except:` / `except Exception: pass`, broad catches that hide the real erro
 `print`-and-continue where the pipeline should stop. Overlaps `/audit-safety` — here, focus
 on the *pattern* prevalence and a shared remedy, not each individual site.
 
+A concrete, still-open instance: `utils/profiling.py` has three bare `except:` clauses
+(lines 89, 196, 300) that also swallow `KeyboardInterrupt`/`SystemExit` (TD-10/#135).
+Blast radius is limited to profiling/benchmark tooling, not the MIDI→ROM pipeline, hence LOW.
+
 ### Dimension 8: Module / Function Size & Structure
-Oversized modules or functions doing too much. `main.py` (~900 lines with hand-rolled argv
-parsing), `exporter/exporter_ca65.py`, and the arranger files are likely candidates. Report
-the split that would help, not just the line count.
+Oversized modules or functions doing too much. Two still-open, previously-identified
+monoliths (TD-11/#136):
+- `main.py` is ~1119 lines total: argparse-based dispatch (`main()`, from line 749)
+  layered with hand-rolled pre-subcommand argv scanning for global flags like
+  `--arranger`/`--debug`/`--verbose` (`main.py:884-933`). `run_full_pipeline`
+  (`main.py:468-748`) alone is ~280 lines threading parse → map/arrange → frames →
+  patterns → export → DPCM-pack → prepare → compile → validate inline.
+- `exporter/exporter_ca65.py` is ~1200 lines total; `export_direct_frames`
+  (`exporter/exporter_ca65.py:88-815`, next method `_compress_macro` at line 816)
+  is ~727 lines emitting pitch tables, per-channel playback routines
+  (pulse/triangle/noise/DPCM), and data tables all inline.
+
+Report the split that would help, not just the line count — and flag if either has
+grown further since the numbers above.
 
 ## Cross-Dimension Dedup
 A single root cause can surface in several dimensions (a duplicated block that is also a
