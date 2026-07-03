@@ -243,10 +243,7 @@ class EnhancedDrumMapper:
                 
         dpcm_events = []
         noise_events = []
-        
-        mapping = (ADVANCED_MIDI_DRUM_MAPPING if use_advanced 
-                  else DEFAULT_MIDI_DRUM_MAPPING)
-        
+
         # Track pattern instances for optimization
         pattern_instances = defaultdict(list)
         
@@ -268,24 +265,23 @@ class EnhancedDrumMapper:
                 
                 if pattern_info:
                     # Handle pattern-based sample allocation
-                    events_list = self._handle_pattern_event(
+                    events_list, noise_list = self._handle_pattern_event(
                         pattern_info, midi_note, velocity, frame
                     )
                     dpcm_events.extend(events_list)
+                    noise_events.extend(noise_list)
                     continue
                 
-                # Regular event handling
-                sample_name = None
-                if use_advanced and midi_note in mapping:
-                    sample_name = self._get_advanced_sample(
-                        mapping[midi_note], velocity
-                    )
-                else:
-                    sample_name = mapping.get(midi_note)
-                    
-                if sample_name and sample_name in self.sample_index:
+                # Regular event handling. Resolve through progressively
+                # coarser fallbacks (velocity-split -> primary -> generic
+                # role name) before giving up on DPCM for this hit (#73/D-10).
+                sample_name = self._resolve_dpcm_sample_name(
+                    midi_note, velocity, use_advanced
+                )
+
+                if sample_name:
                     sample_data = self.sample_index[sample_name]
-                    
+
                     # Run allocation for its usage/eviction side effects, but emit
                     # the index id — that is what the packer orders its tables by
                     # (sorted by dpcm_index.json 'id'), so it is the value the
@@ -298,11 +294,12 @@ class EnhancedDrumMapper:
                         "sample_id": sample_data['id'],
                         "velocity": velocity
                     })
-                    
+
                     # Handle layered samples if any
-                    if use_advanced and "layers" in mapping.get(midi_note, {}):
+                    if (use_advanced and midi_note in ADVANCED_MIDI_DRUM_MAPPING
+                            and "layers" in ADVANCED_MIDI_DRUM_MAPPING[midi_note]):
                         self._handle_layered_samples(
-                            mapping[midi_note]["layers"],
+                            ADVANCED_MIDI_DRUM_MAPPING[midi_note]["layers"],
                             frame,
                             velocity,
                             dpcm_events
@@ -329,58 +326,96 @@ class EnhancedDrumMapper:
                     }
         return None
         
-    def _handle_pattern_event(self, pattern_info: Dict, 
-                            midi_note: int, 
-                            velocity: int, 
-                            frame: int) -> List[Dict]:
-        """Handle sample allocation for pattern-based events"""
-        events = []
+    def _handle_pattern_event(self, pattern_info: Dict,
+                            midi_note: int,
+                            velocity: int,
+                            frame: int) -> Tuple[List[Dict], List[Dict]]:
+        """Handle sample allocation for pattern-based events.
+
+        Returns (dpcm_events, noise_events) -- a resolution miss used to be
+        silently dropped entirely (no DPCM, no noise); it now falls back to
+        noise like the non-pattern path (#73/D-10).
+        """
+        dpcm_out = []
+        noise_out = []
         pattern_id = pattern_info['id']
         template = pattern_info['info']['template']
         position = pattern_info['position']
-        
+
         # Get template note and velocity
         template_note, template_vel = template[position]
-        
+
         # Use template velocity as a reference
         velocity_ratio = velocity / template_vel
-        
+
         # Try to reuse previously allocated samples for this pattern
-        sample_name = self._get_advanced_sample(
-            ADVANCED_MIDI_DRUM_MAPPING.get(template_note, {}),
-            velocity
-        )
-        
-        if sample_name and sample_name in self.sample_index:
+        sample_name = self._resolve_dpcm_sample_name(template_note, velocity)
+
+        if sample_name:
             sample_data = self.sample_index[sample_name]
             # Index id (not the manager's allocation counter) indexes the packer
             # tables — see issue #65.
             self.sample_manager.allocate_sample(sample_name, sample_data)
 
-            events.append({
+            dpcm_out.append({
                 "frame": frame,
                 "sample_id": sample_data['id'],
                 "velocity": int(velocity),
                 "pattern_id": pattern_id
             })
-            
-        return events
-        
-    def _get_advanced_sample(self, drum_config: Dict, 
+        else:
+            noise_out.append({
+                "frame": frame,
+                "velocity": velocity
+            })
+
+        return dpcm_out, noise_out
+
+    def _get_advanced_sample(self, drum_config: Dict,
                            velocity: int) -> Optional[str]:
         """Get appropriate sample name based on velocity and config"""
         if not drum_config:
             return None
-            
+
         sample_name = drum_config.get("primary")
-        
+
         # Check velocity ranges
         for (v_min, v_max), v_sample in drum_config.get("velocity_ranges", {}).items():
             if v_min <= velocity <= v_max:
                 sample_name = v_sample
                 break
-                
+
         return sample_name
+
+    def _resolve_dpcm_sample_name(self, midi_note: int, velocity: int,
+                                 use_advanced: bool = True) -> Optional[str]:
+        """Resolve a MIDI percussion note + velocity to a sample name that
+        actually exists in the loaded index (#73/D-10).
+
+        Tries progressively coarser fallbacks instead of giving up at the
+        first miss: the advanced velocity-split name (e.g. "kick_hard"), then
+        the advanced mapping's "primary" name (e.g. "kick"), then the plain
+        DEFAULT_MIDI_DRUM_MAPPING role name for this note. Returns None if
+        nothing resolves, so the caller can fall back to noise.
+        """
+        candidates = []
+        if use_advanced and midi_note in ADVANCED_MIDI_DRUM_MAPPING:
+            drum_config = ADVANCED_MIDI_DRUM_MAPPING[midi_note]
+            velocity_name = self._get_advanced_sample(drum_config, velocity)
+            if velocity_name:
+                candidates.append(velocity_name)
+            primary_name = drum_config.get("primary")
+            if primary_name and primary_name not in candidates:
+                candidates.append(primary_name)
+
+        default_name = DEFAULT_MIDI_DRUM_MAPPING.get(midi_note)
+        if default_name and default_name not in candidates:
+            candidates.append(default_name)
+
+        for name in candidates:
+            if name in self.sample_index:
+                return name
+        return None
         
     def _handle_layered_samples(self, layers: List[str], 
                               frame: int, 

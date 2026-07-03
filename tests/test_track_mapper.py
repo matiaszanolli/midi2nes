@@ -1,10 +1,13 @@
+import io
+import contextlib
 import unittest
 from tracker.track_mapper import (
     group_notes_by_frame,
     detect_chord,
     get_arpeggio_pattern,
     apply_arpeggio_pattern,
-    apply_arpeggio_fallback
+    apply_arpeggio_fallback,
+    assign_tracks_to_nes_channels
 )
 
 class TestChordDetection(unittest.TestCase):
@@ -149,6 +152,47 @@ class TestGroupNotesByFrame(unittest.TestCase):
         grouped = group_notes_by_frame(events)
         self.assertEqual(len(grouped[0]), 2)
         self.assertEqual(grouped[0], [60, 67])
+
+class TestNoiseChannelContention(unittest.TestCase):
+    """Regression (#74/D-11): the drum noise-fallback used to be silently
+    discarded when the noise channel was already assigned to another track --
+    with no warning, no trace. It must now warn instead of vanishing."""
+
+    DPCM_INDEX = "tests/fixtures/test_dpcm_index.json"
+
+    def test_noise_fallback_dropped_with_warning_when_noise_occupied(self):
+        midi_events = {
+            "melody": [{"frame": 0, "note": 90, "velocity": 100}],   # -> pulse1 (highest)
+            "harmony": [{"frame": 0, "note": 80, "velocity": 100}],  # -> pulse2 (2nd highest)
+            "bass": [{"frame": 0, "note": 30, "velocity": 100}],     # -> triangle (lowest)
+            # 'drum' in the name -> claims nes_tracks['noise'] via the
+            # multi-track remaining-channel heuristic.
+            "drum_kit": [{"frame": 0, "note": 50, "velocity": 100}],
+            # An unmapped GM percussion note (hi-hat) that ADVANCED_MIDI_DRUM_MAPPING
+            # doesn't define -> falls to the noise fallback (#73/D-10).
+            "extra_perc": [{"frame": 10, "note": 42, "velocity": 80}],
+        }
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = assign_tracks_to_nes_channels(midi_events, self.DPCM_INDEX)
+
+        # The noise channel keeps whatever it was already assigned (drum_kit's
+        # events), not silently overwritten or left empty.
+        self.assertTrue(result["noise"])
+        self.assertIn("dropped", buf.getvalue())
+        self.assertIn("noise", buf.getvalue().lower())
+
+    def test_noise_fallback_used_when_noise_channel_free(self):
+        # Baseline: when nothing has claimed the noise channel, the fallback
+        # still lands there as before -- no regression on the happy path.
+        midi_events = {
+            "melody": [{"frame": 0, "note": 72, "velocity": 100}],
+            "extra_perc": [{"frame": 10, "note": 42, "velocity": 80}],
+        }
+        result = assign_tracks_to_nes_channels(midi_events, self.DPCM_INDEX)
+        self.assertTrue(result["noise"])
+
 
 if __name__ == '__main__':
     unittest.main()
