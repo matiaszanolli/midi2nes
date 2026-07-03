@@ -171,6 +171,11 @@ class TestDpcmSampleNameFallback:
         assert {0, 10}.issubset(dpcm_frames)
         assert 20 in noise_frames
 
+        # Regression (#195/NH-26): a noise-fallback event without a `note`
+        # key crashes process_all_tracks's midi_to_nes_pitch lookup.
+        noise_event = next(e for e in noise_events if e["frame"] == 20)
+        assert noise_event["note"] == 90
+
     def test_pattern_event_resolution_miss_falls_back_to_noise_not_silent_drop(self, mapper):
         # Regression (#73/D-10): _handle_pattern_event used to return an empty
         # list on a resolution miss, silently dropping the hit entirely (no
@@ -186,3 +191,26 @@ class TestDpcmSampleNameFallback:
         assert dpcm_out == []
         assert len(noise_out) == 1
         assert noise_out[0]["frame"] == 5
+        # Regression (#195/NH-26): pattern path shares the same missing-`note`
+        # bug as the non-pattern fallback above.
+        assert noise_out[0]["note"] == 90
+
+
+class TestNoiseFallbackEndToEnd:
+    """Regression (#195/NH-26): a drum-mapper noise fallback with no `note`
+    key used to crash NESEmulatorCore.process_all_tracks with a bare
+    KeyError('note'), aborting the entire build for any real-world drummed
+    MIDI file the shipped DPCM index doesn't fully cover."""
+
+    def test_process_all_tracks_does_not_crash_on_noise_fallback(self):
+        from nes.emulator_core import NESEmulatorCore
+
+        core = NESEmulatorCore()
+        nes_tracks = {
+            'pulse1': [], 'pulse2': [], 'triangle': [],
+            'noise': [{'frame': 10, 'note': 38, 'velocity': 90}],
+            'dpcm': [],
+        }
+        processed = core.process_all_tracks(nes_tracks)
+        assert 10 in processed['noise']
+        assert processed['noise'][10]['note'] > 0

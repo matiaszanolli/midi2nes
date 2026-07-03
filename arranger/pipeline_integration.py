@@ -278,7 +278,7 @@ def arrange_for_nes(
     # never read a `sample` key (#84).
     for frame, data in frames['dpcm'].items():
         output['dpcm'][frame] = {
-            'note': min(95, data['sample'] + 1),
+            'note': min(255, data['sample'] + 1),
             'volume': 15,
         }
 
