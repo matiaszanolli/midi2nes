@@ -57,9 +57,14 @@ class TestEnhancedDrumMapper:
             config=config
         )
         
-        # Force memory pressure by setting low limit
+        # Force memory pressure by setting a low limit. DPCMSampleManager
+        # copies memory_limit at construction time, so the config mutation
+        # alone never reached the running manager (a no-op that #70/D-07's
+        # real memory accounting exposed -- it used to pass trivially
+        # because total_memory was always ~0 regardless of the limit).
         mapper.config.sample_config.memory_limit = 1024
-        
+        mapper.sample_manager.memory_limit = 1024
+
         # Process multiple drum hits
         many_events = sample_midi_events[9] * 10  # Create many events
         sample_midi_events[9] = many_events
