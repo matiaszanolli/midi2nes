@@ -156,6 +156,38 @@ class TestSampleAllocationAndMemoryManagement:
         assert result['metadata']['original_name'] == "minimal"
 
 
+class TestSampleIdNeverReused:
+    """Regression (#69/D-06): allocate_sample used to derive 'id' from
+    len(active_samples), which shrinks on eviction and can hand out an id
+    already referenced by an earlier, still-live allocation."""
+
+    def test_eviction_does_not_reuse_an_id(self):
+        manager = DPCMSampleManager(max_samples=2, memory_limit=4096)
+        small = {'data': [0x55] * 40, 'length': 40, 'frequency': 33144}
+
+        s0 = manager.allocate_sample("s0", small)
+        s1 = manager.allocate_sample("s1", small)
+        assert s0['id'] == 0
+        assert s1['id'] == 1
+
+        # At capacity: this evicts one of s0/s1 (lowest score) then allocates.
+        s2 = manager.allocate_sample("s2", small)
+        assert s2['id'] == 2  # not reused from the evicted sample's old id
+
+        survivor_id = next(iter(manager.active_samples.values()))['id']
+        assert survivor_id != s2['id']
+
+    def test_ids_stay_unique_across_many_evictions(self):
+        manager = DPCMSampleManager(max_samples=2, memory_limit=4096)
+        small = {'data': [0x11] * 10, 'length': 10, 'frequency': 33144}
+
+        seen_ids = set()
+        for i in range(10):
+            result = manager.allocate_sample(f"sample{i}", small)
+            assert result['id'] not in seen_ids, "id was reused after eviction"
+            seen_ids.add(result['id'])
+
+
 class TestSampleBankOptimization:
     """Test sample bank optimization algorithms."""
     
@@ -298,33 +330,37 @@ class TestMemoryCalculations:
         self.manager = DPCMSampleManager()
     
     def test_total_memory_calculation(self):
-        """Test total memory usage calculation."""
+        """Test total memory usage calculation.
+
+        Regression (#70/D-07): this used to divide len(data) by 8, which is
+        always 0 in production (real dpcm_index.json entries carry no 'data',
+        #71/D-08) and disagreed with the 'length'-based check at allocation
+        time. It must use the same metadata size both places.
+        """
         # Initially should be 0
         assert self.manager._get_total_memory() == 0
-        
+
         # Add a sample with known data size
         sample_data = {
-            'data': [0x11] * 80,  # 80 bytes -> 10 bytes after //8
+            'data': [0x11] * 80,
             'length': 80
         }
-        
+
         self.manager.allocate_sample("test", sample_data)
-        
-        # Should calculate memory based on data length divided by 8
-        expected_memory = 80 // 8  # 10 bytes
-        assert self.manager._get_total_memory() == expected_memory
-    
+
+        assert self.manager._get_total_memory() == 80
+
     def test_memory_calculation_with_multiple_samples(self):
-        """Test memory calculation with multiple samples."""
-        sample1 = {'data': [0x11] * 40, 'length': 40}  # 5 bytes
-        sample2 = {'data': [0x22] * 80, 'length': 80}  # 10 bytes
-        sample3 = {'data': [0x33] * 120, 'length': 120}  # 15 bytes
-        
+        """Test memory calculation with multiple samples (#70/D-07)."""
+        sample1 = {'data': [0x11] * 40, 'length': 40}
+        sample2 = {'data': [0x22] * 80, 'length': 80}
+        sample3 = {'data': [0x33] * 120, 'length': 120}
+
         self.manager.allocate_sample("sample1", sample1)
         self.manager.allocate_sample("sample2", sample2)
         self.manager.allocate_sample("sample3", sample3)
-        
-        expected_total = (40 + 80 + 120) // 8  # 30 bytes
+
+        expected_total = 40 + 80 + 120
         assert self.manager._get_total_memory() == expected_total
     
     def test_memory_calculation_with_empty_data(self):
@@ -336,6 +372,33 @@ class TestMemoryCalculations:
         # Should handle missing data gracefully
         memory = self.manager._get_total_memory()
         assert memory >= 0  # Should not crash
+
+
+class TestMemoryLimitActuallyEvicts:
+    """Regression (#70/D-07): memory_limit used to be dead on real input --
+    _get_total_memory() divided len(data) by 8 (always 0 with no 'data'
+    field) while the allocation-time check used metadata size, so the two
+    never agreed and only max_samples ever triggered eviction. With a high
+    max_samples and a tight memory_limit, memory pressure alone must evict."""
+
+    def test_memory_pressure_evicts_even_with_high_sample_count_limit(self):
+        manager = DPCMSampleManager(max_samples=100, memory_limit=500)
+        big = {'data': [0x11] * 300, 'length': 300, 'frequency': 33144}
+
+        manager.allocate_sample("a", big)  # 300 bytes
+        manager.allocate_sample("b", big)  # would be 600 > 500 -> must evict "a"
+
+        assert "a" not in manager.active_samples
+        assert "b" in manager.active_samples
+        assert manager._get_total_memory() <= manager.memory_limit
+
+    def test_get_total_memory_matches_allocation_time_accounting(self):
+        # The eviction loop and the allocate-time check must use one
+        # consistent accounting function, not two formulas that never agree.
+        manager = DPCMSampleManager(max_samples=100, memory_limit=4096)
+        sample = {'data': [0x22] * 150, 'length': 150, 'frequency': 33144}
+        manager.allocate_sample("x", sample)
+        assert manager._get_total_memory() == 150
 
 
 class TestEdgeCasesAndErrorHandling:
