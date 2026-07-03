@@ -25,10 +25,11 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import main
 from main import (
-    run_parse, run_map, run_frames, run_prepare, run_export, 
+    run_parse, run_map, run_frames, run_prepare, run_export,
     run_detect_patterns, run_song_add, run_song_list, run_song_remove,
     load_config, run_config_init, run_config_validate,
-    run_benchmark, run_benchmark_memory, run_full_pipeline, main
+    run_benchmark, run_benchmark_memory, run_full_pipeline, main,
+    DETECTOR_MAX_EVENTS
 )
 
 
@@ -100,6 +101,23 @@ class TestMainArgumentParsing:
                 # Fails later on missing input file, not on flag parsing (exit 1),
                 # confirming --arranger was accepted and reached the pipeline.
                 assert exc.value.code != 2
+
+    def test_default_path_config_flag_is_accepted_and_threaded(self):
+        """Regression (#219): --config on the default (no-subcommand) pipeline
+        must be accepted (a value-taking flag, unlike the boolean ones) and
+        reach run_full_pipeline's args.config, not be rejected as unknown."""
+        with patch('main.run_full_pipeline') as mock_run:
+            with patch('sys.argv', ['main.py', '--config', 'cfg.yaml', 'song.mid', 'out.nes']):
+                main()
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0].config == 'cfg.yaml'
+
+    def test_default_path_config_flag_requires_value(self):
+        """--config with no trailing path must exit 2, not crash or hang."""
+        with patch('sys.argv', ['main.py', '--config']):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 2
 
 
 class TestRunParse:
@@ -200,14 +218,19 @@ class TestRunMap:
             with pytest.raises(SystemExit):
                 main_entry()
 
-    def test_detect_patterns_parser_has_no_silent_config_flag(self):
-        """Regression (#109): the unused --config flag was dropped from
-        `detect-patterns` (it was declared but never read by run_detect_patterns)."""
+    def test_detect_patterns_parser_consumes_config_flag(self):
+        """Regression (#219, supersedes the #109 removal): `detect-patterns
+        --config` is now read and forwarded to run_detect_patterns to override
+        the sequential detector's max_events sampling cap, instead of being an
+        unrecognized/silently-dropped flag."""
         from main import main as main_entry
-        with patch('sys.argv', ['main.py', 'detect-patterns', '--config', 'x.yaml',
-                                 'i.json', 'o.json']):
-            with pytest.raises(SystemExit):
+        with patch('main.run_detect_patterns') as mock_run:
+            with patch('sys.argv', ['main.py', 'detect-patterns', '--config', 'x.yaml',
+                                     'i.json', 'o.json']):
                 main_entry()
+        mock_run.assert_called_once()
+        called_args = mock_run.call_args[0][0]
+        assert called_args.config == 'x.yaml'
 
     def test_song_add_parser_has_no_silent_config_flag(self):
         """Regression (#109, SIBLING): the unused --config flag was dropped from
@@ -586,8 +609,10 @@ class TestRunDetectPatterns:
         # Verify mocks were called correctly
         mock_tempo_class.assert_called_once_with(initial_tempo=500000)
         # Shared pattern bounds keep this path in sync with the full pipeline (#19).
+        # max_events defaults to DETECTOR_MAX_EVENTS unless --config overrides it (#219).
         mock_detector_class.assert_called_once_with(
-            mock_tempo, min_pattern_length=3, max_pattern_length=12)
+            mock_tempo, min_pattern_length=3, max_pattern_length=12,
+            max_events=DETECTOR_MAX_EVENTS)
         mock_detector.detect_patterns.assert_called_once()
         
         # Verify output file was created
@@ -895,6 +920,35 @@ class TestConfigCommands:
         
         mock_print.assert_called_once_with("[ERROR] Configuration validation failed: Validation error")
         mock_exit.assert_called_once_with(1)
+
+
+class TestGetPatternDetectionCaps:
+    """Regression tests for #219: get_pattern_detection_caps must default to
+    the hardcoded constants and honor a config file override when given."""
+
+    def test_defaults_when_no_config_path(self):
+        from main import get_pattern_detection_caps, DETECTOR_MAX_EVENTS, MAX_PATTERN_EVENTS
+        max_events, max_pattern_events = get_pattern_detection_caps(None)
+        assert max_events == DETECTOR_MAX_EVENTS
+        assert max_pattern_events == MAX_PATTERN_EVENTS
+
+    def test_overridden_by_config_file(self):
+        from main import get_pattern_detection_caps
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            config_path = temp_dir / "config.yaml"
+            config_path.write_text(
+                "processing:\n"
+                "  pattern_detection:\n"
+                "    max_events: 250\n"
+                "    max_pattern_events: 5000\n"
+            )
+            max_events, max_pattern_events = get_pattern_detection_caps(str(config_path))
+            assert max_events == 250
+            assert max_pattern_events == 5000
+        finally:
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class TestBenchmarkCommands:

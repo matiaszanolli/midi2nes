@@ -86,7 +86,31 @@ class TestConfigManager(unittest.TestCase):
         config.set("performance.max_memory_mb", 10)  # Too low
         with self.assertRaises(ValueError):
             config.validate()
-    
+
+    def test_pattern_detection_sampling_caps_default(self):
+        """Regression (#219): sampling caps ship as config keys with the same
+        values as the hardcoded tracker/pattern_detector.py defaults."""
+        config = ConfigManager()
+        self.assertEqual(config.get("processing.pattern_detection.max_events"), 1000)
+        self.assertEqual(config.get("processing.pattern_detection.max_pattern_events"), 15000)
+
+    def test_pattern_detection_sampling_caps_validation(self):
+        """Regression (#219): non-positive/non-int sampling caps must fail
+        validation, same treatment as the existing min_length/similarity_threshold checks."""
+        config = ConfigManager()
+        config.set("processing.pattern_detection.max_events", 0)
+        with self.assertRaises(ValueError):
+            config.validate()
+
+        config = ConfigManager()
+        config.set("processing.pattern_detection.max_pattern_events", -5)
+        with self.assertRaises(ValueError):
+            config.validate()
+
+        config = ConfigManager()
+        config.set("processing.pattern_detection.max_events", 2500)
+        self.assertTrue(config.validate())
+
     def test_config_save_load_roundtrip(self):
         """Test saving and loading configuration preserves values."""
         config = ConfigManager()

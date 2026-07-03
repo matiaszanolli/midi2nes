@@ -850,6 +850,97 @@ class TestParallelPatternEquivalence(unittest.TestCase):
         self.assertIn('initargs=', src)
 
 
+class TestParallelWorkerPoolSizing(unittest.TestCase):
+    """Regression tests for #218: the process pool must never spawn more
+    workers than there are work chunks, and must be skipped entirely when
+    there is only one chunk (no parallelism to gain, but full spawn cost)."""
+
+    def test_pool_workers_capped_to_chunk_count(self):
+        from unittest.mock import patch
+        from concurrent.futures import ProcessPoolExecutor
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        # min=3, max=12 over a long-enough sequence yields exactly 10 chunks.
+        detector = ParallelPatternDetector(tempo_map, min_pattern_length=3, max_pattern_length=12)
+        detector.max_workers = 50  # simulate a high-core-count host
+        events = [{'frame': i, 'note': 60 + (i % 6), 'volume': 100} for i in range(200)]
+        sequence = [(e['note'], e['volume']) for e in events]
+        valid = detector._filter_valid_events(events)
+
+        captured = {}
+
+        class RecordingExecutor(ProcessPoolExecutor):
+            def __init__(self, *args, **kwargs):
+                captured['max_workers'] = kwargs.get('max_workers')
+                super().__init__(*args, **kwargs)
+
+        with patch('tracker.pattern_detector_parallel.ProcessPoolExecutor', RecordingExecutor):
+            detector._detect_patterns_parallel(sequence, valid)
+
+        self.assertEqual(captured['max_workers'], 10)
+        self.assertLess(captured['max_workers'], detector.max_workers)
+
+    def test_single_chunk_skips_process_pool_entirely(self):
+        from unittest.mock import patch
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        # min == max == 5 over a long-enough sequence yields exactly 1 chunk.
+        detector = ParallelPatternDetector(tempo_map, min_pattern_length=5, max_pattern_length=5)
+        events = [{'frame': i, 'note': 60 + (i % 4), 'volume': 100} for i in range(50)]
+        sequence = [(e['note'], e['volume']) for e in events]
+        valid = detector._filter_valid_events(events)
+
+        with patch('tracker.pattern_detector_parallel.ProcessPoolExecutor') as mock_pool:
+            result = detector._detect_patterns_parallel(sequence, valid)
+
+        mock_pool.assert_not_called()
+        self.assertIsInstance(result, dict)
+
+
+class TestConfigurableSamplingCaps(unittest.TestCase):
+    """Regression tests for #219: pattern-detection sampling caps must be
+    overridable per-instance (the code-level hook for a config override),
+    not hardcoded-only, while defaulting to the existing module constants."""
+
+    def test_defaults_unchanged_when_not_overridden(self):
+        from tracker.pattern_detector import PatternDetector, DETECTOR_MAX_EVENTS, MAX_PATTERN_EVENTS
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        self.assertEqual(PatternDetector().max_events, DETECTOR_MAX_EVENTS)
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        self.assertEqual(ParallelPatternDetector(tempo_map).max_pattern_events, MAX_PATTERN_EVENTS)
+
+    def test_sequential_detector_honors_custom_max_events(self):
+        from tracker.pattern_detector import PatternDetector
+        events = [{'frame': i, 'note': 60 + (i % 5), 'volume': 100} for i in range(500)]
+        detector = PatternDetector(max_events=200)
+        self.assertEqual(detector.max_events, 200)
+        patterns = detector.detect_patterns(events)
+        self.assertGreater(len(patterns), 0)
+        for info in patterns.values():
+            for pos in info['positions']:
+                self.assertLess(pos, 200)
+
+    def test_enhanced_detector_forwards_max_events(self):
+        from tracker.pattern_detector import EnhancedPatternDetector
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        detector = EnhancedPatternDetector(tempo_map, max_events=123)
+        self.assertEqual(detector.max_events, 123)
+
+    def test_parallel_detector_honors_custom_max_pattern_events(self):
+        from tracker.pattern_detector import sample_events_for_detection
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        detector = ParallelPatternDetector(tempo_map, max_pattern_events=50)
+        self.assertEqual(detector.max_pattern_events, 50)
+        events = [{'frame': i, 'note': 60 + (i % 5), 'volume': 100} for i in range(500)]
+        valid = detector._filter_valid_events(events)
+        sampled, was_sampled = sample_events_for_detection(valid, detector.max_pattern_events)
+        self.assertTrue(was_sampled)
+        self.assertEqual(len(sampled), 50)
+
+
 class TestDetectorScoringConsistency(unittest.TestCase):
     """Both detectors must share the scoring formula, and the parallel path is
     intentionally exact-repeats-only / variation-free (#103)."""

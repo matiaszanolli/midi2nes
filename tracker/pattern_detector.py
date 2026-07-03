@@ -80,9 +80,14 @@ def score_pattern(length, exact_count, variation_count):
     return net_benefit + exact_bonus + length_bonus + frequency_bonus
 
 class PatternDetector:
-    def __init__(self, min_pattern_length=3, max_pattern_length=32):
+    def __init__(self, min_pattern_length=3, max_pattern_length=32,
+                 max_events=DETECTOR_MAX_EVENTS):
         self.min_pattern_length = min_pattern_length
         self.max_pattern_length = max_pattern_length
+        # Overridable event-sampling cap (#219) — defaults to the module
+        # constant so behavior is unchanged unless a caller (e.g. a loaded
+        # config file) supplies a different value.
+        self.max_events = max_events
         self.patterns = {}
         self.pattern_instances = defaultdict(list)
 
@@ -190,11 +195,12 @@ class PatternDetector:
 
         # Safeguard: this detector is O(n^2)-ish, so cap the working set. Sample
         # UNIFORMLY (not head-truncate) so the whole song's structure is covered
-        # rather than dropping the entire tail (#100).
-        if len(valid_events) > DETECTOR_MAX_EVENTS:
+        # rather than dropping the entire tail (#100). `self.max_events`
+        # defaults to DETECTOR_MAX_EVENTS but is overridable per-instance (#219).
+        if len(valid_events) > self.max_events:
             print(f"Warning: Large sequence ({len(valid_events)} events), "
-                  f"uniformly sampling to {DETECTOR_MAX_EVENTS} for performance")
-            valid_events, _ = sample_events_for_detection(valid_events, DETECTOR_MAX_EVENTS)
+                  f"uniformly sampling to {self.max_events} for performance")
+            valid_events, _ = sample_events_for_detection(valid_events, self.max_events)
 
         sequence = [(e['note'], e['volume']) for e in valid_events]
         events = valid_events  # Use cleaned events for the rest of the method
@@ -346,9 +352,10 @@ class PatternDetector:
 
 
 class EnhancedPatternDetector(PatternDetector):
-    def __init__(self, tempo_map: EnhancedTempoMap, 
-                 min_pattern_length=3, max_pattern_length=32):
-        super().__init__(min_pattern_length, max_pattern_length)
+    def __init__(self, tempo_map: EnhancedTempoMap,
+                 min_pattern_length=3, max_pattern_length=32,
+                 max_events=DETECTOR_MAX_EVENTS):
+        super().__init__(min_pattern_length, max_pattern_length, max_events)
         self.tempo_map = tempo_map
         self.compressor = PatternCompressor()
         
