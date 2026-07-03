@@ -38,29 +38,6 @@ class TestMIDIParserIntegration(unittest.TestCase):
         mid.save(path)
         return path
 
-    def verify_nsf_binary(self, file_path):
-        """Verify NSF binary structure and playability"""
-        with open(file_path, 'rb') as f:
-            data = f.read()
-        
-        # Check file size
-        self.assertGreaterEqual(len(data), 128, "NSF file too small")
-        
-        # Verify NSF header
-        self.assertEqual(data[0:5], b'NESM\x1a', "Invalid NSF header")
-        
-        # Verify essential memory addresses
-        load_address = int.from_bytes(data[8:10], 'little')
-        init_address = int.from_bytes(data[10:12], 'little')
-        play_address = int.from_bytes(data[12:14], 'little')
-        
-        self.assertLess(load_address, init_address, "Invalid address ordering")
-        self.assertLess(init_address, play_address, "Invalid address ordering")
-        
-        # Verify bank references
-        banks = data[0x70:0x78]
-        self.assertTrue(any(b != 0 for b in banks), "No banks specified")
-
     def verify_ca65_assembly(self, file_path):
         """Verify that the CA65 assembly file has the expected structure"""
         with open(file_path, 'r') as f:

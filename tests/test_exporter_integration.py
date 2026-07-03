@@ -9,6 +9,9 @@ from exporter.compression import CompressionEngine
 from exporter.exporter_ca65 import CA65Exporter
 from exporter.exporter_nsf import NSFExporter
 from exporter.exporter_famistudio import FamiStudioExporter
+from tracker.parser_fast import parse_midi_to_frames
+from tracker.track_mapper import assign_tracks_to_nes_channels
+from nes.emulator_core import NESEmulatorCore
 
 class TestExporterIntegration(unittest.TestCase):
     def setUp(self):
@@ -117,3 +120,90 @@ class TestExporterIntegration(unittest.TestCase):
             content = f.read()
             self.assertIn("PATTERNS", content)
             self.assertIn("C-4 15", content)  # Middle C note
+
+
+class TestCA65GoldenBytes(unittest.TestCase):
+    """Regression (#45/REG-05): the register-boundary tests above (and in
+    test_midi_parser_integration.py) only assert that a section/substring is
+    present, so a regression that emits the right *structure* with wrong
+    *values* (an off-by-one pitch, a wrong length nibble, a swapped duty)
+    would still pass. Pin the actual emitted bytes for a known input instead.
+
+    patterns is passed as a non-empty dummy dict purely to select the
+    MMC3 macro-bytecode path in export_tables_with_patterns -- its content
+    is never consumed (only `frames` drives the emitted bytes, see that
+    method's docstring / #4), so this is deterministic regardless of what
+    the (parallel, worker-count-dependent) pattern detector would produce.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        for file in os.listdir(self.temp_dir):
+            os.remove(os.path.join(self.temp_dir, file))
+        os.rmdir(self.temp_dir)
+
+    def _export_simple_loop(self):
+        midi_data = parse_midi_to_frames("test_midi/simple_loop.mid")
+        mapped = assign_tracks_to_nes_channels(midi_data["events"], "dpcm_index.json")
+        frames = NESEmulatorCore().process_all_tracks(mapped)
+
+        output_path = os.path.join(self.temp_dir, "golden.asm")
+        CA65Exporter().export_tables_with_patterns(
+            frames, {"dummy": {}}, {}, output_path, standalone=False
+        )
+        return Path(output_path).read_text()
+
+    def test_pulse1_sequence_golden_bytes(self):
+        content = self._export_simple_loop()
+        start = content.index("pulse1_sequence:")
+        end = content.index("pulse2_sequence:")
+        sequence_block = content[start:end].strip()
+
+        expected = (
+            "pulse1_sequence:\n"
+            "    .byte $80, $01 ; CMD_INSTRUMENT\n"
+            "    .byte $7D, $3C ; Length 30, Note 60\n"
+            "    .byte $7D, $00 ; Length 30, Note 0\n"
+            "    .byte $7D, $40 ; Length 30, Note 64\n"
+            "    .byte $7D, $00 ; Length 30, Note 0\n"
+            "    .byte $7D, $43 ; Length 30, Note 67\n"
+            "    .byte $7D, $00 ; Length 30, Note 0\n"
+            "    .byte $7D, $3C ; Length 30, Note 60\n"
+            "    .byte $7D, $00 ; Length 30, Note 0\n"
+            "    .byte $7D, $40 ; Length 30, Note 64\n"
+            "    .byte $7D, $00 ; Length 30, Note 0\n"
+            "    .byte $7D, $43 ; Length 30, Note 67\n"
+            "    .byte $7D, $00 ; Length 30, Note 0\n"
+            "    .byte $7D, $3C ; Length 30, Note 60\n"
+            "    .byte $7D, $00 ; Length 30, Note 0\n"
+            "    .byte $7D, $40 ; Length 30, Note 64\n"
+            "    .byte $7D, $00 ; Length 30, Note 0\n"
+            "    .byte $7D, $43 ; Length 30, Note 67\n"
+            "    .byte $7D, $00 ; Length 30, Note 0\n"
+            "    .byte $7D, $3C ; Length 30, Note 60\n"
+            "    .byte $7D, $00 ; Length 30, Note 0\n"
+            "    .byte $7D, $40 ; Length 30, Note 64\n"
+            "    .byte $7D, $00 ; Length 30, Note 0\n"
+            "    .byte $7D, $43 ; Length 30, Note 67\n"
+            "    .byte $FF"
+        )
+        self.assertEqual(sequence_block, expected)
+
+    def test_ntsc_period_low_golden_bytes(self):
+        content = self._export_simple_loop()
+        start = content.index("ntsc_period_low:")
+        end = content.index("ntsc_period_high:")
+        table_block = content[start:end].strip()
+
+        expected = (
+            "ntsc_period_low:\n"
+            "  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff\n"
+            "  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff\n"
+            "  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff\n"
+            "  .byte $ff, $ff, $ff, $ff, $ff, $ff, $ff, $ff\n"
+            "  .byte $ff, $f0, $7e, $12, $ad, $4d, $f2, $9d"
+        )
+        self.assertTrue(table_block.startswith(expected),
+                         f"ntsc_period_low table drifted from golden bytes:\n{table_block[:250]}")
