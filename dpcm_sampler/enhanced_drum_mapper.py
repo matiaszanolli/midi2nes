@@ -191,6 +191,16 @@ class DrumMapperConfig:
             raise ValueError(f"Invalid JSON in configuration file: {e}")
 
 class EnhancedDrumMapper:
+    # The frame `note` field is a single byte encoding sample_id + 1 (0 is the
+    # rest sentinel), so a raw dpcm_index.json id above this collides with a
+    # different id once clamped downstream (nes/emulator_core.py,
+    # exporter/exporter_ca65.py both do `min(255, sample_id + 1)`), silently
+    # aliasing distinct drums onto the same sample (#200/D-14). The shipped
+    # index's ids run 0-1922 (87% exceed this), so route those hits to the
+    # existing noise/dropped-layer fallback instead of corrupting the sample
+    # table with a collision no downstream stage would ever detect.
+    MAX_SAFE_SAMPLE_ID = 254
+
     def __init__(self, dpcm_index_path: str, config: Optional[DrumMapperConfig] = None):
         self.config = config or DrumMapperConfig()
         self.config.validate()
@@ -207,7 +217,8 @@ class EnhancedDrumMapper:
         
         self.dpcm_index_path = dpcm_index_path
         self.sample_index = self._load_sample_index()
-        
+        self._oversized_sample_id_count = 0
+
     def _load_sample_index(self) -> Dict:
         """Load and validate the DPCM sample index"""
         try:
@@ -246,7 +257,12 @@ class EnhancedDrumMapper:
 
         # Track pattern instances for optimization
         pattern_instances = defaultdict(list)
-        
+
+        # Count hits whose resolved sample id can't survive the downstream
+        # single-byte note encoding (#200/D-14) so a summary can be reported
+        # once instead of flooding output per hit.
+        self._oversized_sample_id_count = 0
+
         for ch, events in midi_events.items():
             channel_patterns = patterns.get(ch, {})
             
@@ -278,6 +294,14 @@ class EnhancedDrumMapper:
                 sample_name = self._resolve_dpcm_sample_name(
                     midi_note, velocity, use_advanced
                 )
+
+                if sample_name and self.sample_index[sample_name]['id'] > self.MAX_SAFE_SAMPLE_ID:
+                    # This id would collide with another sample once clamped
+                    # to a single byte downstream -- fall back to noise like
+                    # a resolution miss rather than silently corrupt the
+                    # sample table (#200/D-14).
+                    self._oversized_sample_id_count += 1
+                    sample_name = None
 
                 if sample_name:
                     sample_data = self.sample_index[sample_name]
@@ -314,7 +338,13 @@ class EnhancedDrumMapper:
                         "note": midi_note,
                         "velocity": velocity
                     })
-                    
+
+        if self._oversized_sample_id_count:
+            print(f"Warning: {self._oversized_sample_id_count} drum hit(s) resolved to a "
+                  f"DPCM sample id > {self.MAX_SAFE_SAMPLE_ID} (out of {len(self.sample_index)} "
+                  f"in {self.dpcm_index_path}) — routed to noise instead of risking aliasing "
+                  f"onto a different, unrelated sample (#200/D-14).")
+
         return dpcm_events, noise_events
         
     def _find_pattern_for_event(self, frame: int, 
@@ -355,6 +385,11 @@ class EnhancedDrumMapper:
 
         # Try to reuse previously allocated samples for this pattern
         sample_name = self._resolve_dpcm_sample_name(template_note, velocity)
+
+        if sample_name and self.sample_index[sample_name]['id'] > self.MAX_SAFE_SAMPLE_ID:
+            # Same collision hazard as the non-pattern path (#200/D-14).
+            self._oversized_sample_id_count += 1
+            sample_name = None
 
         if sample_name:
             sample_data = self.sample_index[sample_name]
@@ -433,6 +468,12 @@ class EnhancedDrumMapper:
         for layer in layers:
             if layer in self.sample_index:
                 sample_data = self.sample_index[layer]
+                if sample_data['id'] > self.MAX_SAFE_SAMPLE_ID:
+                    # Same collision hazard as the primary hit (#200/D-14); a
+                    # layer is an optional enhancement, so just drop this one
+                    # layer rather than reroute the whole hit to noise.
+                    self._oversized_sample_id_count += 1
+                    continue
                 # Index id (not the manager's allocation counter) indexes the
                 # packer tables — see issue #65.
                 self.sample_manager.allocate_sample(layer, sample_data)

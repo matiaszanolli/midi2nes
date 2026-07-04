@@ -186,30 +186,52 @@ class NESEmulatorCore:
                         }
                 processed[channel_name] = noise_frames
             elif channel_name == 'dpcm':
-                # DPCM frames carry `note` = sample_id + 1 (the engine recovers
-                # sample_id as note-1 and uses it to index the sample tables);
+                # DPCM frames carry `note` = dense_id + 1 (the engine recovers
+                # dense_id as note-1 and uses it to index the sample tables);
                 # note 0 stays the rest sentinel (#9). A single-frame trigger
                 # starts the sample, which then plays to completion via DMA.
+                #
+                # `sample_id` here is the raw dpcm_index.json catalog id
+                # (0-1922 in the shipped index), but the frame `note` is a
+                # single byte -- min(255, sample_id + 1) used to collapse
+                # every catalog id >= 255 onto note 255, so any two of the
+                # shipped catalog's real drums (e.g. kick=1318, snare=1620)
+                # silently aliased onto the same wrong sample (#200/D-14).
+                # Remap the catalog ids this SONG actually references to a
+                # dense, song-local 0..N-1 range (ascending catalog-id order,
+                # matching the packer's own ordering convention) before
+                # encoding: a real song rarely references anywhere near 255
+                # distinct drums, so this survives the byte ceiling correctly
+                # instead of just detecting the collision after the fact.
+                # `dpcm_sample_map` (dense_id -> catalog_id) is emitted
+                # alongside so the export/pack stage can resolve the actual
+                # sample files a JSON stage boundary later.
                 dpcm_frames = {}
                 # Same monophonic same-frame collapse (#96): two drum hits on one
                 # frame can't both trigger, so keep the loudest and count the drop.
                 events, _ = self._collapse_same_frame_events(events, 'dpcm')
+
+                referenced_ids = sorted({
+                    e.get('sample_id', 0) for e in events
+                    if e.get('velocity', e.get('volume', 0)) > 0
+                })
+                dense_id_of = {raw_id: i for i, raw_id in enumerate(referenced_ids)}
+
                 for e in events:
                     velocity = e.get('velocity', e.get('volume', 0))
                     if velocity <= 0:
                         continue
                     sample_id = e.get('sample_id', 0)
-                    # A DPCM sample_id is NOT a MIDI note, so it must not borrow
-                    # the 0-95 tone-note ceiling — that collapsed every id >= 94
-                    # to one wrong sample (#67). The real bound is the single-byte
-                    # frame `note` field: note = sample_id + 1 in [1, 255] (0 is the
-                    # rest sentinel), so sample_id addresses up to 254. The exporter
-                    # applies the same byte ceiling for the dpcm channel.
+                    dense_id = dense_id_of[sample_id]
                     frame = {
-                        "note": min(255, sample_id + 1),
+                        "note": min(255, dense_id + 1),
                         "volume": 15,
                     }
                     dpcm_frames[e['frame']] = frame
                 processed[channel_name] = dpcm_frames
+                if referenced_ids:
+                    processed['dpcm_sample_map'] = {
+                        str(dense_id): raw_id for raw_id, dense_id in dense_id_of.items()
+                    }
 
         return processed

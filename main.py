@@ -353,8 +353,12 @@ def run_export(args):
                 with open(dpcm_index_path, 'r') as f:
                     dpcm_index = json.load(f)
                 # Pack only the samples this song triggers, not the whole catalog (#140).
-                # Pass the set directly: an empty set means "pack nothing" (no DPCM
-                # in this song), not "pack everything".
+                # Pass the dict directly: an empty dict means "pack nothing" (no
+                # DPCM in this song), not "pack everything". The dict shape
+                # (dense_id -> catalog_id) also lets the packer key each entry
+                # by its dense id instead of a potentially huge catalog id,
+                # avoiding the note-byte collision two high catalog ids used
+                # to hit (#200/D-14).
                 sample_ids = get_dpcm_sample_ids_from_frames(frames)
                 loaded_samples, _ = load_dpcm_index_into_packer(
                     packer, dpcm_index, dpcm_index_path, sample_ids=sample_ids)
@@ -396,6 +400,11 @@ def run_detect_patterns(args):
     # Extract events from frames structure
     events = []
     for channel_name, channel_frames in frames.items():
+        # `dpcm_sample_map` (#200/D-14) is a dense_id -> catalog_id side table,
+        # not a per-frame channel -- skip it here like the fixed channel-name
+        # loops elsewhere already do implicitly.
+        if channel_name == 'dpcm_sample_map':
+            continue
         for frame_num, frame_data in channel_frames.items():
             event = {
                 'frame': int(frame_num),
@@ -574,6 +583,10 @@ def run_full_pipeline(args):
                 # Convert frames to events for pattern detection
                 events = []
                 for channel_name, channel_frames in frames.items():
+                    # Skip the dpcm_sample_map side table (#200/D-14) -- see
+                    # run_detect_patterns's identical guard.
+                    if channel_name == 'dpcm_sample_map':
+                        continue
                     for frame_num, frame_data in channel_frames.items():
                         events.append({
                             'frame': int(frame_num),
@@ -680,8 +693,11 @@ def run_full_pipeline(args):
 
                     # Pack only the samples this song triggers (#140), truncating
                     # oversized ones (#68), in ascending id order so they align
-                    # with the engine's positional tables. An empty set means
+                    # with the engine's positional tables. An empty dict means
                     # "pack nothing", so pass it through directly (not `or None`).
+                    # The dense_id -> catalog_id dict shape also lets the packer
+                    # key each entry by its (small) dense id rather than a
+                    # potentially huge catalog id (#200/D-14).
                     sample_ids = get_dpcm_sample_ids_from_frames(frames)
                     loaded_samples, _ = load_dpcm_index_into_packer(
                         packer, dpcm_index, dpcm_index_path, verbose=args.verbose,

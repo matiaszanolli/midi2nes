@@ -137,6 +137,10 @@ class CA65Exporter(BaseExporter):
         max_frame = 0
 
         for channel_name, channel_data in frames.items():
+            # `dpcm_sample_map` (#200/D-14) is a dense_id -> catalog_id side
+            # table, not a per-frame channel.
+            if channel_name == 'dpcm_sample_map':
+                continue
             if channel_data:  # Skip empty channels
                 all_channels[channel_name] = channel_data
                 channel_max = max(int(f) for f in channel_data.keys())
