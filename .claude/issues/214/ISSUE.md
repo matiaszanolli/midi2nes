@@ -57,3 +57,11 @@ for every mapper.
 - [ ] **CC65**: If the compiler/cc65 path changes, nonzero exit + stderr still surface
 - [ ] **SIBLING**: Same pattern checked in related files (other exporters, other channels, other mappers)
 - [ ] **TESTS**: A regression test pins this specific fix
+
+---
+
+## Note on #245
+
+This round was invoked as `/fix-issue 214 245`. `gh issue view 245` returns "Could not
+resolve to an issue or pull request with the number of 245" — the repo's highest issue
+number is #232. Per user decision, #245 was skipped; only #214 is addressed here.
