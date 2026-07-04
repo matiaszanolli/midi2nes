@@ -7690,5 +7690,77 @@
   "snarensd2": {
     "id": 1922,
     "filename": "ohc0092/snarensd2.dmc"
+  },
+  "tom_high": {
+    "id": 1923,
+    "filename": "GH-HiTom.dmc"
+  },
+  "tom_mid": {
+    "id": 1924,
+    "filename": "GH-MidTom.dmc"
+  },
+  "tom_low": {
+    "id": 1925,
+    "filename": "GH-LowTom.dmc"
+  },
+  "hihat_closed": {
+    "id": 1926,
+    "filename": "hihatcl.dmc"
+  },
+  "hihat_open": {
+    "id": 1927,
+    "filename": "hihatop.dmc"
+  },
+  "hihat_pedal": {
+    "id": 1928,
+    "filename": "hihatpd.dmc"
+  },
+  "crash": {
+    "id": 1929,
+    "filename": "Crash.dmc"
+  },
+  "china": {
+    "id": 1930,
+    "filename": "cymchina.dmc"
+  },
+  "ride_bell": {
+    "id": 1931,
+    "filename": "ridebell.dmc"
+  },
+  "bongo_hi": {
+    "id": 1932,
+    "filename": "bongohi.dmc"
+  },
+  "bongo_lo": {
+    "id": 1933,
+    "filename": "bongo.dmc"
+  },
+  "conga_mute": {
+    "id": 1934,
+    "filename": "MuteHiConga.dmc"
+  },
+  "conga_open": {
+    "id": 1935,
+    "filename": "OpenHiConga.dmc"
+  },
+  "conga_lo": {
+    "id": 1936,
+    "filename": "LowConga.dmc"
+  },
+  "timbale_hi": {
+    "id": 1937,
+    "filename": "ff5_103_timbale_h1.dmc"
+  },
+  "timbale_lo": {
+    "id": 1938,
+    "filename": "ff5_103_timbale_l1.dmc"
+  },
+  "agogo_hi": {
+    "id": 1939,
+    "filename": "agogohi.dmc"
+  },
+  "agogo_lo": {
+    "id": 1940,
+    "filename": "agogolo.dmc"
   }
 }

@@ -120,14 +120,28 @@ class TestDpcmPacker:
         assert asm.count('.incbin') == 2               # only the two referenced binaries
 
     def test_get_dpcm_sample_ids_from_frames(self):
-        """get_dpcm_sample_ids_from_frames recovers sample_id = note - 1 from DPCM frames."""
+        """get_dpcm_sample_ids_from_frames recovers dense_id = note - 1 from DPCM
+        frames, mapped to the real catalog id via dpcm_sample_map. Without a
+        dpcm_sample_map (older frames.json, #200/D-14), dense_id and catalog_id
+        are treated as identical -- the pre-remap behavior."""
         from dpcm_sampler.generate_dpcm_index import get_dpcm_sample_ids_from_frames
         frames = {'dpcm': {'0': {'note': 3, 'volume': 15},
                            '8': {'note': 6, 'volume': 15},
                            '9': {'note': 0}}}              # rest sentinel ignored
-        assert get_dpcm_sample_ids_from_frames(frames) == {2, 5}
-        assert get_dpcm_sample_ids_from_frames({}) == set()
-        assert get_dpcm_sample_ids_from_frames({'dpcm': {}}) == set()
+        assert get_dpcm_sample_ids_from_frames(frames) == {2: 2, 5: 5}
+        assert get_dpcm_sample_ids_from_frames({}) == {}
+        assert get_dpcm_sample_ids_from_frames({'dpcm': {}}) == {}
+
+    def test_get_dpcm_sample_ids_from_frames_uses_dpcm_sample_map(self):
+        """Regression (#200/D-14): when dpcm_sample_map is present, the dense
+        frame ids must resolve to the real catalog ids it records, not the
+        dense ids themselves."""
+        from dpcm_sampler.generate_dpcm_index import get_dpcm_sample_ids_from_frames
+        frames = {
+            'dpcm': {'0': {'note': 1, 'volume': 15}, '10': {'note': 2, 'volume': 15}},
+            'dpcm_sample_map': {'0': 1318, '1': 1620},
+        }
+        assert get_dpcm_sample_ids_from_frames(frames) == {0: 1318, 1: 1620}
 
     @patch('dpcm_sampler.generate_dpcm_index.resolve_dpcm_sample_path')
     @patch('os.path.getsize')
@@ -144,6 +158,31 @@ class TestDpcmPacker:
             packer, index, "dpcm_index.json", sample_ids={2, 5, 7})
         assert loaded == 3
         assert {s['id'] for s in packer.pending_samples} == {'2', '5', '7'}
+
+    @patch('dpcm_sampler.generate_dpcm_index.resolve_dpcm_sample_path')
+    @patch('os.path.getsize')
+    def test_load_keys_by_dense_id_when_sample_ids_is_a_map(self, mock_getsize, mock_resolve):
+        """Regression (#200/D-14): when sample_ids is a {dense_id: catalog_id}
+        dict (get_dpcm_sample_ids_from_frames's new return shape), entries
+        must be added to the packer keyed by the small dense id, not the
+        (potentially huge, up to 1922) catalog id -- otherwise the packer's
+        positional lookup tables would balloon to the catalog id's size, and
+        wouldn't line up with what the bytecode's note-1 actually indexes."""
+        from pathlib import Path
+        from dpcm_sampler.generate_dpcm_index import load_dpcm_index_into_packer
+        mock_getsize.return_value = 500
+        mock_resolve.side_effect = lambda fn, ip: Path(fn)
+        index = {
+            "kick": {"id": 1318, "filename": "kick.dmc"},
+            "snare": {"id": 1620, "filename": "snare.dmc"},
+            "unused": {"id": 5, "filename": "unused.dmc"},
+        }
+        packer = DpcmPacker()
+        loaded, skipped = load_dpcm_index_into_packer(
+            packer, index, "dpcm_index.json", sample_ids={0: 1318, 1: 1620})
+        assert loaded == 2
+        assert skipped == 0
+        assert {s['id'] for s in packer.pending_samples} == {'0', '1'}
 
     def test_empty_packing_generates_safe_assembly(self):
         """Verify that packing 0 samples doesn't crash the assembly generation."""

@@ -110,10 +110,14 @@ class TestNESCore(unittest.TestCase):
     def test_basic_track_structure(self):
         """Test that process_all_tracks maintains expected channel structure"""
         result = self.emulator.process_all_tracks(self.test_tracks)
-        
+
         expected_channels = {'pulse1', 'pulse2', 'triangle', 'noise', 'dpcm'}
-        self.assertEqual(set(result.keys()), expected_channels)
-        
+        # `dpcm_sample_map` (#200/D-14) is an additional side table -- a
+        # dense_id -> catalog_id mapping emitted alongside the channels when
+        # the song references at least one DPCM sample -- not a channel
+        # itself, so it's expected here since self.test_tracks has a dpcm hit.
+        self.assertEqual(set(result.keys()) - {'dpcm_sample_map'}, expected_channels)
+
         for channel in expected_channels:
             self.assertIsInstance(result[channel], dict)
 

@@ -46,11 +46,20 @@ def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False,
       missing is skipped with an optional warning.
     - Samples longer than the NES 4081-byte DMC limit are truncated rather than
       raising, so one oversized sample never aborts the whole pack (#68).
-    - When ``sample_ids`` is provided (a set of ints or strings), only entries
-      whose ``id`` matches are loaded — so a song ships just the drums it
-      references rather than the whole 1923-sample catalog, which would overflow
-      the 60-bank budget (#140). The packer keeps absolute ids, so the positional
-      lookup tables stay aligned. ``None`` packs everything.
+    - When ``sample_ids`` is provided, only entries whose catalog ``id`` matches
+      are loaded — so a song ships just the drums it references rather than the
+      whole 1923-sample catalog, which would overflow the 60-bank budget
+      (#140). ``None`` packs everything, keyed by the catalog's own id.
+
+      ``sample_ids`` accepts two shapes:
+        - a set of catalog ints/strings (legacy shape): entries are keyed by
+          their own catalog id, as before.
+        - a dict ``{dense_id: catalog_id}`` (the shape
+          ``get_dpcm_sample_ids_from_frames`` now returns, #200/D-14): a
+          matching catalog entry is keyed by its **dense** id instead of its
+          (potentially huge, up to 1922) catalog id, so the packer's
+          positional lookup tables stay compact and line up with what the
+          bytecode's dense-remapped ``note - 1`` actually indexes at runtime.
 
     Samples are added in ascending index-id order, matching the positional
     lookup tables the engine indexes by ``sample_id``. Returns
@@ -58,10 +67,18 @@ def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False,
     """
     loaded = 0
     skipped = 0
+    catalog_to_dense = None
+    if isinstance(sample_ids, dict):
+        catalog_to_dense = {int(catalog_id): dense_id
+                            for dense_id, catalog_id in sample_ids.items()}
+
     for sample in sorted(dpcm_index.values(), key=lambda s: int(s['id'])):
         sid = sample['id']
         sid_int = int(sid) if not isinstance(sid, int) else sid
-        if sample_ids is not None and sid_int not in sample_ids:
+        if catalog_to_dense is not None:
+            if sid_int not in catalog_to_dense:
+                continue
+        elif sample_ids is not None and sid_int not in sample_ids:
             continue
         sample_path = resolve_dpcm_sample_path(sample['filename'], index_path)
         if sample_path is None:
@@ -69,8 +86,9 @@ def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False,
             if verbose:
                 print(f"  ⚠️ Warning: DPCM sample not found: {sample['filename']}")
             continue
+        pack_id = catalog_to_dense[sid_int] if catalog_to_dense is not None else sid
         packer.add_sample(
-            str(sid),
+            str(pack_id),
             str(sample_path.absolute()).replace('\\', '/'),
             sample.get('pitch', 15),
             truncate=True,
@@ -103,17 +121,35 @@ def generate_dpcm_index(dmc_folder, output_json):
 
 
 def get_dpcm_sample_ids_from_frames(frames):
-    """Extract the set of DPCM sample IDs referenced in frame data.
+    """Extract the DPCM sample ids referenced in frame data.
 
-    Frame DPCM entries encode ``note = sample_id + 1`` (0 is the rest/change
-    sentinel).  Returns a ``set[int]`` of the sample IDs actually used, which
-    callers can pass to ``load_dpcm_index_into_packer(sample_ids=...)``.
+    Frame DPCM entries encode ``note = dense_id + 1`` (0 is the rest/change
+    sentinel), where ``dense_id`` is a song-local, compact 0..N-1 renumbering
+    of the real dpcm_index.json catalog ids actually used -- assigned by
+    ``NESEmulatorCore.process_all_tracks`` so a single byte never has to
+    represent the full 0-1922 catalog range (a real song rarely references
+    anywhere near 255 distinct drums, so this survives the byte ceiling
+    instead of two different high catalog ids both clamping to note 255 and
+    silently aliasing onto the same wrong sample, #200/D-14).
+
+    ``frames['dpcm_sample_map']`` (dense_id -> catalog_id, string keys since
+    it round-trips through JSON) is emitted alongside ``frames['dpcm']`` to
+    carry that mapping to the export/pack stage. Its absence (frames.json
+    from before this fix, or any other producer that never remapped ids)
+    falls back to treating dense ids as catalog ids directly -- the
+    pre-fix, unremapped behavior.
+
+    Returns a ``dict[int, int]`` of ``{dense_id: catalog_id}`` for the
+    samples this song references, which callers can pass to
+    ``load_dpcm_index_into_packer(sample_ids=...)``.
     """
-    ids = set()
+    sample_map = frames.get('dpcm_sample_map', {})
+    ids = {}
     for frame_data in frames.get('dpcm', {}).values():
         note = frame_data.get('note', 0)
         if note and int(note) > 0:
-            ids.add(int(note) - 1)
+            dense_id = int(note) - 1
+            ids[dense_id] = int(sample_map.get(str(dense_id), dense_id))
     return ids
 
 

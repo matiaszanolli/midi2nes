@@ -214,3 +214,87 @@ class TestNoiseFallbackEndToEnd:
         processed = core.process_all_tracks(nes_tracks)
         assert 10 in processed['noise']
         assert processed['noise'][10]['note'] > 0
+
+
+class TestOversizedSampleIdRoutedToNoise:
+    """Regression (#200/D-14): nes/emulator_core.py and exporter_ca65.py both
+    encode the DPCM frame `note` as min(255, sample_id + 1) -- a single byte
+    shared with the rest sentinel. Any raw dpcm_index.json id >= 255 collapses
+    to the same note (255), so two distinct high-id samples (e.g. the shipped
+    index's kick=1318, snare=1620) used to alias onto the exact same physical
+    .dmc file with zero warning. map_drums must route hits whose resolved id
+    exceeds the single-byte ceiling to noise instead of emitting a
+    sample_id that will silently collide downstream."""
+
+    @pytest.fixture
+    def high_id_index_path(self, tmp_path):
+        # Mirrors the real shipped catalog's shape: kick/snare exist, but at
+        # ids indistinguishable once clamped to a single byte.
+        index = {
+            "kick": {"id": 1318, "filename": "kick.dmc"},
+            "snare": {"id": 1620, "filename": "snare.dmc"},
+            "tom_low": {"id": 200, "filename": "tom_low.dmc"},  # safe, in-range
+        }
+        path = tmp_path / "high_id_index.json"
+        path.write_text(json.dumps(index))
+        return str(path)
+
+    @pytest.fixture
+    def mapper(self, high_id_index_path):
+        return EnhancedDrumMapper(dpcm_index_path=high_id_index_path)
+
+    def test_two_high_id_drums_route_to_noise_instead_of_aliasing(self, mapper):
+        midi_events = {
+            9: [
+                {"frame": 0, "note": 36, "velocity": 100},   # kick -> id 1318
+                {"frame": 10, "note": 38, "velocity": 100},  # snare -> id 1620
+            ]
+        }
+        dpcm_events, noise_events = mapper.map_drums(midi_events)
+
+        # Neither hit may reach dpcm_events with a colliding id.
+        assert dpcm_events == []
+        noise_frames = {e["frame"]: e for e in noise_events}
+        assert set(noise_frames) == {0, 10}
+        # Routed to noise with their own distinct MIDI notes (36 vs 38), so
+        # they remain audibly distinguishable instead of both playing the
+        # same arbitrary aliased sample.
+        assert noise_frames[0]["note"] == 36
+        assert noise_frames[10]["note"] == 38
+
+    def test_in_range_id_still_resolves_to_dpcm(self, mapper):
+        midi_events = {9: [{"frame": 0, "note": 45, "velocity": 100}]}  # tom_low, id 200
+        dpcm_events, noise_events = mapper.map_drums(midi_events)
+        assert len(dpcm_events) == 1
+        assert dpcm_events[0]["sample_id"] == 200
+        assert noise_events == []
+
+    def test_oversized_id_warning_is_printed(self, mapper, capsys):
+        midi_events = {9: [{"frame": 0, "note": 36, "velocity": 100}]}  # kick -> id 1318
+        mapper.map_drums(midi_events)
+        captured = capsys.readouterr()
+        assert "sample id > 254" in captured.out
+        assert "1 drum hit" in captured.out
+
+    def test_layered_sample_over_ceiling_is_dropped_not_aliased(self, mapper):
+        # _handle_layered_samples appends additional hits on top of a primary
+        # drum; an oversized layer id must be skipped, not aliased.
+        events = []
+        mapper._handle_layered_samples(
+            layers=["kick", "snare"], frame=0, velocity=100, events=events
+        )
+        assert events == []
+        assert mapper._oversized_sample_id_count == 2
+
+    def test_pattern_event_over_ceiling_routes_to_noise(self, mapper):
+        pattern_info = {
+            "id": "p0",
+            "info": {"template": [(36, 100)]},  # kick, id 1318
+            "position": 0,
+        }
+        dpcm_out, noise_out = mapper._handle_pattern_event(
+            pattern_info, midi_note=36, velocity=100, frame=5
+        )
+        assert dpcm_out == []
+        assert len(noise_out) == 1
+        assert noise_out[0]["note"] == 36

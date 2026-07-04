@@ -41,9 +41,13 @@ class TestNoiseDpcmReachAPU(unittest.TestCase):
         mapped = {'dpcm': [{'frame': 0, 'note': 36, 'velocity': 100, 'sample_id': 3}]}
         frames = self.core.process_all_tracks(mapped)
         fd = frames['dpcm'][0]
-        # note = sample_id + 1 so the engine recovers sample_id as note-1.
-        self.assertEqual(fd['note'], 4)
+        # note = dense_id + 1, where dense_id is a song-local renumbering of
+        # the catalog sample_ids referenced (#200/D-14) -- the only id used
+        # here (3) becomes dense_id 0, so note = 1. dpcm_sample_map records
+        # the dense_id -> catalog_id mapping for the export/pack stage.
+        self.assertEqual(fd['note'], 1)
         self.assertGreater(fd['volume'], 0)
+        self.assertEqual(frames['dpcm_sample_map'], {'0': 3})
 
     def test_bytecode_path_emits_noise_and_dpcm_sequences(self):
         mapped = {
@@ -64,7 +68,7 @@ class TestNoiseDpcmReachAPU(unittest.TestCase):
         noise_block = content.split('noise_sequence:')[1].split('_sequence:')[0]
         dpcm_block = content.split('dpcm_sequence:')[1].split('\n\n')[0]
         self.assertIn('Note 10', noise_block)   # period index 10
-        self.assertIn('Note 2', dpcm_block)     # sample_id 1 -> note 2
+        self.assertIn('Note 1', dpcm_block)     # sole dpcm sample -> dense_id 0 -> note 1
 
     def test_direct_path_emits_noise_register_writes(self):
         mapped = {'noise': [{'frame': 0, 'note': 38, 'velocity': 100}]}
@@ -146,15 +150,51 @@ class TestNoiseDpcmReachAPU(unittest.TestCase):
 
     def test_high_sample_id_not_clamped_to_note_95(self):
         # Regression (D-04 / #67): a DPCM sample_id is not a MIDI note, so it must
-        # not borrow the 0-95 tone-note ceiling. sample_id 200 used to clamp to
-        # note 95 (sample_id 94) — a wrong drum. The bound is the single-byte
-        # frame note: note = sample_id + 1.
+        # not borrow the 0-95 tone-note ceiling. A lone high catalog id must not
+        # collapse to note 95 (the old bug) -- it becomes dense_id 0 (the only
+        # id referenced) and survives cleanly as note 1, however large the raw
+        # catalog id was (#200/D-14 dense remap).
         mapped = {'dpcm': [{'frame': 0, 'note': 36, 'velocity': 100, 'sample_id': 200}]}
         frames = self.core.process_all_tracks(mapped)
-        self.assertEqual(frames['dpcm'][0]['note'], 201)   # not 95
-        # The byte format still caps at 255 so the emitted operand stays one byte.
+        self.assertEqual(frames['dpcm'][0]['note'], 1)     # not 95, not 201
+        self.assertEqual(frames['dpcm_sample_map'], {'0': 200})
+
         big = {'dpcm': [{'frame': 0, 'note': 36, 'velocity': 100, 'sample_id': 9999}]}
-        self.assertEqual(self.core.process_all_tracks(big)['dpcm'][0]['note'], 255)
+        big_frames = self.core.process_all_tracks(big)
+        self.assertEqual(big_frames['dpcm'][0]['note'], 1)
+        self.assertEqual(big_frames['dpcm_sample_map'], {'0': 9999})
+
+    def test_two_high_sample_ids_get_distinct_notes_not_aliased(self):
+        # Regression (#200/D-14): nes/emulator_core.py used to encode
+        # note = min(255, sample_id + 1) directly, so any two catalog ids
+        # >= 255 both clamped to note 255 -- indistinguishable, silently
+        # playing the same wrong sample (the shipped dpcm_index.json's own
+        # kick=1318/snare=1620 collide this way). Distinct high ids
+        # referenced by the same song must now get distinct dense ids/notes.
+        mapped = {'dpcm': [
+            {'frame': 0, 'note': 36, 'velocity': 100, 'sample_id': 1318},   # kick
+            {'frame': 10, 'note': 38, 'velocity': 100, 'sample_id': 1620},  # snare
+        ]}
+        frames = self.core.process_all_tracks(mapped)
+        note0 = frames['dpcm'][0]['note']
+        note10 = frames['dpcm'][10]['note']
+        self.assertNotEqual(note0, note10)
+        sample_map = frames['dpcm_sample_map']
+        self.assertEqual(sample_map[str(note0 - 1)], 1318)
+        self.assertEqual(sample_map[str(note10 - 1)], 1620)
+
+    def test_dense_remap_still_hits_byte_ceiling_past_255_distinct_ids(self):
+        # The single-byte note field still caps at 255 total distinct ids per
+        # song; only a song referencing more than 255 distinct DPCM samples
+        # (unrealistic in practice) can still collide.
+        events = [
+            {'frame': i, 'note': 36, 'velocity': 100, 'sample_id': 1000 + i}
+            for i in range(300)
+        ]
+        frames = self.core.process_all_tracks({'dpcm': events})
+        notes = {frames['dpcm'][i]['note'] for i in range(300)}
+        self.assertIn(255, notes)
+        self.assertEqual(max(notes), 255)
 
     def test_bytecode_dpcm_high_note_survives_tone_note_still_clamped(self):
         # Regression (D-04 / #67): the bytecode serializer's note clamp must be
