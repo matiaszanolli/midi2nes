@@ -181,6 +181,96 @@ class TestCompileRomErrorPaths:
 
     @patch('compiler.cc65_wrapper.subprocess.run')
     @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_runs_mapper_post_process_commands(
+            self, mock_which, mock_run):
+        """Regression (#214/MAP-3): ROMCompiler.compile() previously never
+        called mapper.generate_post_process_commands() at all -- build.sh
+        (via BaseMapper.generate_build_script) runs a mapper's post-link
+        fixup but this compiler path silently skipped it. Must now run the
+        returned shell snippet from the project directory.
+
+        Note: compiler/compiler.py and compiler/cc65_wrapper.py both do
+        `import subprocess`, the same real module -- patching that attribute
+        via two different dotted paths would collide (only the last-entered
+        patch stays live), so this mocks subprocess.run ONCE and tells the
+        cc65 assemble/link calls (argv list) apart from the post-process
+        call (a shell string) by argument shape."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
+        mock_run.side_effect = lambda cmd, **kwargs: MagicMock(returncode=0, stdout="", stderr="")
+
+        from mappers.mmc3 import MMC3Mapper
+
+        class _MapperWithPostProcess(MMC3Mapper):
+            def generate_post_process_commands(self, is_windows=False):
+                return "echo fixup\n"
+
+        mapper = _MapperWithPostProcess()
+        exact_rom = self.project_dir / 'game.nes'
+        exact_rom.write_bytes(b'\x00' * (mapper.prg_rom_size + 16))
+
+        result = compile_rom(self.project_dir, self.rom_output, mapper=mapper)
+
+        assert result == True
+        shell_calls = [c for c in mock_run.call_args_list if isinstance(c.args[0], str)]
+        assert len(shell_calls) == 1
+        assert shell_calls[0].args[0] == "echo fixup\n"
+        assert shell_calls[0].kwargs['shell'] is True
+        assert shell_calls[0].kwargs['cwd'] == self.project_dir
+
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_skips_post_process_when_mapper_has_none(
+            self, mock_which, mock_run):
+        """A mapper whose generate_post_process_commands() returns "" (every
+        mapper today, since #213 removed MMC1's broken fixup) must not spawn
+        a post-process subprocess at all."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        from mappers.mmc3 import MMC3Mapper
+        mapper = MMC3Mapper()
+        exact_rom = self.project_dir / 'game.nes'
+        exact_rom.write_bytes(b'\x00' * (mapper.prg_rom_size + 16))
+
+        result = compile_rom(self.project_dir, self.rom_output, mapper=mapper)
+
+        assert result == True
+        shell_calls = [c for c in mock_run.call_args_list if isinstance(c.args[0], str)]
+        assert len(shell_calls) == 0
+
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
+    def test_compile_rom_post_process_failure_surfaces_stderr(
+            self, mock_which, mock_run, capsys):
+        """A failing post-process command must fail the whole compile with a
+        nonzero-equivalent (result False) and surface its stderr, matching
+        the CC65 assemble/link error-surfacing contract."""
+        mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]
+
+        def run_side_effect(cmd, **kwargs):
+            if isinstance(cmd, str):
+                return MagicMock(returncode=1, stdout="", stderr="fixup exploded")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        mock_run.side_effect = run_side_effect
+
+        from mappers.mmc3 import MMC3Mapper
+
+        class _MapperWithPostProcess(MMC3Mapper):
+            def generate_post_process_commands(self, is_windows=False):
+                return "false\n"
+
+        mapper = _MapperWithPostProcess()
+        exact_rom = self.project_dir / 'game.nes'
+        exact_rom.write_bytes(b'\x00' * (mapper.prg_rom_size + 16))
+
+        result = compile_rom(self.project_dir, self.rom_output, mapper=mapper)
+
+        assert result == False
+        out = capsys.readouterr().out
+        assert "fixup exploded" in out
+
+    @patch('compiler.cc65_wrapper.subprocess.run')
+    @patch('compiler.cc65_wrapper.shutil.which')
     def test_compile_rom_file_not_found_exception(self, mock_which, mock_run):
         """Test compile_rom when FileNotFoundError is raised."""
         mock_which.side_effect = ["/usr/bin/ca65", "/usr/bin/ld65"]

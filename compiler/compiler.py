@@ -4,7 +4,9 @@ NES ROM Compiler for MIDI2NES.
 Compiles assembly files into NES ROM files using the CC65 toolchain.
 """
 
+import os
 import shutil
+import subprocess
 import traceback
 from pathlib import Path
 from typing import Optional
@@ -67,6 +69,38 @@ class ROMCompiler:
             )
 
         return True
+
+    def _run_post_process(self, commands: str, working_dir: Path) -> None:
+        """Run a mapper's post-link fixup commands (#214/MAP-3).
+
+        `commands` is a shell-script snippet in the same format
+        BaseMapper.generate_build_script embeds into build.sh/build.bat, so it
+        runs the same way here: as shell text, from the project directory
+        (matching where build.sh's relative `game.nes` path resolves).
+        """
+        try:
+            result = subprocess.run(
+                commands,
+                shell=True,
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            raise CompilationError(
+                "Mapper post-process commands timed out",
+                tool="post-process",
+                exit_code=-1,
+            )
+
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            raise CompilationError(
+                f"Mapper post-process step failed: {error_msg}",
+                tool="post-process",
+                exit_code=result.returncode,
+            )
 
     def compile(
         self,
@@ -140,6 +174,19 @@ class ROMCompiler:
         # Verify the generated ROM
         if not rom_path.exists():
             raise CompilationError("Generated ROM file not found")
+
+        # Run the mapper's post-link fixup, if any, so this path and
+        # build.sh/build.bat (NESProjectBuilder._create_build_script ->
+        # BaseMapper.generate_build_script) stay behaviorally identical for
+        # every mapper (#214/MAP-3) -- this compiler previously had no mapper
+        # reference at this point and silently skipped the step entirely.
+        if mapper is not None:
+            is_windows = os.name == 'nt'
+            post_process = mapper.generate_post_process_commands(is_windows)
+            if post_process:
+                if self.verbose:
+                    print("  Running mapper post-process commands...")
+                self._run_post_process(post_process, project_dir)
 
         rom_size = rom_path.stat().st_size
         if mapper is not None:
