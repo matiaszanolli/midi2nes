@@ -195,5 +195,43 @@ class TestArrangerContract(unittest.TestCase):
         self.assertTrue(set(legacy).issubset(NES_CHANNELS))
 
 
+class TestMidiNoteToNesPitchMatchesCanonicalTable(unittest.TestCase):
+    """Regression tests for #89/ARR-06 and #90/ARR-07.
+
+    midi_note_to_nes_pitch used to hand-roll its own float timer formula
+    (a second pitch source diverging from nes/pitch_table.py and the
+    exporter's midi_note_to_timer_value) with a floor-0 clamp instead of the
+    hardware-correct floor-8 clamp, plus a dead, unclamped noise branch."""
+
+    def test_matches_canonical_pulse_table(self):
+        from arranger.pipeline_integration import midi_note_to_nes_pitch
+        from nes.pitch_table import NES_NOTE_TABLE
+        for note in range(0, 128):
+            self.assertEqual(midi_note_to_nes_pitch(note, 'pulse1'), NES_NOTE_TABLE[note])
+            self.assertEqual(midi_note_to_nes_pitch(note, 'pulse2'), NES_NOTE_TABLE[note])
+
+    def test_matches_canonical_triangle_table(self):
+        from arranger.pipeline_integration import midi_note_to_nes_pitch
+        from nes.pitch_table import NES_TRIANGLE_TABLE
+        for note in range(0, 128):
+            self.assertEqual(midi_note_to_nes_pitch(note, 'triangle'), NES_TRIANGLE_TABLE[note])
+
+    def test_high_notes_floor_at_8_not_0(self):
+        """The old hand-rolled formula clamped to max(0, min(2047, period)),
+        which could emit a timer below 8 for extreme high notes -- silencing
+        the channel per APU_PULSE_REFERENCE §3/§7 instead of floor-ing at the
+        lowest audible timer like every other pitch source in this codebase."""
+        from arranger.pipeline_integration import midi_note_to_nes_pitch
+        for note in (120, 125, 127):
+            self.assertGreaterEqual(midi_note_to_nes_pitch(note, 'pulse1'), 8)
+            self.assertGreaterEqual(midi_note_to_nes_pitch(note, 'triangle'), 8)
+
+    def test_out_of_range_midi_notes_are_clamped(self):
+        from arranger.pipeline_integration import midi_note_to_nes_pitch
+        from nes.pitch_table import NES_NOTE_TABLE
+        self.assertEqual(midi_note_to_nes_pitch(-5, 'pulse1'), NES_NOTE_TABLE[0])
+        self.assertEqual(midi_note_to_nes_pitch(200, 'pulse1'), NES_NOTE_TABLE[127])
+
+
 if __name__ == '__main__':
     unittest.main()
