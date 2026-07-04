@@ -817,6 +817,27 @@ class CA65Exporter(BaseExporter):
 
         return output_path
 
+    @staticmethod
+    def _register_instrument(inst, instruments, instrument_defs):
+        """Look up or assign an instrument id, guarding the single-byte
+        CMD_INSTRUMENT operand (#80/EXP-04): with more than 256 unique
+        (vol, arp, pitch, duty) macro combinations, `${inst_id:02X}` would
+        widen past two hex digits, which ca65 rejects (or the engine's
+        single-byte fetch would misread). Raises rather than emitting a
+        corrupt operand, matching the sequence-bank-overflow guard below.
+        """
+        if inst not in instruments:
+            new_id = len(instrument_defs)
+            if new_id > 0xFF:
+                raise ValueError(
+                    "Too many unique instruments (>256 distinct volume/arp/"
+                    "pitch/duty combinations) -- inst_id would exceed a "
+                    "single byte. Reduce timbre variety or split the song."
+                )
+            instruments[inst] = new_id
+            instrument_defs.append(inst)
+        return instruments[inst]
+
     def _compress_macro(self, data):
         """
         Compresses a macro list (volume, pitch, duty) using $FF (sustain) and $FE (loop).
@@ -859,6 +880,15 @@ class CA65Exporter(BaseExporter):
                     
             if repeats > 0:
                 loop_start = n - (repeats + 1) * p_len
+                # $FE's operand is a single byte (#80/EXP-04): a note held over
+                # ~4.3s (256 frames) whose best-found loop starts past byte 255
+                # would emit an out-of-range `.byte` ca65 rejects (or a
+                # misread offset). Skip this candidate -- the sustain/no-
+                # compression baseline above is always a valid, byte-safe
+                # fallback, so a single overlong macro degrades to a slightly
+                # larger encoding instead of failing the whole export.
+                if loop_start > 0xFF:
+                    continue
                 # Output the prefix + one instance of the pattern + $FE + loop_start index
                 comp = data[:loop_start + p_len] + [0xFE, loop_start]
                 if len(comp) < best_len:
@@ -1022,12 +1052,10 @@ class CA65Exporter(BaseExporter):
                                 arp_macro_defs.append(a_seq)
                                 
                             inst = (vol_macros[v_seq], arp_macros[a_seq], pitch_macros[p_seq], duty_macros[d_seq])
-                            if inst not in instruments:
-                                instruments[inst] = len(instrument_defs)
-                                instrument_defs.append(inst)
-                            current_event['inst_id'] = instruments[inst]
+                            current_event['inst_id'] = self._register_instrument(
+                                inst, instruments, instrument_defs)
                         channel_events[channel].append(current_event)
-                        
+
                     current_note = note
                     if note > 0:
                         base_timer = self.midi_note_to_timer_value(note, channel)
@@ -1076,10 +1104,8 @@ class CA65Exporter(BaseExporter):
                         arp_macro_defs.append(a_seq)
                         
                     inst = (vol_macros[v_seq], arp_macros[a_seq], pitch_macros[p_seq], duty_macros[d_seq])
-                    if inst not in instruments:
-                        instruments[inst] = len(instrument_defs)
-                        instrument_defs.append(inst)
-                    current_event['inst_id'] = instruments[inst]
+                    current_event['inst_id'] = self._register_instrument(
+                        inst, instruments, instrument_defs)
                 channel_events[channel].append(current_event)
 
         lines.append('; The Instrument Macro Pointers')

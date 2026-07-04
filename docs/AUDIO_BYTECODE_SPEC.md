@@ -68,15 +68,19 @@ Changes the default length of subsequent notes.
 ### Engine Commands ($80 - $FF)
 Control flow, instruments, and effects. These commands are processed instantly, and the sequencer continues reading the next byte on the same frame.
 
+This table lists only what `nes/audio_engine.asm`'s sequencer dispatch actually
+decodes (any other byte in this range falls through to `@unknown_command`,
+which halts the sequence) — it previously listed several commands
+(`CMD_TEMPO`, `CMD_CALL_PATTERN`, `CMD_RETURN`, `CMD_JUMP`, `CMD_SET_VOLUME`)
+the engine never implemented, and omitted `$87`/`$FE`, both real, working
+opcodes (#83/EXP-07).
+
 | Byte | Command | Parameter(s) | Description |
 | :--- | :--- | :--- | :--- |
 | **$80** | `CMD_INSTRUMENT` | `[id]` | Sets the current instrument to `id`. |
-| **$81** | `CMD_TEMPO` | `[speed]` | Sets the sequence playback speed/timer. |
-| **$82** | `CMD_CALL_PATTERN` | `[ptr_lo, ptr_hi]` | Pushes current address to stack, jumps to pattern. |
-| **$83** | `CMD_RETURN` | None | Returns from a pattern call. |
-| **$84** | `CMD_JUMP` | `[ptr_lo, ptr_hi]` | Unconditional jump (looping the song). |
-| **$85** | `CMD_DPCM_PLAY` | `[sample_id]` | Triggers a DPCM sample from the index. |
-| **$86** | `CMD_SET_VOLUME` | `[vol]` | Overrides the instrument volume temporarily. |
+| **$85** | `CMD_DPCM_PLAY` | `[sample_id]` | Triggers a DPCM sample from the index. Implemented in the engine; the Python exporter does not currently emit it (DPCM sample triggers are encoded as regular note bytes instead — see `arranger/pipeline_integration.py`'s DPCM frame conversion). |
+| **$87** | `CMD_DMC_LEVEL` | `[level]` | Writes a 7-bit DMC output level (`level & $7F`) directly to `$4011`. |
+| **$FE** | `CMD_BANK_JUMP` | `[bank, ptr_lo, ptr_hi]` | *Sequence-level*: switches the MMC3 swappable PRG bank and continues reading from the given pointer, for songs whose bytecode outgrows one 8KB bank. **Distinct from the in-macro `$FE, <offset>` loop control byte (§2.3)** — the two share a byte value but live in separate streams (sequence vs. macro), so there is no decoding ambiguity at runtime. |
 
 ---
 
