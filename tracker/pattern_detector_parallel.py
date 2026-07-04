@@ -264,10 +264,18 @@ def _collect_length_candidates(sequence: List[Tuple], events: List[Dict],
     For each bucket the greedy non-overlapping match list is derived directly
     from the ascending positions — equivalent to the old "scan from pos 0, jump
     pattern_len on a match" rescan, but without re-scanning the whole sequence
-    for every start. Emitting one candidate per distinct window (anchored at its
-    first occurrence) matches the old per-start output because duplicate starts
-    of the same window collapsed onto that first occurrence in
-    `_select_best_patterns` anyway."""
+    for every start.
+
+    NOT fully equivalent to the old per-start output, though (#171/PAT-05):
+    emitting a single candidate per distinct window, anchored at its first
+    occurrence, means `_select_best_patterns` rejects or accepts that
+    candidate's positions as one unit. If a higher-scoring pattern overlaps
+    only this window's first occurrence, the whole candidate -- including its
+    later, non-conflicting occurrences -- is rejected here. The per-start
+    sequential detector can still recover those later occurrences via a
+    separate candidate anchored past the contested region. So the two
+    detectors' selected pattern sets can differ (metrics only today, #4) when
+    the anchor occurrence of a window is itself contested."""
     n = len(sequence)
     if pattern_length > n:
         return []

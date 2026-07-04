@@ -41,6 +41,23 @@ class TestMainArgumentParsing:
         with patch('sys.argv', ['main.py', '--version']):
             with pytest.raises(SystemExit):
                 main()
+
+    def test_version_combined_with_midi_file_prints_and_exits(self):
+        """Regression (#179/PL-06): --version alongside a MIDI filename used to
+        be filed into global_args where nothing consumed it, so the manual
+        default-path loop ran a full pipeline build instead of printing the
+        version. It must print-and-exit immediately, like argparse's bare
+        --version case, without ever reaching run_full_pipeline."""
+        with patch('sys.argv', ['main.py', '--version', 'nonexistent_song.mid']):
+            with patch('main.run_full_pipeline') as mock_pipeline:
+                with patch('builtins.print') as mock_print:
+                    with pytest.raises(SystemExit) as exc:
+                        main()
+                    assert exc.value.code == 0
+                    mock_pipeline.assert_not_called()
+                    out = " ".join(str(c[0][0]) for c in mock_print.call_args_list if c[0])
+                    import main as main_module
+                    assert main_module.__version__ in out
     
     def test_help_argument(self):
         """Test --help argument."""

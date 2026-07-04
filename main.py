@@ -1034,8 +1034,12 @@ def main():
                 global_args.extend([arg])
                 i += 1
             elif arg == '--version':
-                global_args.extend([arg])
-                i += 1
+                # Match argparse's action='version' behavior: print and exit
+                # immediately regardless of any other arguments present, rather
+                # than filing this into global_args where nothing consumed it
+                # and a full pipeline run happened instead (#179/PL-06).
+                print(f"MIDI2NES {__version__}")
+                sys.exit(0)
             elif arg == '--no-patterns':
                 global_args.extend([arg])
                 i += 1

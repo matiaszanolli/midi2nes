@@ -298,9 +298,13 @@ class PatternDetector:
         """Find all occurrences of a pattern in the sequence."""
         matches = [start_pos]  # Include the initial position
         pattern_len = len(pattern)
-        
-        # Start searching after the pattern
-        pos = start_pos + 1
+
+        # Start searching after the anchor window itself, not one element into
+        # it -- starting at start_pos + 1 let the first "match" overlap the
+        # anchor in self-similar runs (period < pattern_len), inflating the
+        # occurrence count vs. the parallel detector's next_free greedy
+        # (#170/PAT-04).
+        pos = start_pos + pattern_len
         while pos <= len(sequence) - pattern_len:
             current = tuple(sequence[pos:pos + pattern_len])
             if current == pattern:

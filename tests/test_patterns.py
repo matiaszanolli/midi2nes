@@ -154,6 +154,19 @@ class TestPatternDetection(unittest.TestCase):
         # Should detect at least one pattern (optimization will choose the best one)
         self.assertTrue(len(patterns) > 0, "Should detect patterns even with overlaps")
 
+    def test_find_pattern_matches_does_not_overlap_the_anchor(self):
+        """Regression (#170/PAT-04): in a self-similar run (period < pattern
+        length), the scan used to resume at start_pos + 1 instead of
+        start_pos + pattern_len, letting the first "match" overlap the anchor
+        window itself. 12 identical (note, volume) events with pattern length
+        4 must greedily skip a full pattern_len per match -- [0, 4, 8], not
+        the old overlapping [0, 1, 5] -- matching the parallel detector's
+        next_free greedy in _collect_length_candidates."""
+        sequence = [(60, 100)] * 12
+        pattern = tuple(sequence[0:4])
+        matches = self.pattern_detector._find_pattern_matches(sequence, pattern, 0)
+        self.assertEqual(matches, [0, 4, 8])
+
     def test_empty_input(self):
         """Test with empty input"""
         patterns = self.pattern_detector.detect_patterns([])
@@ -882,6 +895,37 @@ class TestParallelPatternEquivalence(unittest.TestCase):
             return sorted(tuple(p['exact_matches']) for p in patterns.values())
 
         self.assertEqual(signature(parallel), signature(serial))
+
+    def test_selection_loses_entire_window_when_anchor_is_contested(self):
+        """Regression (#171/PAT-05): _select_best_patterns rejects a candidate
+        wholesale if ANY of its positions overlaps an already-selected pattern.
+        Because the parallel path emits exactly one candidate per distinct
+        window (anchored at its first occurrence), contesting just that
+        anchor loses ALL of the window's occurrences -- including ones that
+        never overlapped anything -- unlike the per-start sequential detector,
+        which can recover them via a separate, later-anchored candidate for
+        the same window value. This pins the corrected docstring's claim in
+        _collect_length_candidates (previously claimed a false equivalence)."""
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        detector = ParallelPatternDetector(EnhancedTempoMap(initial_tempo=500000))
+
+        winner = {
+            'start': 0, 'length': 4, 'pattern': ('winner',), 'score': 100,
+            'positions': [0, 20, 40, 60], 'events': [{}] * 4,
+        }
+        # Window's anchor (position 0) overlaps the winner; its other two
+        # occurrences (10, 30) don't overlap anything the winner claims.
+        window = {
+            'start': 0, 'length': 6, 'pattern': ('window',), 'score': 50,
+            'positions': [0, 10, 30], 'events': [{}] * 6,
+        }
+        patterns = detector._select_best_patterns([winner, window])
+
+        all_positions = {p for info in patterns.values() for p in info['exact_matches']}
+        self.assertIn(0, all_positions)      # from the winner
+        self.assertNotIn(10, all_positions)  # window's non-conflicting occurrence, lost
+        self.assertNotIn(30, all_positions)  # window's non-conflicting occurrence, lost
+        self.assertEqual(len(patterns), 1)   # only the winner survives
 
     def test_work_chunks_do_not_embed_sequence(self):
         """IPC-bloat guard: per-length chunks must carry only the length, never
