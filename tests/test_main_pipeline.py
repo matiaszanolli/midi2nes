@@ -976,14 +976,63 @@ class TestPipelineSafetyGates:
                 run_full_pipeline(args)
             assert exc.value.code == 1
 
-    # --- #10: fallback truncation surfaces a prominent warning ---
+    # --- #178/PL-05: a validation-failed ROM must never be left at the output path ---
     @patch('main.compile_rom')
     @patch('main.NESProjectBuilder')
     @patch('main.CA65Exporter')
     @patch('main.NESEmulatorCore')
     @patch('main.assign_tracks_to_nes_channels')
     @patch('tracker.parser_fast.parse_midi_to_frames')
-    def test_fallback_truncation_warns_incomplete(
+    def test_validation_gate_failure_removes_bad_rom_on_first_build(
+        self, mock_parse, mock_assign, mock_emulator_class,
+        mock_exporter_class, mock_builder_class, mock_compile
+    ):
+        """Regression (#178/PL-05): previously the finally-restore was a no-op
+        when no backup existed (first-time build), leaving the freshly written
+        unbootable ROM sitting at the output path despite the nonzero exit."""
+        mock_parse.return_value = {"events": {"0": [{"frame": 0, "note": 60}]}, "metadata": {}}
+        mock_assign.return_value = {"pulse1": [{"frame": 0, "note": 60}]}
+        mock_emulator = Mock()
+        mock_emulator.process_all_tracks.return_value = {"pulse1": {"0": {"note": 60, "volume": 15}}}
+        mock_emulator_class.return_value = mock_emulator
+        mock_exporter_class.return_value = Mock()
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        def create_rom(project_path, rom_path, **kwargs):
+            rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
+            return True
+        mock_compile.side_effect = create_rom
+
+        assert not self.output_rom.exists()
+
+        bad = Mock()
+        bad.overall_health = "GOOD"
+        bad.reset_vectors_valid = False
+        bad.apu_pattern_count = 5
+        bad.issues = ["Invalid reset vectors"]
+        mock_diag = Mock()
+        mock_diag.diagnose_rom.return_value = bad
+
+        args = Namespace(input=str(self.test_midi), output=str(self.output_rom),
+                         verbose=False, no_patterns=True, skip_validation=False)
+        with patch('debug.rom_diagnostics.ROMDiagnostics', return_value=mock_diag):
+            with pytest.raises(SystemExit) as exc:
+                run_full_pipeline(args)
+            assert exc.value.code == 1
+
+        assert not self.output_rom.exists(), "unbootable ROM must not be left at the output path"
+        assert Path(str(self.output_rom) + '.failed').exists()
+
+    # --- #176/PL-03: fallback truncation surfaces an accurate, non-scary note ---
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('main.CA65Exporter')
+    @patch('main.NESEmulatorCore')
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
+    def test_fallback_truncation_warns_but_rom_is_not_incomplete(
         self, mock_parse, mock_assign, mock_emulator_class,
         mock_exporter_class, mock_builder_class, mock_compile
     ):
@@ -1015,9 +1064,14 @@ class TestPipelineSafetyGates:
                 with patch('builtins.print') as mock_print:
                     run_full_pipeline(args)
                     out = " ".join(str(c[0][0]) for c in mock_print.call_args_list if c[0])
-                    # 3000 events sampled to 2000 in the fallback -> incomplete warning + banner.
-                    assert "INCOMPLETE" in out
-                    assert "WARNING" in out
+                    # 3000 events sampled to 2000 in the fallback -> a note that
+                    # compression stats are approximate, NOT a false claim that
+                    # the ROM itself is incomplete (#176/PL-03) or advice to use
+                    # --no-patterns (which would make the ROM bigger for no gain).
+                    assert "approximate" in out
+                    assert "unaffected" in out
+                    assert "INCOMPLETE" not in out
+                    assert "--no-patterns" not in out
 
 
 class TestPreparePath(object):
@@ -1091,6 +1145,74 @@ class TestPreparePath(object):
             assert exc.value.code == 1
 
     @patch('main.compile_rom')
+    def test_run_compile_validation_failure_removes_bad_rom_first_build(self, mock_compile):
+        """Regression (#178/PL-05): a first-time build (no pre-existing output
+        ROM) that fails validation must not leave the unbootable ROM at the
+        output path -- it gets moved aside to <name>.nes.failed instead."""
+        from main import run_compile
+        proj = self.temp_dir / "proj"
+        proj.mkdir()
+        out = self.temp_dir / "out.nes"
+        assert not out.exists()
+
+        def create_rom(p, r, **kwargs):
+            Path(r).write_bytes(b'NES\x1a' + b'\x00' * 131000)
+            return True
+        mock_compile.side_effect = create_rom
+
+        bad = Mock()
+        bad.reset_vectors_valid = False
+        bad.apu_pattern_count = 5
+        bad.overall_health = "GOOD"
+        bad.issues = []
+        mock_diag = Mock()
+        mock_diag.diagnose_rom.return_value = bad
+
+        args = Namespace(input=str(proj), output=str(out), skip_validation=False, verbose=False)
+        with patch('debug.rom_diagnostics.ROMDiagnostics', return_value=mock_diag):
+            with pytest.raises(SystemExit) as exc:
+                run_compile(args)
+            assert exc.value.code == 1
+
+        assert not out.exists(), "unbootable ROM must not be left at the output path"
+        assert Path(str(out) + '.failed').exists()
+
+    @patch('main.compile_rom')
+    def test_run_compile_validation_failure_restores_pre_existing_rom(self, mock_compile):
+        """Regression (#178/PL-05): run_compile previously had no backup
+        contract at all -- a validation failure overwrote a pre-existing good
+        ROM with no way back. It must now back up first and restore on failure,
+        matching the default pipeline path's contract."""
+        from main import run_compile
+        proj = self.temp_dir / "proj"
+        proj.mkdir()
+        out = self.temp_dir / "out.nes"
+        original_bytes = b'GOODROM' + b'\x00' * 100
+        out.write_bytes(original_bytes)
+
+        def create_rom(p, r, **kwargs):
+            Path(r).write_bytes(b'NES\x1a' + b'\x00' * 131000)
+            return True
+        mock_compile.side_effect = create_rom
+
+        bad = Mock()
+        bad.reset_vectors_valid = False
+        bad.apu_pattern_count = 5
+        bad.overall_health = "GOOD"
+        bad.issues = []
+        mock_diag = Mock()
+        mock_diag.diagnose_rom.return_value = bad
+
+        args = Namespace(input=str(proj), output=str(out), skip_validation=False, verbose=False)
+        with patch('debug.rom_diagnostics.ROMDiagnostics', return_value=mock_diag):
+            with pytest.raises(SystemExit) as exc:
+                run_compile(args)
+            assert exc.value.code == 1
+
+        assert out.read_bytes() == original_bytes, "pre-existing good ROM must be restored"
+        assert not Path(str(out) + '.failed').exists()
+
+    @patch('main.compile_rom')
     def test_run_compile_skip_validation_succeeds(self, mock_compile):
         from main import run_compile
         proj = self.temp_dir / "proj"
@@ -1117,6 +1239,26 @@ class TestPreparePath(object):
         mock_diag.diagnose_rom.return_value = good
         with patch('debug.rom_diagnostics.ROMDiagnostics', return_value=mock_diag):
             assert validate_rom(self.temp_dir / "x.nes") is True
+
+    def test_validate_rom_fails_closed_when_diagnostics_engine_breaks(self):
+        """Regression (#177/PL-04): a broken diagnostics engine (import error,
+        internal bug) must fail validation, not silently pass the ROM -- the
+        caller only reaches validate_rom when the user did NOT ask to skip
+        validation, so accepting on a broken engine defeats the boot-fatal gate."""
+        from main import validate_rom
+        with patch('debug.rom_diagnostics.ROMDiagnostics', side_effect=ImportError("boom")):
+            assert validate_rom(self.temp_dir / "x.nes") is False
+
+    def test_validate_rom_prints_engine_failure_without_verbose(self, capsys):
+        """Regression (#177/PL-04): the "ROM NOT validated" warning must print
+        unconditionally -- previously it was gated behind --verbose, so a
+        default (non-verbose) run gave zero indication validation was skipped."""
+        from main import validate_rom
+        with patch('debug.rom_diagnostics.ROMDiagnostics', side_effect=RuntimeError("boom")):
+            validate_rom(self.temp_dir / "x.nes")
+        out = capsys.readouterr().out
+        assert "ROM NOT validated" in out
+        assert "boom" in out
 
     def test_compile_subcommand_is_registered(self):
         from main import main as main_entry

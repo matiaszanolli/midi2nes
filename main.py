@@ -185,30 +185,56 @@ def check_mapper_capacity(music_asm_path, mapper):
     return sum(segment_sizes.values())
 
 
+def _backup_existing_rom(output_rom):
+    """Back up a pre-existing ROM at output_rom before it gets overwritten
+    (#178/PL-05), shared by the full pipeline and the `compile` subcommand so
+    both get the same restore-on-failure contract.
+
+    Returns the backup path, or None if there was nothing at output_rom yet.
+    """
+    output_rom = Path(output_rom)
+    if not output_rom.exists():
+        return None
+    backup_path = output_rom.with_suffix('.nes.backup')
+    print(f"  💾 Creating backup of existing ROM: {backup_path.name}")
+    shutil.copy2(output_rom, backup_path)
+    return backup_path
+
+
 def _restore_backup(output_rom, backup_path):
-    """Restore a pre-build backup ROM over the (now-invalid) output."""
+    """Restore a pre-build backup ROM over the (now-invalid) output. If there
+    was no pre-existing ROM to restore, move the freshly written unbootable
+    ROM aside instead of leaving a broken .nes at the output path (#178/PL-05)."""
+    output_rom = Path(output_rom)
     if backup_path and Path(backup_path).exists():
-        print(f"  💊 Restoring backup ROM: {Path(backup_path).name} → {Path(output_rom).name}")
+        print(f"  💊 Restoring backup ROM: {Path(backup_path).name} → {output_rom.name}")
         shutil.copy2(backup_path, output_rom)
         print(f"  ✅ Original ROM restored from backup")
+    elif output_rom.exists():
+        failed_path = Path(str(output_rom) + '.failed')
+        print(f"  🗑️  Moving unbootable ROM aside: {output_rom.name} → {failed_path.name}")
+        output_rom.replace(failed_path)
 
 
-def validate_rom(output_rom, verbose=False):
+def validate_rom(output_rom):
     """Post-build ROM validation shared by the full pipeline and the `compile`
     subcommand (#15) so step-by-step ROMs get the same gate as the default path.
 
     Returns True if the ROM is bootable. On a boot-fatal defect (invalid
     $FFFA-$FFFF vectors or no APU init) it returns False — the caller owns backup
     restore (#26). Non-fatal health issues are warned but pass. A diagnostics
-    failure is warned (verbose) and treated as non-blocking, matching prior behavior.
+    engine failure (e.g. a broken `debug` import) is treated as a validation
+    failure (#177/PL-04): callers only reach this function when the user did
+    NOT pass --skip-validation, so silently accepting the ROM here would defeat
+    the one gate that catches unbootable ROMs. The warning always prints, not
+    just under --verbose, so a skipped validation is never silent.
     """
     try:
         from debug.rom_diagnostics import ROMDiagnostics
         rom_result = ROMDiagnostics(verbose=False).diagnose_rom(str(output_rom))
     except Exception as e:
-        if verbose:
-            print(f"  Warning: ROM validation failed: {e}")
-        return True
+        print(f"  ⚠️  Warning: ROM validation could not run: {e} — ROM NOT validated")
+        return False
 
     fatal_defects = []
     if not rom_result.reset_vectors_valid:
@@ -241,6 +267,11 @@ def run_compile(args):
 
     Gives the step-by-step path the same compile + post-build validation the
     full pipeline runs, instead of stopping at `prepare` and building by hand.
+    Also gives it the same backup/restore contract as the default pipeline
+    (#178/PL-05): a pre-existing output ROM is backed up before compiling and
+    restored if compilation or validation fails; a first-time build that fails
+    validation has its unbootable ROM moved aside (`<name>.nes.failed`)
+    instead of being left at the output path.
     """
     project_path = Path(args.input)
     output_rom = Path(args.output)
@@ -253,17 +284,26 @@ def run_compile(args):
     from mappers.mmc3 import MMC3Mapper
     mapper = MMC3Mapper()
 
-    print(f"Compiling NES ROM from {project_path} ...")
-    if not compile_rom(project_path, output_rom, verbose=getattr(args, 'verbose', False), mapper=mapper):
-        print("[ERROR] ROM compilation failed")
-        sys.exit(1)
-
-    if not getattr(args, 'skip_validation', False):
-        print("Validating ROM...")
-        if not validate_rom(output_rom, verbose=getattr(args, 'verbose', False)):
+    backup_path = _backup_existing_rom(output_rom)
+    build_succeeded = False
+    try:
+        print(f"Compiling NES ROM from {project_path} ...")
+        if not compile_rom(project_path, output_rom, verbose=getattr(args, 'verbose', False), mapper=mapper):
+            print("[ERROR] ROM compilation failed")
             sys.exit(1)
 
-    print(f"[OK] Compiled ROM -> {output_rom}")
+        if not getattr(args, 'skip_validation', False):
+            print("Validating ROM...")
+            if not validate_rom(output_rom):
+                sys.exit(1)
+
+        build_succeeded = True
+        print(f"[OK] Compiled ROM -> {output_rom}")
+    finally:
+        if not build_succeeded:
+            _restore_backup(output_rom, backup_path)
+        elif backup_path:
+            backup_path.unlink(missing_ok=True)
 
 
 def run_prepare(args):
@@ -524,11 +564,7 @@ def run_full_pipeline(args):
         output_rom = input_midi.with_suffix('.nes')
     
     # Create backup if output ROM already exists
-    backup_path = None
-    if output_rom.exists():
-        backup_path = output_rom.with_suffix('.nes.backup')
-        print(f"  💾 Creating backup of existing ROM: {backup_path.name}")
-        shutil.copy2(output_rom, backup_path)
+    backup_path = _backup_existing_rom(output_rom)
     
     # Check for no-patterns flag
     use_patterns = not (hasattr(args, 'no_patterns') and args.no_patterns)
@@ -573,8 +609,11 @@ def run_full_pipeline(args):
                 frames = emulator.process_all_tracks(mapped)
             
             # Step 4: Pattern detection or direct export
-            # Tracks any lossy event sampling so the success banner can warn that
-            # the ROM is incomplete rather than reporting silent loss (#10).
+            # Tracks any lossy event sampling so the success banner can note that
+            # compression stats are approximate (#176/PL-03). Sampling only feeds
+            # pattern detection/compression metrics -- every emitted ROM byte
+            # still derives from the full `frames` dict, so the ROM itself is
+            # never incomplete because of this.
             pattern_loss_warning = None
             if use_patterns:
                 print("[4/7] Detecting patterns for compression...")
@@ -599,7 +638,6 @@ def run_full_pipeline(args):
                 LARGE_FILE_THRESHOLD = 10000
                 if len(events) > LARGE_FILE_THRESHOLD:
                     print(f"  ⚠️  Large MIDI file ({len(events):,} events) detected")
-                    print(f"  💡 For best results with large files, consider using --no-patterns flag")
                     print(f"  🚀 Proceeding with improved pattern detection...")
 
                 # Sampling caps, optionally overridden by --config (#219).
@@ -627,10 +665,11 @@ def run_full_pipeline(args):
                     if was_sampled:
                         pattern_loss_warning = (
                             f"pattern detection fell back to the sequential detector and "
-                            f"sampled {fallback_count:,} events down to {len(events):,} — "
-                            f"the ROM is INCOMPLETE. Re-run with --no-patterns for full fidelity."
+                            f"sampled {fallback_count:,} events down to {len(events):,} for "
+                            f"compression analysis only — compression stats are approximate; "
+                            f"ROM content is unaffected (#176/PL-03)."
                         )
-                        print(f"  ⚠️  WARNING: {pattern_loss_warning}")
+                        print(f"  ⚠️  NOTE: {pattern_loss_warning}")
                     pattern_result = detector.detect_patterns(events)
             else:
                 print("[4/7] Skipping pattern detection (direct export mode)...")
@@ -767,7 +806,7 @@ def run_full_pipeline(args):
             skip_validation = hasattr(args, 'skip_validation') and args.skip_validation
             if not skip_validation:
                 print("[8/8] Validating ROM...")
-                if not validate_rom(output_rom, verbose=getattr(args, 'verbose', False)):
+                if not validate_rom(output_rom):
                     sys.exit(1)  # finally handles restore
 
             # Success!
@@ -778,7 +817,7 @@ def run_full_pipeline(args):
             print(f"   Compression ratio: {pattern_result['stats']['compression_ratio']:.1f}% reduction")
             print(f"   Total patterns detected: {len(pattern_result['patterns'])}")
             if pattern_loss_warning:
-                print(f"\n   ⚠️  INCOMPLETE OUTPUT: {pattern_loss_warning}")
+                print(f"\n   ⚠️  {pattern_loss_warning}")
             if dpcm_pack_warning:
                 print(f"\n   ⚠️  NO DRUMS: {dpcm_pack_warning}")
             print("\n🎮 Your NES ROM is ready to run on emulators or flash carts!")
