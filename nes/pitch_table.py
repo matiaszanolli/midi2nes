@@ -131,9 +131,17 @@ class PitchProcessor:
         return max(8, min(new_timer, 0x07FF))
         
     def note_to_timer(self, midi_note):
-        """Convert MIDI note to NES timer value."""
+        """Convert MIDI note to a pulse-channel NES timer value.
+
+        Clamps to the pulse channel's valid MIDI range (24-108, matching
+        CHANNEL_RANGES/channel_ranges and get_channel_pitch's clamp policy)
+        instead of raising -- the old 24-95 guard rejected legal pulse notes
+        96-108 even though the note table is generated for the full 0-127
+        range (#41/NH-11). A genuinely invalid MIDI protocol value (outside
+        0-127) still raises.
+        """
         if midi_note < 0 or midi_note >= 128:
             raise ValueError(f"MIDI note {midi_note} out of valid range (0-127)")
-        if midi_note < 24 or midi_note >= 96:
-            raise ValueError(f"MIDI note {midi_note} out of NES range (24-95)")
+        min_note, max_note = self.channel_ranges["pulse1"]
+        midi_note = max(min_note, min(midi_note, max_note))
         return self.note_table[midi_note]

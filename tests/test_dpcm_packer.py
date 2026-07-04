@@ -97,12 +97,60 @@ class TestDpcmPacker:
         assert packer.sample_metadata['1']['length_reg'] == 255
 
     @patch('os.path.getsize')
+    def test_length_reg_rounds_up_not_floors(self, mock_getsize):
+        """Regression (#75/D-12): the DMC plays back (length_reg*16)+1 bytes.
+        Flooring (size-1)//16 for a size not of the form 16k+1 silently
+        discarded up to 15 trailing bytes (1024 -> length_reg=63 -> only 1009
+        of 1024 bytes played). length_reg must round UP so the full sample
+        plays, with the gap up to the rounded boundary explicitly zero-padded
+        rather than left to whatever bytes happen to follow in ROM."""
+        mock_getsize.return_value = 1024
+        packer = DpcmPacker()
+        packer.add_sample('0', 'drum.dmc')
+        asm = packer.generate_assembly()
+
+        # ceil((1024-1)/16) = 64, not the floor 63.
+        assert packer.sample_metadata['0']['length_reg'] == 64
+        played_bytes = packer.sample_metadata['0']['length_reg'] * 16 + 1
+        assert played_bytes >= 1024
+        # Exactly 1 byte of padding needed to reach the 64*16+1 = 1025 boundary.
+        assert packer.sample_metadata['0']['pad_bytes'] == 1
+        assert '.incbin "drum.dmc"' in asm
+        assert '.res 1, $00' in asm
+
+    @patch('os.path.getsize')
+    def test_length_reg_exact_16k_plus_1_needs_no_padding(self, mock_getsize):
+        """A size already of the form 16k+1 needs no rounding or padding."""
+        mock_getsize.return_value = 2049  # 16*128 + 1
+        packer = DpcmPacker()
+        packer.add_sample('0', 'exact.dmc')
+        asm = packer.generate_assembly()
+
+        assert packer.sample_metadata['0']['length_reg'] == 128
+        assert packer.sample_metadata['0']['pad_bytes'] == 0
+        assert '.res' not in asm
+
+    @patch('os.path.getsize')
+    def test_length_reg_never_exceeds_hardware_max_after_rounding(self, mock_getsize):
+        """Regression (#75/D-12 RANGE check): rounding up must never push
+        length_reg past the hardware max of 255, even for a size just under
+        the 4081-byte ceiling."""
+        mock_getsize.return_value = 4080  # one byte short of the 4081 max
+        packer = DpcmPacker()
+        packer.add_sample('0', 'near_max.dmc')
+        packer.generate_assembly()
+        assert packer.sample_metadata['0']['length_reg'] == 255
+        assert packer.sample_metadata['0']['pad_bytes'] == 1
+
+    @patch('os.path.getsize')
     def test_lookup_tables_are_positional_by_absolute_id(self, mock_getsize):
         """Regression for #140: the engine indexes the lookup tables by absolute
         sample id, so packing a sparse subset must emit a placeholder for every
         unpacked id and keep each real entry at its id's offset. Only the
         referenced sample binaries are included."""
-        mock_getsize.return_value = 1000  # len_reg = (1000-1)//16 = 62 = 0x3E
+        # len_reg rounds UP (#75/D-12): ceil((1000-1)/16) = 63 = 0x3F, not the
+        # floor 62 = 0x3E (which would silently drop the last 15 bytes).
+        mock_getsize.return_value = 1000
         packer = DpcmPacker()
         packer.add_sample('2', 'a.dmc')
         packer.add_sample('5', 'b.dmc')
@@ -115,7 +163,7 @@ class TestDpcmPacker:
 
         len_row = row('dpcm_len_table:')
         assert len(len_row) == 6                       # ids 0..5
-        assert len_row[2] == '$3E' and len_row[5] == '$3E'
+        assert len_row[2] == '$3F' and len_row[5] == '$3F'
         assert len_row[0] == len_row[1] == len_row[3] == len_row[4] == '$00'
         assert asm.count('.incbin') == 2               # only the two referenced binaries
 

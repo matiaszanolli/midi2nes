@@ -35,13 +35,25 @@ class DpcmPacker:
             size_bytes = 4081
             incbin_size = 4081
 
-        aligned_size = math.ceil(size_bytes / 64) * 64
+        # The DMC plays back (length_reg*16)+1 bytes, so any size not of the
+        # form 16k+1 needs its length register ROUNDED UP (not floored) to
+        # cover every real byte -- flooring silently discarded up to 15
+        # trailing bytes (#75/D-12). Round up and pad the gap with explicit
+        # zero bytes (emitted in generate_assembly) rather than relying on
+        # whatever bytes happen to follow in ROM.
+        length_reg = math.ceil((size_bytes - 1) / 16) if size_bytes > 0 else 0
+        padded_size = length_reg * 16 + 1
+        pad_bytes = padded_size - size_bytes
+
+        aligned_size = math.ceil(padded_size / 64) * 64
 
         self.pending_samples.append({
             'id': sample_id,
             'path': file_path,
             'pitch': pitch_rate,
             'size': size_bytes,
+            'length_reg': length_reg,
+            'pad_bytes': pad_bytes,
             'aligned_size': aligned_size,
             'incbin_size': incbin_size
         })
@@ -76,16 +88,16 @@ class DpcmPacker:
 
     def _place_sample(self, sample: dict, bank_id: int, start_address: int):
         dpcm_address_val = (start_address - 0xC000) // 64
-        dpcm_length_val = (sample['size'] - 1) // 16
         dpcm_pitch_val = sample['pitch'] & 0x0F
-        
+
         self.sample_metadata[sample['id']] = {
             "bank": bank_id,
             "address_reg": dpcm_address_val,
-            "length_reg": dpcm_length_val,
+            "length_reg": sample['length_reg'],
             "pitch_reg": dpcm_pitch_val,
             "path": sample['path'],
-            "incbin_size": sample.get('incbin_size')
+            "incbin_size": sample.get('incbin_size'),
+            "pad_bytes": sample['pad_bytes']
         }
 
     def generate_assembly(self) -> str:
@@ -106,6 +118,13 @@ class DpcmPacker:
                     asm_lines.append(f'    .incbin "{path}", 0, {incbin_size}')
                 else:
                     asm_lines.append(f'    .incbin "{path}"')
+                # length_reg is rounded UP to the sample's real byte count
+                # (#75/D-12), so explicitly zero-fill the gap up to the next
+                # 16k+1 boundary instead of relying on whatever bytes happen
+                # to follow in ROM.
+                pad_bytes = self.sample_metadata[sample_id]['pad_bytes']
+                if pad_bytes:
+                    asm_lines.append(f'    .res {pad_bytes}, $00')
 
         asm_lines.append('\n.segment "RODATA"')
         asm_lines.append("; Lookup tables for DPCM triggers")
