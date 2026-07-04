@@ -2,6 +2,7 @@ import unittest
 import subprocess
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 from exporter.exporter_ca65 import CA65Exporter
 from nes.project_builder import NESProjectBuilder
 from mappers.mmc3 import MMC3Mapper
@@ -98,6 +99,44 @@ class TestCA65Export(unittest.TestCase):
             pitch_section = text.split('; --- Pitch Macros ---', 1)[1]
             first_macro = pitch_section.split('macro_pitch_1:', 1)[1].split('\n', 2)[1]
             self.assertIn('$00, $FF', first_macro)
+        finally:
+            Path(out).unlink(missing_ok=True)
+
+    def test_clamped_notes_are_counted_and_reported(self):
+        # Regression (#198/EXP-10): a note clamped to the bytecode note range
+        # (24-95) used to be silently re-pitched with no log/counter anywhere
+        # in the pipeline. export_tables_with_patterns must now print a
+        # one-line summary of how many notes were clamped, in which direction.
+        frames = {'pulse1': {
+            '0': {'note': 100, 'pitch': 100, 'volume': 15, 'control': 0x8F},  # > 95
+            '30': {'note': 10, 'pitch': 200, 'volume': 12, 'control': 0x8F},  # < 24
+            '60': {'note': 60, 'pitch': 426, 'volume': 10, 'control': 0x8F},  # in range
+        }}
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            with patch('builtins.print') as mock_print:
+                self.exporter.export_tables_with_patterns(
+                    frames, patterns={'pulse1': ['x']}, references={}, output_path=out)
+            messages = [str(c.args[0]) for c in mock_print.call_args_list if c.args]
+            warning = next((m for m in messages if 'clamped to NES tone range' in m), None)
+            self.assertIsNotNone(warning, f"expected a clamp summary, got: {messages}")
+            self.assertIn('2 note(s)', warning)
+            self.assertIn('1 too high', warning)
+            self.assertIn('1 too low', warning)
+        finally:
+            Path(out).unlink(missing_ok=True)
+
+    def test_no_clamp_warning_when_all_notes_in_range(self):
+        # Sibling: a song with no out-of-range notes must not print any
+        # clamp-related warning.
+        frames = {'pulse1': {'0': {'note': 60, 'pitch': 426, 'volume': 15, 'control': 0x8F}}}
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            with patch('builtins.print') as mock_print:
+                self.exporter.export_tables_with_patterns(
+                    frames, patterns={'pulse1': ['x']}, references={}, output_path=out)
+            messages = [str(c.args[0]) for c in mock_print.call_args_list if c.args]
+            self.assertFalse(any('clamped to NES tone range' in m for m in messages))
         finally:
             Path(out).unlink(missing_ok=True)
 

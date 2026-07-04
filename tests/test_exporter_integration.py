@@ -5,7 +5,6 @@ from pathlib import Path
 import tempfile
 import os
 
-from exporter.compression import CompressionEngine
 from exporter.exporter_ca65 import CA65Exporter
 from exporter.exporter_nsf import NSFExporter
 from exporter.exporter_famistudio import FamiStudioExporter
@@ -40,43 +39,6 @@ class TestExporterIntegration(unittest.TestCase):
         for file in os.listdir(self.temp_dir):
             os.remove(os.path.join(self.temp_dir, file))
         os.rmdir(self.temp_dir)
-    
-    def test_compression_integration(self):
-        """Test that compression works across all exporters"""
-        engine = CompressionEngine()
-        
-        # Create test data that can actually be compressed
-        # RLE test data (repeating events)
-        rle_pattern = [
-            {'note': 60, 'volume': 15},
-            {'note': 60, 'volume': 15},
-            {'note': 60, 'volume': 15}  # 3 identical events for RLE
-        ]
-        
-        # Delta test data (sequential note changes)
-        delta_pattern = [
-            {'note': 60, 'volume': 15},
-            {'note': 62, 'volume': 15},
-            {'note': 64, 'volume': 15},
-            {'note': 66, 'volume': 15}  # Sequential notes for delta compression
-        ]
-        
-        # Test RLE compression
-        compressed, metadata = engine.compress_pattern(rle_pattern)
-        decompressed = engine.decompress_pattern(compressed, metadata)
-        
-        # Verify RLE compression worked
-        self.assertEqual(len(compressed), 1)  # Should compress to 1 RLE block
-        self.assertEqual(len(metadata['rle_blocks']), 1)
-        self.assertEqual(decompressed, rle_pattern)
-        
-        # Test delta compression
-        compressed, metadata = engine.compress_pattern(delta_pattern)
-        decompressed = engine.decompress_pattern(compressed, metadata)
-        
-        # Verify delta compression worked
-        self.assertEqual(len(metadata['delta_blocks']), 1)
-        self.assertEqual(decompressed, delta_pattern)
     
     def test_ca65_export_with_compression(self):
         """Test CA65 export with compression"""

@@ -946,7 +946,14 @@ class CA65Exporter(BaseExporter):
         instrument_defs = [(0, 0, 0, 0)]
 
         channel_events = {ch: [] for ch in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']}
-        
+
+        # Count tone-channel notes clamped to the bytecode note range (#198/
+        # EXP-10): the clamp itself is mandatory (the note byte is hard-capped
+        # at $00-$5F by the format), but a clamped note plays a different
+        # pitch than the MIDI file specified with no other indication.
+        notes_clamped_high = 0
+        notes_clamped_low = 0
+
         for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
             if channel not in frames or not frames[channel]:
                 continue
@@ -985,6 +992,7 @@ class CA65Exporter(BaseExporter):
                     if note > 255:
                         note = 255
                 elif note > 95:
+                    notes_clamped_high += 1
                     note = 95
                 elif channel != 'noise' and 0 < note < 24:
                     # Tone channels only: clamp the note baked into the
@@ -994,6 +1002,7 @@ class CA65Exporter(BaseExporter):
                     # lookup and the pitch offset agree on the same note (#158).
                     # `noise`'s "note" is a 4-bit period index, not a MIDI note —
                     # clamping it here would corrupt the drum pitch.
+                    notes_clamped_low += 1
                     note = 24
 
                 if note != current_note:
@@ -1197,4 +1206,9 @@ class CA65Exporter(BaseExporter):
             f.write('\n'.join(lines))
             
         print(f"✅ Macro Bytecode export complete: {output_path}")
+        notes_clamped = notes_clamped_high + notes_clamped_low
+        if notes_clamped:
+            print(f"⚠️  {notes_clamped} note(s) clamped to NES tone range (24-95): "
+                  f"{notes_clamped_high} too high, {notes_clamped_low} too low — "
+                  "pitch may differ from the MIDI file")
         return output_path
