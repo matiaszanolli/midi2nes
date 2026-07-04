@@ -16,6 +16,7 @@ from .voice_allocator import (
     allocate_with_arpeggiation,
     ArpStyle,
 )
+from nes.pitch_table import NES_NOTE_TABLE, NES_TRIANGLE_TABLE
 
 
 def _apply_sustain(notes: List[NoteInfo], max_gap: int) -> List[NoteInfo]:
@@ -296,35 +297,28 @@ def midi_note_to_nes_pitch(midi_note: int, channel: str) -> int:
     """
     Convert MIDI note number to NES APU timer value.
 
+    Delegates to the canonical nes/pitch_table.py tables (#89/ARR-06) instead
+    of a hand-rolled float formula, so there is a single authoritative pitch
+    source shared with the exporter's midi_note_to_timer_value -- including
+    the floor-8 clamp (pulse/triangle are silenced below timer 8,
+    APU_PULSE_REFERENCE §3/§7), which the old formula's floor-0 clamp did not
+    enforce and could violate for extreme high notes.
+
+    Noise has no timer -- its period comes from the voice allocator's 0-15
+    clamp, never from this function (#90/ARR-07); only 'pulse1'/'pulse2'/
+    'triangle' are meaningful `channel` values here.
+
     Args:
         midi_note: MIDI note number (0-127)
-        channel: 'pulse1', 'pulse2', 'triangle', or 'noise'
+        channel: 'pulse1', 'pulse2', or 'triangle'
 
     Returns:
-        NES timer value (11-bit for pulse/triangle)
+        NES timer value (11-bit, floored at 8)
     """
-    # NES CPU clock (NTSC)
-    CPU_CLOCK = 1789773
-
-    # MIDI note to frequency
-    # A4 (MIDI 69) = 440 Hz
-    frequency = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
-
-    if frequency <= 0:
-        return 0
-
-    if channel in ['pulse1', 'pulse2']:
-        # Pulse period = CPU / (16 * frequency) - 1
-        period = int(CPU_CLOCK / (16 * frequency) - 1)
-    elif channel == 'triangle':
-        # Triangle period = CPU / (32 * frequency) - 1
-        period = int(CPU_CLOCK / (32 * frequency) - 1)
-    else:
-        # Noise - use direct period
-        return midi_note
-
-    # Clamp to valid range
-    return max(0, min(2047, period))
+    midi_note = max(0, min(127, midi_note))
+    if channel == 'triangle':
+        return NES_TRIANGLE_TABLE[midi_note]
+    return NES_NOTE_TABLE[midi_note]
 
 
 def enhanced_track_mapper(
