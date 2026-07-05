@@ -270,7 +270,9 @@ def arrange_for_nes(
     # the exporters read the 4-bit period from `note` (low nibble) and the mode
     # bit from `control` bit 6 — there is no `period` key. Period 0 is the
     # bytecode rest sentinel, so floor an active hit at 1; floor volume likewise
-    # so a hit is never silent.
+    # so a hit is never silent. Consequence: a drum curated with noise_period=0
+    # (closed hi-hat) renders at period 1, one step below the top frequency it
+    # asked for — accepted rather than remapping the sentinel scheme (#253).
     for frame, data in frames['noise'].items():
         period = max(1, data['period'] & 0x0F)
         volume = max(1, min(15, data['volume']))

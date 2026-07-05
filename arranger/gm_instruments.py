@@ -1209,6 +1209,9 @@ GM_DRUM_MAP: Dict[int, DrumMapping] = {
     40: DrumMapping("Electric Snare", NESChannel.NOISE, PlayStyle.STACCATO, 8, noise_period=4),
 
     # Hi-hats - Noise channel
+    # noise_period=0 asks for the top noise frequency, but 0 is the noise-bytecode
+    # rest sentinel and is floored to 1 downstream, so the closed hi-hat actually
+    # renders at period 1 (#253).
     42: DrumMapping("Closed Hi-Hat", NESChannel.NOISE, PlayStyle.STACCATO, 6, noise_period=0),
     44: DrumMapping("Pedal Hi-Hat", NESChannel.NOISE, PlayStyle.STACCATO, 5, noise_period=1),
     46: DrumMapping("Open Hi-Hat", NESChannel.NOISE, PlayStyle.SUSTAIN, 6, noise_period=2),

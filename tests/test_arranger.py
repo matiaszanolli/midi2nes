@@ -136,6 +136,47 @@ class TestArrangerArpeggiation(unittest.TestCase):
         self.assertTrue(all(n == ordered[0] for n in ordered[:DEFAULT_ARP_SPEED]))
         self.assertNotEqual(ordered[DEFAULT_ARP_SPEED], ordered[DEFAULT_ARP_SPEED - 1])
 
+    def test_arpeggio_starts_on_chord_root(self):
+        """The first emitted arp note must be the chord root (lowest tone). The
+        old code advanced the arp index before the first read, so the root was
+        skipped on the attack and only sounded after a full cycle (#252)."""
+        out = arrange_for_nes(self._chord_events())
+        frames = out[self._arp_channel(out)]
+        first_note = frames[sorted(frames)[0]]['note']
+        self.assertEqual(first_note, 60,
+                         "arpeggio must start on the lowest chord tone (root)")
+
+
+class TestDrumNoisePeriodRendering(unittest.TestCase):
+    """Pins how a period-0 drum renders (#253).
+
+    GM_DRUM_MAP curates the Closed Hi-Hat at noise_period=0 (top frequency), but
+    0 is the noise-bytecode rest sentinel and is floored to 1 downstream. This
+    tension is accepted rather than remapping the sentinel scheme, so the closed
+    hi-hat renders at period 1 — pin that so the behavior is deliberate, not an
+    accidental regression. (Observable only since #251 stopped dropping noise.)
+    """
+
+    def _closed_hihat_events(self):
+        return {'drums': [
+            {'frame': 0, 'note': 42, 'volume': 100, 'type': 'note_on', 'channel': 9},
+            {'frame': 3, 'note': 42, 'volume': 0, 'type': 'note_off', 'channel': 9},
+        ]}
+
+    def test_closed_hihat_renders_at_period_one(self):
+        from arranger.gm_instruments import get_drum_mapping
+        # The curated intent is the top frequency (period 0)...
+        self.assertEqual(get_drum_mapping(42).noise_period, 0)
+
+        out = arrange_for_nes(self._closed_hihat_events())
+        self.assertGreater(len(out['noise']), 0, "closed hi-hat should hit noise")
+        periods = {fd['note'] for fd in out['noise'].values()}
+        # ...but 0 is the rest sentinel, so every emitted hit floors to 1.
+        self.assertNotIn(0, periods,
+                         "period 0 is the rest sentinel and must never be emitted")
+        self.assertEqual(periods, {1},
+                         "closed hi-hat (curated period 0) must render at period 1")
+
 
 class TestChannelHonoringInvariant(unittest.TestCase):
     """Triangle has no duty (docs/APU_TRIANGLE_REFERENCE.md). BOTH front-ends

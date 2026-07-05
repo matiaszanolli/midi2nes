@@ -26,6 +26,10 @@ class ChannelState:
     # For arpeggiation
     arp_notes: List[int] = field(default_factory=list)
     arp_index: int = 0
+    # Frames elapsed since the current chord started, so the arp phase is
+    # measured per-chord (root first) rather than from the global frame counter
+    # (#252).
+    arp_frame: int = 0
     # Source tracking
     source_track: int = -1
 
@@ -233,15 +237,22 @@ class VoiceAllocator:
             return (unique_pitches[0], max_velocity, duty)
 
         # Multiple notes - arpeggiate!
-        state.arp_notes = self._order_arp_notes(unique_pitches)
+        arp_notes = self._order_arp_notes(unique_pitches)
 
-        # Advance arpeggio on schedule
-        if self.frame_count % self.arp_speed == 0:
-            state.arp_index = (state.arp_index + 1) % len(state.arp_notes)
-
-        # Wrap index if notes changed
-        if state.arp_index >= len(state.arp_notes):
+        # Restart the arpeggio on its root (index 0) whenever the chord changes,
+        # including the first frame it appears, then hold each note for arp_speed
+        # frames. The phase is measured with a per-chord frame counter rather
+        # than the global frame_count: the old code advanced the index *before*
+        # the first read and keyed off frame_count, so a chord starting where
+        # `frame_count % arp_speed == 0` skipped its root on the attack (#252).
+        if arp_notes != state.arp_notes:
+            state.arp_notes = arp_notes
             state.arp_index = 0
+            state.arp_frame = 0
+        else:
+            state.arp_frame += 1
+            if state.arp_frame % self.arp_speed == 0:
+                state.arp_index = (state.arp_index + 1) % len(state.arp_notes)
 
         current_note = state.arp_notes[state.arp_index]
         state.note = current_note
@@ -307,6 +318,10 @@ class VoiceAllocator:
         # (matching get_drum_mapping's own "Unknown Drum" default) when the
         # mapped drum has no curated period (e.g. it's normally routed to a
         # different channel, like the toms -> TRIANGLE).
+        # NB: a curated period of 0 (closed hi-hat) is returned as-is here but
+        # floored to 1 at the noise-bytecode boundary, because period 0 is the
+        # rest sentinel — so period-0 drums render one step lower in frequency
+        # (#253, see arranger/pipeline_integration.py).
         noise_period = get_drum_mapping(note.pitch).noise_period
         if noise_period is None:
             noise_period = 5
