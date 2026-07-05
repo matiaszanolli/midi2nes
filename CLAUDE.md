@@ -158,7 +158,7 @@ The full pipeline (`run_full_pipeline` in `main.py`) runs everything in a temp d
 
 #### Mapper Selection & ROM Generation
 - Mappers are pluggable via `mappers/` (NROM, MMC1, MMC3) behind `BaseMapper`; `MapperFactory` can auto-select by data size.
-- The `prepare` subcommand and `run_full_pipeline` currently instantiate `NESProjectBuilder` with **`MMC3Mapper`** (not MMC1 — the older docs/PROJECT_STATUS may still say MMC1). When changing mapper behavior, check `main.py:run_prepare` and the builder's mapper argument.
+- The `prepare`/`compile` subcommands and the default pipeline accept `--mapper {auto,nrom,mmc1,mmc3}` (default: `mmc3`), resolved via `main.py:resolve_mapper` (#217/MAP-6). `auto` picks the smallest mapper that fits via `MapperFactory.auto_select()`, but is forced to `mmc3` whenever music.asm was built by the MMC3 macro-bytecode (pattern-compressed) exporter path — that engine's `switch_dpcm_bank`/bank-swapping is built on MMC3's PRG bank registers, so NROM/MMC1 can only run `--no-patterns` (direct frame export) builds. When changing mapper behavior, check `main.py:run_prepare`/`run_compile`/`run_full_pipeline` and `resolve_mapper`.
 - `NESProjectBuilder` generates complete NES projects with:
   - `main.asm` - NMI-based 60Hz timing system (critical for playback)
   - `music.asm` - Generated CA65 assembly with music data

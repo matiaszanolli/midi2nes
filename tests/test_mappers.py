@@ -199,5 +199,32 @@ class TestMapperFactoryLookup(unittest.TestCase):
         self.assertEqual(numbers, {0, 1, 4})  # NROM=0, MMC1=1, MMC3=4
 
 
+class TestNoUnusedOamSegment(unittest.TestCase):
+    """Regression (#215/MAP-4): MMC3's linker config used to reserve an OAM
+    MEMORY region and declare a matching SEGMENTS entry that nothing ever
+    emitted into, producing a harmless-but-noisy ld65 warning on every build."""
+
+    def test_mmc3_linker_config_has_no_oam_entries(self):
+        cfg = MMC3Mapper().generate_linker_config()
+        self.assertNotIn("OAM", cfg)
+
+    def test_no_mapper_declares_an_oam_segment(self):
+        for mapper_cls in ALL_MAPPERS:
+            cfg = mapper_cls().generate_linker_config()
+            self.assertNotIn("OAM", cfg, f"{mapper_cls.__name__} still declares OAM")
+
+
+class TestHeaderAsmIsBareBytes(unittest.TestCase):
+    """Regression (#216/MAP-5): every mapper's generate_header_asm() must
+    return bare `.byte` rows with no `.segment` directive of its own -- the
+    CA65 exporter is the sole owner of `.segment "HEADER"` (#22)."""
+
+    def test_no_mapper_embeds_its_own_header_segment(self):
+        for mapper_cls in ALL_MAPPERS:
+            header_asm = mapper_cls().generate_header_asm()
+            self.assertNotIn('.segment "HEADER"', header_asm,
+                              f"{mapper_cls.__name__} embeds its own HEADER segment")
+
+
 if __name__ == "__main__":
     unittest.main()
