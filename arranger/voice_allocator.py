@@ -82,23 +82,29 @@ class VoiceAllocator:
         # Frame counter for arpeggiation timing
         self.frame_count = 0
 
-        # Track assignments from arrangement plan
-        self.track_assignments: Dict[int, NESChannel] = {}
+        # Track assignments from arrangement plan. A track may occupy more than
+        # one channel: a drum track claims NOISE *and* DPCM at once, and a plain
+        # 1:1 dict would let the DPCM entry clobber the NOISE one, silently
+        # dropping every noise-routed percussion hit (#251). So each track maps
+        # to a list of channels and allocate_frame dispatches per note.
+        self.track_assignments: Dict[int, List[NESChannel]] = {}
         self.track_info: Dict[int, TrackAnalysis] = {}
 
     def set_arrangement(self, plan: ArrangementPlan):
         """Configure allocator from an arrangement plan."""
-        # Map tracks to channels
-        for track_id in plan.pulse1_tracks:
-            self.track_assignments[track_id] = NESChannel.PULSE1
-        for track_id in plan.pulse2_tracks:
-            self.track_assignments[track_id] = NESChannel.PULSE2
-        for track_id in plan.triangle_tracks:
-            self.track_assignments[track_id] = NESChannel.TRIANGLE
-        for track_id in plan.noise_tracks:
-            self.track_assignments[track_id] = NESChannel.NOISE
-        for track_id in plan.dpcm_tracks:
-            self.track_assignments[track_id] = NESChannel.DPCM
+        # Map tracks to channels (append, don't overwrite — a drum track is in
+        # both noise_tracks and dpcm_tracks and must keep both, #251).
+        for channel, track_ids in (
+            (NESChannel.PULSE1, plan.pulse1_tracks),
+            (NESChannel.PULSE2, plan.pulse2_tracks),
+            (NESChannel.TRIANGLE, plan.triangle_tracks),
+            (NESChannel.NOISE, plan.noise_tracks),
+            (NESChannel.DPCM, plan.dpcm_tracks),
+        ):
+            for track_id in track_ids:
+                channels = self.track_assignments.setdefault(track_id, [])
+                if channel not in channels:
+                    channels.append(channel)
 
         # Store track info
         for track in plan.tracks:
@@ -123,8 +129,8 @@ class VoiceAllocator:
         channel_notes: Dict[NESChannel, List[Tuple[int, NoteInfo, TrackAnalysis]]] = defaultdict(list)
 
         for track_id, notes in active_notes.items():
-            channel = self.track_assignments.get(track_id)
-            if channel is None:
+            channels = self.track_assignments.get(track_id)
+            if not channels:
                 continue  # Track not assigned (dropped)
 
             track_info = self.track_info.get(track_id)
@@ -132,6 +138,9 @@ class VoiceAllocator:
                 continue
 
             for note in notes:
+                channel = self._route_note(note, channels)
+                if channel is None:
+                    continue
                 channel_notes[channel].append((track_id, note, track_info))
 
         # Allocate each channel
@@ -161,6 +170,35 @@ class VoiceAllocator:
         self.frame_count += 1
 
         return allocation
+
+    def _route_note(
+        self,
+        note: NoteInfo,
+        channels: List[NESChannel],
+    ) -> Optional[NESChannel]:
+        """Pick which assigned channel a note plays on.
+
+        Single-channel tracks route every note to that channel. A drum track
+        claims both NOISE and DPCM, so its notes are dispatched per pitch: the
+        kick/snare that GM_DRUM_MAP flags for sampling go to DPCM, and every
+        other percussion hit (hi-hats, cymbals, toms, ...) goes to NOISE as the
+        catch-all — instead of one channel silently clobbering the other (#251).
+        """
+        if len(channels) == 1:
+            return channels[0]
+
+        mapping = get_drum_mapping(note.pitch)
+        if (NESChannel.DPCM in channels
+                and mapping.use_sample
+                and mapping.channel == NESChannel.DPCM):
+            return NESChannel.DPCM
+        if NESChannel.NOISE in channels:
+            return NESChannel.NOISE
+        # No noise slot for a multi-channel track: honor the mapped channel if
+        # it's one we own, else fall back to the first assigned channel.
+        if mapping.channel in channels:
+            return mapping.channel
+        return channels[0]
 
     def _allocate_pulse(
         self,
