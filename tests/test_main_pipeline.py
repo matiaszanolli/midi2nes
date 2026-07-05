@@ -394,7 +394,7 @@ class TestRunFullPipeline:
             mock_detector.detect_patterns.return_value = {
                 'patterns': {'p0': [{'frame': 0, 'note': 60}]},
                 'references': {'p0': [0]},
-                'stats': {'compression_ratio': 2.5}
+                'stats': {'compression_ratio': 2.5, 'total_events': 10, 'coverage_ratio': 60.0}
             }
             mock_detector_class.return_value = mock_detector
 
@@ -518,7 +518,7 @@ class TestRunFullPipeline:
             mock_detector.detect_patterns.return_value = {
                 'patterns': {},
                 'references': {},
-                'stats': {'compression_ratio': 1.0}
+                'stats': {'compression_ratio': 1.0, 'total_events': 0, 'coverage_ratio': 0}
             }
             mock_detector_class.return_value = mock_detector
 
@@ -582,7 +582,7 @@ class TestRunFullPipeline:
                 mock_fallback.detect_patterns.return_value = {
                     'patterns': {},
                     'references': {},
-                    'stats': {'compression_ratio': 1.0}
+                    'stats': {'compression_ratio': 1.0, 'total_events': 0, 'coverage_ratio': 0}
                 }
                 mock_fallback_class.return_value = mock_fallback
 
@@ -1149,7 +1149,7 @@ class TestPipelineSafetyGates:
             mock_parallel.side_effect = Exception("forced fallback")
             with patch('tracker.pattern_detector.EnhancedPatternDetector') as mock_fb:
                 fb = Mock()
-                fb.detect_patterns.return_value = {'patterns': {}, 'references': {}, 'stats': {'compression_ratio': 1.0}}
+                fb.detect_patterns.return_value = {'patterns': {}, 'references': {}, 'stats': {'compression_ratio': 1.0, 'total_events': 0, 'coverage_ratio': 0}}
                 mock_fb.return_value = fb
                 with patch('builtins.print') as mock_print:
                     run_full_pipeline(args)

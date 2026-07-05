@@ -1081,7 +1081,8 @@ class TestStatsSchemaConsistency(unittest.TestCase):
     future consumer can't hit a KeyError on a path-dependent key (#104)."""
 
     CANONICAL_KEYS = {'original_size', 'compressed_size',
-                      'compression_ratio', 'unique_patterns'}
+                      'compression_ratio', 'unique_patterns',
+                      'total_events', 'patterned_events', 'coverage_ratio'}
 
     def test_detectors_emit_canonical_stats_keys(self):
         from tracker.pattern_detector_parallel import ParallelPatternDetector
@@ -1141,6 +1142,110 @@ class TestEventLimitConsolidation(unittest.TestCase):
         src = inspect.getsource(pdp)
         self.assertNotIn('// 2000', src)
         self.assertIn('sample_events_for_detection', src)
+
+
+class TestPositionsAreExactOnly(unittest.TestCase):
+    """Regression (#168/PAT-01): the sequential detector's `positions` (and
+    the `references` it feeds into) must be exact-match positions only.
+
+    Before the fix, a transposed/volume-scaled variation position (similarity
+    >= 0.85) was merged into `positions`, so `references[pattern_id]` claimed
+    a pattern occurred at a position whose actual content differed from the
+    stored pattern events -- e.g. a consumer reconstructing "events at
+    references" would silently play the base pattern where a transposition
+    belonged."""
+
+    def setUp(self):
+        self.tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        self.detector = EnhancedPatternDetector(
+            self.tempo_map, min_pattern_length=3, max_pattern_length=3, analyze_tempo=False)
+        # Motif x3 (exact repeats at 0, 3, 6) + one transposed+louder copy at 9,
+        # mirroring the exact reproduction in the issue report.
+        motif = [(40, 20), (41, 21), (42, 22)]
+        self.sequence = motif + motif + motif + [(n + 1, v + 1) for n, v in motif]
+        self.events = [{'frame': i, 'note': n, 'volume': v}
+                       for i, (n, v) in enumerate(self.sequence)]
+
+    def test_variation_position_excluded_from_positions_and_references(self):
+        result = self.detector.detect_patterns(self.events)
+        patterns = result['patterns']
+        references = result['references']
+        self.assertTrue(patterns, "expected at least one detected pattern")
+
+        for pattern_id, pattern_info in patterns.items():
+            # The transposed variant's position (9) must be tracked only as a
+            # variation, never as an exact position/reference.
+            self.assertNotIn(9, pattern_info['positions'])
+            self.assertNotIn(9, references[pattern_id])
+            variation_positions = {v['position'] for v in pattern_info['variations']}
+            self.assertIn(9, variation_positions,
+                          "the transposed copy should still be tracked as a variation")
+
+    def test_referenced_windows_reproduce_stored_pattern_events(self):
+        """Round-trip check the issue explicitly asks for: for every position
+        in `references`, sequence[pos:pos+length] must equal the pattern's
+        stored events -- i.e. the reference is actually reconstructible."""
+        result = self.detector.detect_patterns(self.events)
+        for pattern_id, pattern_info in result['patterns'].items():
+            length = pattern_info['length']
+            stored = [(e['note'], e['volume']) for e in pattern_info['events']]
+            for pos in result['references'][pattern_id]:
+                window = self.sequence[pos:pos + length]
+                self.assertEqual(list(window), stored,
+                    f"{pattern_id} @ {pos}: window {window} != stored events {stored}")
+
+    def test_variations_still_carry_their_transform(self):
+        """Variations aren't dropped -- they're just excluded from positions/
+        references -- and each still carries the transform a consumer would
+        need to reconstruct it losslessly."""
+        result = self.detector.detect_patterns(self.events)
+        for pattern_info in result['patterns'].values():
+            for var in pattern_info['variations']:
+                self.assertIn('transposition', var)
+                self.assertIn('volume_change', var)
+                self.assertIn('position', var)
+
+
+class TestCompressionStatsCoverage(unittest.TestCase):
+    """Regression (#169/PAT-03): compression_ratio only measures dedup within
+    the patterned subset -- it says nothing about how much of the song is
+    actually patterned. calculate_compression_stats must accept a
+    total_events count and report a separate coverage_ratio so "66.7%
+    reduction" can't be read as "the song shrank 66.7%" when most of it isn't
+    patterned at all."""
+
+    def setUp(self):
+        self.compressor = PatternCompressor()
+
+    def test_coverage_ratio_reflects_song_not_just_patterned_subset(self):
+        original = {
+            'pattern_0': {'events': [{'note': 1, 'volume': 1}] * 3, 'positions': [0, 3, 6]}
+        }
+        compressed = {
+            'pattern_0': {'events': [{'note': 1, 'volume': 1}] * 3}
+        }
+        # 9 patterned events out of a much larger song -> low coverage despite
+        # a high dedup ratio.
+        stats = self.compressor.calculate_compression_stats(original, compressed, total_events=100)
+        self.assertAlmostEqual(stats['compression_ratio'], (9 - 3) / 9 * 100)
+        self.assertEqual(stats['total_events'], 100)
+        self.assertEqual(stats['patterned_events'], 9)
+        self.assertAlmostEqual(stats['coverage_ratio'], 9.0)
+
+    def test_coverage_ratio_defaults_to_zero_without_total_events(self):
+        """Backward-compatible: omitting total_events must not raise, and
+        must not fabricate a coverage number."""
+        original = {'pattern_0': {'events': [{'note': 1, 'volume': 1}], 'positions': [0]}}
+        compressed = {'pattern_0': {'events': [{'note': 1, 'volume': 1}]}}
+        stats = self.compressor.calculate_compression_stats(original, compressed)
+        self.assertEqual(stats['total_events'], 0)
+        self.assertEqual(stats['coverage_ratio'], 0)
+
+    def test_full_song_coverage_caps_at_100_percent(self):
+        original = {'pattern_0': {'events': [{'note': 1, 'volume': 1}] * 2, 'positions': [0, 2]}}
+        compressed = {'pattern_0': {'events': [{'note': 1, 'volume': 1}] * 2}}
+        stats = self.compressor.calculate_compression_stats(original, compressed, total_events=4)
+        self.assertAlmostEqual(stats['coverage_ratio'], 100.0)
 
 
 if __name__ == '__main__':

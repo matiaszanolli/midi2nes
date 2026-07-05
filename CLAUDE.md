@@ -168,7 +168,7 @@ The full pipeline (`run_full_pipeline` in `main.py`) runs everything in a temp d
 #### Pattern Detection & Compression
 - Uses `ParallelPatternDetector` for multi-core processing
 - Automatically detects CPU cores and distributes work
-- Achieves up to ~95.86% pattern-data size reduction (a percentage reduction, not a multiplier — see `calculate_compression_stats`, #17)
+- Achieves up to ~95.86% dedup reduction *within the detected-pattern subset* (a percentage reduction, not a multiplier — see `calculate_compression_stats`, #17); it does not describe the whole song or the ROM (`coverage_ratio` reports what fraction of the song is actually patterned — #169/PAT-03)
 - Smart sampling for very large files (maintains quality)
 - Falls back gracefully if multiprocessing fails
 

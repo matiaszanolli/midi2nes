@@ -36,17 +36,24 @@ class ParallelPatternDetector:
             return {
                 'patterns': {},
                 'references': {},
-                'stats': {'compression_ratio': 0, 'original_size': 0, 'compressed_size': 0, 'unique_patterns': 0},
+                'stats': {'compression_ratio': 0, 'original_size': 0, 'compressed_size': 0,
+                          'unique_patterns': 0, 'total_events': 0, 'patterned_events': 0,
+                          'coverage_ratio': 0},
                 'variations': {}
             }
-        
+
+        # Total events this detection run actually covers (#169/PAT-03) --
+        # captured before validation/sampling narrows valid_events below, so
+        # this reflects what was handed to the detector.
+        total_events = len(events)
+
         print(f"🚀 Starting parallel pattern detection with up to {self.max_workers} workers")
         start_time = time.time()
         
         # Clean and validate events
         valid_events = self._filter_valid_events(events)
         if not valid_events:
-            return self._empty_result()
+            return self._empty_result(total_events)
         
         # Handle large sequences using the shared large-file policy (#21) so the
         # default path and the `detect-patterns` subcommand sample identically.
@@ -68,7 +75,7 @@ class ParallelPatternDetector:
         
         # Calculate compression statistics
         compression_stats = self.compressor.calculate_compression_stats(
-            patterns, compressed_patterns
+            patterns, compressed_patterns, total_events
         )
         
         end_time = time.time()
@@ -231,12 +238,14 @@ class ParallelPatternDetector:
             for pattern_id, pattern_info in patterns.items()
         }
     
-    def _empty_result(self) -> Dict:
+    def _empty_result(self, total_events: int = 0) -> Dict:
         """Return empty result structure"""
         return {
             'patterns': {},
             'references': {},
-            'stats': {'compression_ratio': 0, 'original_size': 0, 'compressed_size': 0, 'unique_patterns': 0},
+            'stats': {'compression_ratio': 0, 'original_size': 0, 'compressed_size': 0,
+                      'unique_patterns': 0, 'total_events': total_events,
+                      'patterned_events': 0, 'coverage_ratio': 0},
             'variations': {}
         }
 

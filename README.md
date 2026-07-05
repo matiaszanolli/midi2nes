@@ -6,7 +6,7 @@ Convert MIDI files into playable NES ROMs or use the generated audio data in hom
 
 [![Performance](https://img.shields.io/badge/Performance-120x%20Faster-brightgreen)](#performance)
 [![CPU](https://img.shields.io/badge/CPU-Multi--Core-blue)](#multiprocessing)
-[![Patterns](https://img.shields.io/badge/Patterns-95.86x%20Compression-orange)](#pattern-detection)
+[![Patterns](https://img.shields.io/badge/Patterns-Multicore%20Detection-orange)](#pattern-detection)
 [![Version](https://img.shields.io/badge/Version-v0.5.0--dev-blueviolet)](docs/ROADMAP.md)
 [![Tests](https://img.shields.io/badge/Tests-586%20passing-success)](#testing)
 
@@ -35,7 +35,10 @@ python main.py input.mid output.nes
 - **120+ times faster** than previous versions
 - **Multi-core processing** using all available CPU cores
 - **Complex MIDI files** (51KB, 15 tracks, 13,362 events) processed in ~15 seconds
-- **Pattern compression** achieving up to 95.86x compression ratios
+- **Pattern compression** achieving up to ~95.86% dedup reduction within
+  detected patterns (a percentage, not a multiplier -- and scoped to the
+  patterned subset, not the whole song; see `coverage_ratio` for how much of
+  a song is actually patterned)
 - **Smart sampling** for very large files with quality preservation
 
 ### Test Results (input.mid - 51KB, 15 tracks)
@@ -179,7 +182,8 @@ The engine uses a sophisticated macro-driven bytecode to compress repeating musi
 ```
 📈 Found 19,285 candidate patterns
 🔍 Selected 23 optimal patterns
-📦 Compression ratio: 95.86x
+📦 Pattern dedup ratio: 95.86% reduction (patterned subset only)
+📦 Pattern coverage: 42.0% of events matched a detected pattern
 ```
 
 ## 🎼 Supported Formats
