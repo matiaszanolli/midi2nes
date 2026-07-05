@@ -1,5 +1,9 @@
 # tests/test_patterns.py
+import io
 import unittest
+from concurrent.futures import Future
+from contextlib import redirect_stdout
+from unittest.mock import patch
 from tracker.pattern_detector import PatternDetector, PatternCompressor, EnhancedPatternDetector
 from tracker.loop_manager import LoopManager
 from tracker.tempo_map import EnhancedTempoMap
@@ -1246,6 +1250,78 @@ class TestCompressionStatsCoverage(unittest.TestCase):
         compressed = {'pattern_0': {'events': [{'note': 1, 'volume': 1}] * 2}}
         stats = self.compressor.calculate_compression_stats(original, compressed, total_events=4)
         self.assertAlmostEqual(stats['coverage_ratio'], 100.0)
+
+
+class _AllChunksFailExecutor:
+    """Fake ProcessPoolExecutor whose every submitted future raises on result(),
+    simulating a per-chunk worker failure/timeout without spawning processes."""
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def submit(self, fn, chunk):
+        fut = Future()
+        fut.set_exception(RuntimeError("injected chunk failure"))
+        return fut
+
+
+class TestParallelChunkFailureRecovery(unittest.TestCase):
+    """A failed/timed-out chunk covers exactly one pattern length. It must not
+    be silently dropped with only a transient tqdm line (#106): the length is
+    recovered in-process, and if that also fails the loss is surfaced durably."""
+
+    def _detector(self):
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        return ParallelPatternDetector(
+            tempo_map, min_pattern_length=3, max_pattern_length=6)
+
+    def _input(self):
+        # >1 length chunk (3..6) so the parallel path runs; clear repeats so
+        # there are real candidates to lose.
+        seq = [(60 + (i % 3), 100) for i in range(12)]
+        events = [{'note': a, 'volume': b, 'frame': i}
+                  for i, (a, b) in enumerate(seq)]
+        return seq, events
+
+    def test_failed_chunk_is_recovered_in_process(self):
+        pdp = self._detector()
+        seq, events = self._input()
+        expected = pdp._detect_patterns_serial(seq, events)
+        with patch('tracker.pattern_detector_parallel.ProcessPoolExecutor',
+                   _AllChunksFailExecutor), redirect_stdout(io.StringIO()):
+            got = pdp._detect_patterns_parallel(seq, events)
+        # Every failed chunk was recovered with the same helper the serial path
+        # uses, and selection is order-independent, so the result is identical.
+        self.assertTrue(expected, "input should yield patterns for the test to bite")
+        self.assertEqual(got, expected)
+
+    def test_unrecoverable_chunk_surfaces_durable_warning(self):
+        pdp = self._detector()
+        seq, events = self._input()
+
+        def _boom(*a, **k):
+            raise RuntimeError("injected serial-retry failure")
+
+        buf = io.StringIO()
+        with patch('tracker.pattern_detector_parallel.ProcessPoolExecutor',
+                   _AllChunksFailExecutor), \
+             patch('tracker.pattern_detector_parallel._collect_length_candidates',
+                   _boom), \
+             redirect_stdout(buf):
+            result = pdp._detect_patterns_parallel(seq, events)
+
+        out = buf.getvalue()
+        # Lengths 3..6 all fail AND all in-process retries fail -> a single
+        # persistent end-of-run warning naming the count, not just tqdm noise.
+        self.assertIn("Partial pattern detection", out)
+        self.assertIn("4 length(s)", out)
+        self.assertEqual(result, {})  # nothing recovered, but no crash
 
 
 if __name__ == '__main__':
