@@ -147,8 +147,16 @@ class BaseMapper(ABC):
 
         Some mappers need vector table fixes or other adjustments.
 
+        SECURITY INVARIANT (#263): the returned text is executed as a shell
+        snippet by ``ROMCompiler._run_post_process`` (and embedded verbatim into
+        the generated build.sh/build.bat), so it MUST be a static, compile-time
+        constant. Never interpolate a runtime- or user-influenced value (project
+        path, output ROM name, song title, ...) into it — doing so creates a
+        shell-injection vector. Overrides that need such a value must sanitize/
+        quote it and update the mapper post-process regression test.
+
         Returns:
-            Shell commands for post-processing, or empty string
+            Static shell commands for post-processing, or empty string
         """
         return ""
 

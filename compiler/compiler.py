@@ -77,11 +77,19 @@ class ROMCompiler:
         BaseMapper.generate_build_script embeds into build.sh/build.bat, so it
         runs the same way here: as shell text, from the project directory
         (matching where build.sh's relative `game.nes` path resolves).
+
+        `shell=True` is inherent to this contract — the snippet is multi-line
+        shell script (`set -e`, `if %errorlevel% ...`), not an argv list, so it
+        cannot be run without a shell. Safety therefore rests on the invariant
+        that `commands` is a static compile-time constant produced by
+        BaseMapper.generate_post_process_commands (see its SECURITY INVARIANT and
+        the mapper post-process regression test), never user/runtime-derived
+        text. Do not pass caller-influenced strings here (#263).
         """
         try:
             result = subprocess.run(
                 commands,
-                shell=True,
+                shell=True,  # nosec B602 — static mapper-constant text only (#263)
                 cwd=working_dir,
                 capture_output=True,
                 text=True,
