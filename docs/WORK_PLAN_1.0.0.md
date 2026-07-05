@@ -1,5 +1,13 @@
 # MIDI2NES Work Plan to Version 1.0.0
 
+> **Archived — historical snapshot.** This plan was written against v0.3.5
+> (December 2024, 177 tests) and is 18+ months stale (project is now
+> v0.5.0-dev with 789+ tests; patterns, arranger, DPCM, and MMC3 support have
+> all since shipped — see `HISTORY.md`). It is superseded by
+> `docs/ROADMAP.md` for current/forward-looking plans (#226/TD-17). Kept for
+> historical reference only; do not treat unchecked items below as open work
+> without first checking `ROADMAP.md` and `HISTORY.md`.
+
 ## Current Status Assessment (December 2024)
 - **Current Version**: v0.3.5
 - **Test Coverage**: 177/177 tests passing (100%)

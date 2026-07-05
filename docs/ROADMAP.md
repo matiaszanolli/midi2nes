@@ -3,6 +3,9 @@
 **Current version:** `v0.5.0-dev` — see [HISTORY.md](../HISTORY.md) for what
 shipped in each release and [MEMORY.md](../MEMORY.md) for durable project notes.
 
+This is the authoritative forward-looking plan. `docs/WORK_PLAN_1.0.0.md` is an
+archived v0.3.5-era snapshot (#226/TD-17) — superseded by this document.
+
 The pipeline is fully operational end-to-end (MIDI → playable NES ROM). The road
 to **v1.0.0** is about polish, robustness, broader format/hardware coverage, and
 documentation — not core functionality.
