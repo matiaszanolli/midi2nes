@@ -17,7 +17,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from tracker.parser_fast import parse_midi_to_frames
 from tracker.track_mapper import assign_tracks_to_nes_channels
-from nes.emulator_core import NESEmulatorCore
+from nes.emulator_core import NESEmulatorCore, frames_to_events
 from tracker.pattern_detector_parallel import ParallelPatternDetector
 from tracker.tempo_map import EnhancedTempoMap
 from exporter.exporter_ca65 import CA65Exporter
@@ -216,21 +216,13 @@ class PerformanceBenchmark:
             # production detect-patterns default path (#117).
             tempo_map = EnhancedTempoMap(initial_tempo=500000)
             detector = ParallelPatternDetector(tempo_map, min_pattern_length=3)
-            
-            # Extract events from frames structure
-            events = []
-            for channel_name, channel_frames in frames_data.items():
-                for frame_num, frame_data in channel_frames.items():
-                    event = {
-                        'frame': int(frame_num),
-                        'note': frame_data.get('note', 0),
-                        'volume': frame_data.get('volume', 0)
-                    }
-                    events.append(event)
-            
-            # Sort events by frame number
-            events.sort(key=lambda x: x['frame'])
-            
+
+            # Extract events from frames structure via the shared extractor so
+            # the dpcm_sample_map side table is skipped exactly as the two
+            # production sites do. Iterating it inline bound frame_data to an int
+            # and raised AttributeError on any drum-containing MIDI (#261).
+            events = frames_to_events(frames_data)
+
             # Detect patterns
             return detector.detect_patterns(events)
         

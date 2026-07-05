@@ -14,7 +14,7 @@ except ImportError:
     __version__ = "0.5.0-dev"
 
 from tracker.track_mapper import assign_tracks_to_nes_channels
-from nes.emulator_core import NESEmulatorCore
+from nes.emulator_core import NESEmulatorCore, frames_to_events
 from arranger import arrange_for_nes
 from nes.project_builder import NESProjectBuilder
 from nes.song_bank import SongBank
@@ -534,24 +534,9 @@ def run_detect_patterns(args):
                                        max_pattern_length=PATTERN_MAX_LENGTH,
                                        max_events=max_events, analyze_tempo=False)
 
-    # Extract events from frames structure
-    events = []
-    for channel_name, channel_frames in frames.items():
-        # `dpcm_sample_map` (#200/D-14) is a dense_id -> catalog_id side table,
-        # not a per-frame channel -- skip it here like the fixed channel-name
-        # loops elsewhere already do implicitly.
-        if channel_name == 'dpcm_sample_map':
-            continue
-        for frame_num, frame_data in channel_frames.items():
-            event = {
-                'frame': int(frame_num),
-                'note': frame_data.get('note', 0),
-                'volume': frame_data.get('volume', 0)
-            }
-            events.append(event)
-
-    # Sort events by frame number
-    events.sort(key=lambda x: x['frame'])
+    # Extract events from frames structure (shared extractor skips the
+    # dpcm_sample_map side table and returns them frame-sorted — #261).
+    events = frames_to_events(frames)
 
     # This subcommand runs the sequential EnhancedPatternDetector, whose internal
     # cap is max_events (DETECTOR_MAX_EVENTS unless overridden). Sample uniformly
@@ -736,20 +721,9 @@ def run_full_pipeline(args):
                 print("[4/7] Detecting patterns for compression...")
                 tempo_map = EnhancedTempoMap(initial_tempo=500000)
                 
-                # Convert frames to events for pattern detection
-                events = []
-                for channel_name, channel_frames in frames.items():
-                    # Skip the dpcm_sample_map side table (#200/D-14) -- see
-                    # run_detect_patterns's identical guard.
-                    if channel_name == 'dpcm_sample_map':
-                        continue
-                    for frame_num, frame_data in channel_frames.items():
-                        events.append({
-                            'frame': int(frame_num),
-                            'note': frame_data.get('note', 0),
-                            'volume': frame_data.get('volume', 0)
-                        })
-                events.sort(key=lambda x: x['frame'])
+                # Convert frames to events for pattern detection (shared
+                # extractor skips the dpcm_sample_map side table — #261).
+                events = frames_to_events(frames)
 
                 # Check if we should skip pattern detection for very large files
                 LARGE_FILE_THRESHOLD = 10000

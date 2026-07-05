@@ -300,5 +300,40 @@ class TestMMC1BankedLinkerConfig(unittest.TestCase):
         self.assertEqual(MMC1Mapper().get_data_capacity(), 112 * 1024)
 
 
+class TestPostProcessCommandsAreStatic(unittest.TestCase):
+    """Guard the post-process shell-injection surface (#263).
+
+    ROMCompiler._run_post_process runs generate_post_process_commands() output
+    as a shell snippet (shell=True is inherent — it is multi-line shell text,
+    also embedded verbatim into build.sh/build.bat). Safety rests on that text
+    being a static compile-time constant, never a runtime/user-derived value.
+
+    Every shipped mapper returns "" today. If a mapper starts returning
+    non-empty post-process content, this test fails on purpose — forcing a
+    deliberate review that the new text is static (no interpolated project path,
+    ROM name, song title, ...) before it can ship. Update the expected value
+    here only after confirming that.
+    """
+
+    def test_shipped_mappers_emit_no_post_process(self):
+        for mapper_cls in ALL_MAPPERS:
+            mapper = mapper_cls()
+            for is_windows in (False, True):
+                self.assertEqual(
+                    mapper.generate_post_process_commands(is_windows), "",
+                    f"{mapper_cls.__name__} must return static post-process "
+                    f"text (see #263); a new non-empty value needs review",
+                )
+
+    def test_output_is_deterministic(self):
+        """A static constant does not vary between calls (a value that changed
+        run-to-run would signal runtime interpolation)."""
+        for mapper_cls in ALL_MAPPERS:
+            mapper = mapper_cls()
+            first = mapper.generate_post_process_commands(False)
+            second = mapper.generate_post_process_commands(False)
+            self.assertEqual(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()
