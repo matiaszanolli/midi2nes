@@ -174,8 +174,50 @@ class TestSongBank(unittest.TestCase):
         
         # Test with invalid loop point
         with self.assertRaises(ValueError):
-            self.bank.add_song('test_song', self.test_song_data, 
+            self.bank.add_song('test_song', self.test_song_data,
                              {'loop_point': -1})
+
+    def test_import_bank_missing_file_raises_clear_error(self):
+        """Regression (#220/SAFE-09): a missing --bank file must raise a
+        clear FileNotFoundError, not a raw traceback from Path.read_text()."""
+        missing = Path(self.temp_dir) / "does_not_exist.json"
+        with self.assertRaises(FileNotFoundError):
+            self.bank.import_bank(str(missing))
+
+    def test_import_bank_invalid_json_raises_clear_error(self):
+        """Regression (#220/SAFE-09): truncated/garbage JSON must raise a
+        clear ValueError, not a raw json.JSONDecodeError traceback."""
+        self.test_bank_path.write_text("{not valid json")
+        with self.assertRaises(ValueError):
+            self.bank.import_bank(str(self.test_bank_path))
+
+    def test_import_bank_missing_bank_info_raises_clear_error(self):
+        """Regression (#220/SAFE-09): a bank file missing 'bank_info' must
+        raise a clear ValueError, not a raw KeyError."""
+        self.test_bank_path.write_text(json.dumps({'songs': {}}))
+        with self.assertRaises(ValueError):
+            self.bank.import_bank(str(self.test_bank_path))
+
+    def test_import_bank_missing_songs_raises_clear_error(self):
+        """Regression (#220/SAFE-09): a bank file missing 'songs' must raise
+        a clear ValueError, not a raw KeyError."""
+        self.test_bank_path.write_text(json.dumps({
+            'bank_info': {'total_banks': 1, 'bank_size': 100}
+        }))
+        with self.assertRaises(ValueError):
+            self.bank.import_bank(str(self.test_bank_path))
+
+    def test_import_bank_valid_file_roundtrips(self):
+        """A well-formed bank file (as produced by export_bank) must still
+        import successfully after the new guard."""
+        self.bank.add_song('test_song', self.test_song_data, {'tempo_base': 120})
+        self.bank.export_bank(str(self.test_bank_path))
+
+        reloaded = SongBank()
+        reloaded.import_bank(str(self.test_bank_path))
+        self.assertIn('test_song', reloaded.songs)
+        self.assertEqual(reloaded.total_banks, self.bank.total_banks)
+        self.assertEqual(reloaded.max_bank_size, self.bank.max_bank_size)
 
 if __name__ == '__main__':
     unittest.main()

@@ -886,6 +886,54 @@ class TestSongBankCommands:
         
         mock_print.assert_called_once_with("Error: Song 'Nonexistent Song' not found in bank")
 
+    @patch('builtins.print')
+    def test_run_song_add_corrupt_bank_exits_cleanly(self, mock_print):
+        """Regression (#220/SAFE-09): a corrupt --bank file must exit(1)
+        with a clean [ERROR] message, not a raw traceback."""
+        self.test_bank.write_text("{not valid json")
+
+        args = Namespace(
+            input=str(self.test_midi),
+            bank=str(self.test_bank),
+            name="Test Song",
+            composer=None,
+            loop_point=None,
+            tags=None,
+            tempo=120
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_song_add(args)
+        assert exc_info.value.code == 1
+        printed_text = " ".join(str(call[0][0]) for call in mock_print.call_args_list)
+        assert "[ERROR]" in printed_text
+
+    @patch('builtins.print')
+    def test_run_song_list_corrupt_bank_exits_cleanly(self, mock_print):
+        """Regression (#220/SAFE-09): same guard for `song list`."""
+        self.test_bank.write_text("{not valid json")
+
+        args = Namespace(bank=str(self.test_bank))
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_song_list(args)
+        assert exc_info.value.code == 1
+        printed_text = " ".join(str(call[0][0]) for call in mock_print.call_args_list)
+        assert "[ERROR]" in printed_text
+
+    @patch('builtins.print')
+    def test_run_song_remove_corrupt_bank_exits_cleanly(self, mock_print):
+        """Regression (#220/SAFE-09): same guard for `song remove`."""
+        self.test_bank.write_text("{not valid json")
+
+        args = Namespace(bank=str(self.test_bank), name="Test Song")
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_song_remove(args)
+        assert exc_info.value.code == 1
+        printed_text = " ".join(str(call[0][0]) for call in mock_print.call_args_list)
+        assert "[ERROR]" in printed_text
+
 
 class TestConfigCommands:
     """Test configuration management commands."""

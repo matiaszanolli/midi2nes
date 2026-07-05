@@ -175,10 +175,32 @@ class SongBank:
         Path(output_path).write_text(json.dumps(bank_data, indent=2))
 
     def import_bank(self, input_path: str) -> None:
-        """Import a song bank from a file"""
-        data = json.loads(Path(input_path).read_text())
-        self.total_banks = data['bank_info']['total_banks']
-        self.max_bank_size = data['bank_info']['bank_size']
+        """Import a song bank from a file.
+
+        Guards existence/parse/key errors with a clear message instead of a
+        raw traceback (#220/SAFE-09) -- the same defect class SAFE-01/#120
+        fixed for the pipeline subcommands via `main.py`'s `load_json_stage`,
+        which doesn't apply here since this is a library method, not a CLI
+        subcommand (its callers own the process-exit decision).
+        """
+        path = Path(input_path)
+        if not path.exists():
+            raise FileNotFoundError(f"song bank file not found: {path}")
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError as e:
+            raise ValueError(f"song bank file is not valid JSON: {path} ({e})") from e
+        if not isinstance(data, dict):
+            raise ValueError(f"song bank file must be a JSON object: {path}")
+        bank_info = data.get('bank_info')
+        if not isinstance(bank_info, dict) or 'total_banks' not in bank_info or 'bank_size' not in bank_info:
+            raise ValueError(
+                f"song bank file missing expected 'bank_info' (with 'total_banks'/'bank_size'): {path}"
+            )
+        if 'songs' not in data:
+            raise ValueError(f"song bank file missing expected key 'songs': {path}")
+        self.total_banks = bank_info['total_banks']
+        self.max_bank_size = bank_info['bank_size']
         self.songs = data['songs']
     
     def get_bank_data(self) -> Dict:
