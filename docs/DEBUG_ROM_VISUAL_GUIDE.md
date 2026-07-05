@@ -118,7 +118,7 @@ FRAME: 0234
 
 **Interpretation:**
 - ❌ ROM not booting at all
-- 🔍 **Check:** ROM file size (should be ~131KB for MMC1)
+- 🔍 **Check:** ROM file size (should be ~512KB for the default MMC3 build; ~128KB/131KB if built with `--mapper mmc1`; ~32KB for `--mapper nrom`)
 - 🔍 **Check:** ROM header (first 4 bytes should be "NES\x1a")
 - 🔍 **Check:** Reset vector at $FFFC-$FFFD
 
