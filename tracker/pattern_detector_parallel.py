@@ -135,6 +135,7 @@ class ParallelPatternDetector:
 
         # Process chunks in parallel
         all_candidate_patterns = []
+        failed_lengths = []  # lengths whose chunk failed AND couldn't be recovered
 
         try:
             with ProcessPoolExecutor(
@@ -147,25 +148,44 @@ class ParallelPatternDetector:
                     executor.submit(_detect_patterns_worker, chunk): chunk
                     for chunk in work_chunks
                 }
-                
+
                 # Collect results as they complete with progress bar
                 with tqdm(total=len(work_chunks), desc="Processing pattern chunks", unit="chunk") as pbar:
                     for future in as_completed(future_to_chunk):
+                        length = future_to_chunk[future]['pattern_length']
                         try:
                             chunk_patterns = future.result(timeout=30)  # 30s timeout per chunk
                             all_candidate_patterns.extend(chunk_patterns)
-                            pbar.update(1)
-                            pbar.set_postfix(patterns=len(all_candidate_patterns))
                         except Exception as e:
-                            pbar.write(f"  ⚠️  Chunk failed: {e}")
-                            pbar.update(1)
-                            continue
-        
+                            # A chunk covers exactly one pattern length. Instead of
+                            # silently dropping that length's candidates (degrading
+                            # compression with only a transient tqdm line), recover
+                            # it in-process with the same helper the serial path
+                            # uses. Only if that also fails is the length truly lost
+                            # — recorded and surfaced durably after the loop (#106).
+                            pbar.write(f"  ⚠️  Chunk for length {length} failed: {e} — retrying serially")
+                            try:
+                                all_candidate_patterns.extend(
+                                    _collect_length_candidates(sequence, valid_events, length)
+                                )
+                            except Exception as e2:
+                                failed_lengths.append(length)
+                                pbar.write(f"  ❌ Serial retry for length {length} also failed: {e2}")
+                        pbar.update(1)
+                        pbar.set_postfix(patterns=len(all_candidate_patterns))
+
         except Exception as e:
             print(f"  ❌ Parallel processing failed, falling back to serial: {e}")
             # Fallback to serial processing
             return self._detect_patterns_serial(sequence, valid_events)
-        
+
+        # A transient stderr line vanishes with the tqdm bar; emit a persistent
+        # end-of-run warning naming the lost lengths so a partial detection run
+        # stays visible (#106).
+        if failed_lengths:
+            print(f"  ⚠️  Partial pattern detection: {len(failed_lengths)} length(s) "
+                  f"could not be analyzed ({sorted(failed_lengths)}); compression may be suboptimal")
+
         print(f"📈 Found {len(all_candidate_patterns)} candidate patterns")
         
         # Select best non-overlapping patterns
