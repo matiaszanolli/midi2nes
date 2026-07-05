@@ -483,11 +483,17 @@ def run_detect_patterns(args):
 def run_song_add(args):
     """Add a song to the song bank"""
     bank = SongBank()
-    
-    # Load existing bank if specified
+
+    # Load existing bank if specified. Guards a corrupt/malformed --bank file
+    # (#220/SAFE-09) -- the same defect class SAFE-01/#120 fixed for the
+    # pipeline subcommands, extended here to the song-bank family.
     if args.bank and Path(args.bank).exists():
-        bank.import_bank(args.bank)
-    
+        try:
+            bank.import_bank(args.bank)
+        except Exception as e:
+            print(f"[ERROR] Failed to load song bank: {e}")
+            sys.exit(1)
+
     # Prepare metadata
     metadata = {
         'composer': args.composer,
@@ -509,10 +515,14 @@ def run_song_list(args):
     if not Path(args.bank).exists():
         print(f"Error: Song bank file not found: {args.bank}")
         return
-    
+
     bank = SongBank()
-    bank.import_bank(args.bank)
-    
+    try:
+        bank.import_bank(args.bank)
+    except Exception as e:
+        print(f"[ERROR] Failed to load song bank: {e}")
+        sys.exit(1)
+
     print("\nSongs in bank:")
     print("-" * 50)
     for name, song_data in bank.songs.items():
@@ -532,10 +542,14 @@ def run_song_remove(args):
     if not Path(args.bank).exists():
         print(f"Error: Song bank file not found: {args.bank}")
         return
-    
+
     bank = SongBank()
-    bank.import_bank(args.bank)
-    
+    try:
+        bank.import_bank(args.bank)
+    except Exception as e:
+        print(f"[ERROR] Failed to load song bank: {e}")
+        sys.exit(1)
+
     if args.name not in bank.songs:
         print(f"Error: Song '{args.name}' not found in bank")
         return

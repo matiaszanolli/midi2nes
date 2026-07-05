@@ -6,18 +6,31 @@ from tracker.tempo_map import (EnhancedTempoMap, TempoValidationConfig, TempoOpt
                                TempoChangeType, TempoValidationError)
 from core.exceptions import InvalidMIDIError
 
+
+def _open_midi_file(midi_path):
+    """Open a MIDI file, converting parse/IO failures to InvalidMIDIError.
+
+    Shared by both `mido.MidiFile(midi_path)` call sites in this module
+    (#221/SAFE-10) -- `parse_midi_to_frames_with_analysis` re-opens the same
+    path to rebuild the tempo map, and that second open used to be
+    completely unguarded even though it can hit the same TOCTOU/IO failures
+    as the first.
+    """
+    try:
+        return mido.MidiFile(midi_path)
+    except FileNotFoundError:
+        raise  # file does not exist — not a MIDI validity issue
+    except (EOFError, OSError, ValueError) as e:
+        raise InvalidMIDIError(str(midi_path), str(e)) from e
+
+
 def parse_midi_to_frames(midi_path):
     """
     Fast MIDI parser that only does basic MIDI-to-frames conversion.
     Pattern detection, loop detection, and other expensive analysis
     is moved to separate pipeline steps.
     """
-    try:
-        mid = mido.MidiFile(midi_path)
-    except FileNotFoundError:
-        raise  # file does not exist — not a MIDI validity issue
-    except (EOFError, OSError, ValueError) as e:
-        raise InvalidMIDIError(str(midi_path), str(e)) from e
+    mid = _open_midi_file(midi_path)
 
     # SMPTE-division MIDI (division word bit 15 set) makes mido report
     # ticks_per_beat as a negative value; zero is equally degenerate. Either
@@ -177,7 +190,7 @@ def parse_midi_to_frames_with_analysis(midi_path):
     )
 
     # Rebuild tempo map (this could be cached from first pass)
-    mid = mido.MidiFile(midi_path)
+    mid = _open_midi_file(midi_path)
     for track in mid.tracks:
         current_tick = 0
         for msg in track:
