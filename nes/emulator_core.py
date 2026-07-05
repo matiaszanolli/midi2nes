@@ -235,3 +235,33 @@ class NESEmulatorCore:
                     }
 
         return processed
+
+
+# The non-channel key process_all_tracks injects alongside the real channels
+# (see above): a dense_id -> catalog_id side table, not a per-frame channel.
+DPCM_SAMPLE_MAP_KEY = 'dpcm_sample_map'
+
+
+def frames_to_events(frames):
+    """Flatten a ``process_all_tracks`` frames dict into a frame-sorted event
+    list for pattern detection.
+
+    Skips the ``dpcm_sample_map`` side table (#200/D-14) — it is a
+    ``{str(dense_id): catalog_id}`` map, not a ``{frame_num: {...}}`` channel,
+    so iterating it as one would call ``int.get('note')`` and raise. This is the
+    single shared extractor for every ``frames``->events call site (the two
+    ``main.py`` pattern-detection paths and the benchmark harness) so the guard
+    cannot drift out of one of them again (#261).
+    """
+    events = []
+    for channel_name, channel_frames in frames.items():
+        if channel_name == DPCM_SAMPLE_MAP_KEY:
+            continue
+        for frame_num, frame_data in channel_frames.items():
+            events.append({
+                'frame': int(frame_num),
+                'note': frame_data.get('note', 0),
+                'volume': frame_data.get('volume', 0),
+            })
+    events.sort(key=lambda e: e['frame'])
+    return events

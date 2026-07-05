@@ -429,5 +429,34 @@ class TestBenchmarkErrorHandling:
             assert benchmark_dir.exists()
 
 
+class TestBenchmarkDrumFramesRegression:
+    """Regression for #261: benchmark_pattern_detection must skip the
+    dpcm_sample_map side table.
+
+    process_all_tracks injects a non-channel `dpcm_sample_map` key
+    ({str(dense_id): catalog_id}) whenever a song references DPCM drums. The
+    benchmark used to iterate it as a channel, binding frame_data to an int and
+    raising `AttributeError: 'int' object has no attribute 'get'` — so pattern
+    detection (the slowest, most important stage) was un-measurable on the
+    common percussion-containing MIDI.
+    """
+
+    def test_pattern_detection_completes_on_drum_frames(self):
+        benchmark = PerformanceBenchmark()
+        frames = {
+            'pulse1': {str(i): {'note': 60 + (i % 3), 'volume': 10}
+                       for i in range(20)},
+            'dpcm': {str(i): {'note': 1, 'volume': 15} for i in range(0, 20, 5)},
+            # The non-channel side table that used to crash the benchmark.
+            'dpcm_sample_map': {'0': 1318, '1': 1620},
+        }
+        # Must not raise AttributeError on the dpcm_sample_map entry.
+        result, profile_result = benchmark.benchmark_pattern_detection(frames)
+
+        assert 'patterns' in result   # real detector output, stage completed
+        assert profile_result.stage == 'pattern_detection'
+        assert profile_result.success
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
