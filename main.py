@@ -438,14 +438,37 @@ def run_export(args):
         else:
             patterns = {}
             references = {}
-            
+
         exporter = CA65Exporter()
+
+        # Resolve --mapper BEFORE exporting when this is a direct (no
+        # patterns) export -- a bank-switching-aware export (MMC1,
+        # #255/MAP-2026-07-05-1) must know the target mapper up front to
+        # bin-pack frame tables and emit bank-switches. An empty `patterns`
+        # dict falls through to direct export the same way
+        # export_tables_with_patterns itself dispatches on it, even if
+        # --patterns was passed but yielded no patterns.
+        mapper = None
+        if not patterns:
+            from mappers.factory import MapperFactory
+            mapper_choice = get_mapper_choice(args)
+            try:
+                if mapper_choice == 'auto':
+                    estimated_size = exporter.estimate_direct_export_size(frames)
+                    mapper = MapperFactory.auto_select(estimated_size)
+                else:
+                    mapper = MapperFactory.get_mapper(mapper_choice)
+            except ValueError as e:
+                print(f"[ERROR] {e}")
+                sys.exit(1)
+
         exporter.export_tables_with_patterns(
             frames,
             patterns,
             references,
             args.output,
-            standalone=False  # Don't include header and vectors for project builder
+            standalone=False,  # Don't include header and vectors for project builder
+            mapper=mapper
         )
             
         # Pack DPCM samples for exported ASM. Tracks any failure so it can be
@@ -794,19 +817,40 @@ def run_full_pipeline(args):
             # Step 5: Export to CA65 assembly
             print("[5/7] Exporting to CA65 assembly...")
             music_asm = temp_path / "music.asm"
-            
+            exporter = CA65Exporter()
+
+            # Resolve --mapper BEFORE exporting for a direct (no-patterns)
+            # build: a bank-switching-aware export (MMC1, #255/MAP-2026-07-05-1)
+            # must know the target mapper up front to bin-pack frame tables and
+            # emit bank-switches, unlike the bytecode/pattern path below (always
+            # forced to MMC3, which does its own bank-switching internally, so
+            # resolving it later at Step 6 -- as before -- is fine there).
+            mapper = None
+            if not use_patterns:
+                from mappers.factory import MapperFactory
+                mapper_choice = get_mapper_choice(args)
+                try:
+                    if mapper_choice == 'auto':
+                        estimated_size = exporter.estimate_direct_export_size(frames)
+                        mapper = MapperFactory.auto_select(estimated_size)
+                    else:
+                        mapper = MapperFactory.get_mapper(mapper_choice)
+                except ValueError as e:
+                    print(f"[ERROR] {e}")
+                    sys.exit(1)
+
             # The CA65 exporter emits every byte from `frames`; the detector's
             # pattern `references` are analysis/metrics only and are never read by
             # export_tables_with_patterns (#4). `patterns` truthiness merely
             # selects the macro-bytecode serializer over direct export, so pass an
             # empty references dict rather than building a table nothing consumes.
-            exporter = CA65Exporter()
             exporter.export_tables_with_patterns(
                 frames,
                 pattern_result['patterns'],
                 {},
                 str(music_asm),
-                standalone=False  # We'll create our own project structure
+                standalone=False,  # We'll create our own project structure
+                mapper=mapper
             )
             
             # Step 5.5: Pack DPCM samples. Tracks any failure so the success
@@ -880,12 +924,15 @@ def run_full_pipeline(args):
             # this song's data via MapperFactory.auto_select(), previously
             # reachable only from tests/test_mappers.py. Defaults to mmc3,
             # matching prior hardcoded behavior for callers who don't pass
-            # --mapper.
-            try:
-                mapper = resolve_mapper(get_mapper_choice(args), str(music_asm))
-            except ValueError as e:
-                print(f"[ERROR] {e}")
-                sys.exit(1)
+            # --mapper. Already resolved above for a direct-export build
+            # (#255/MAP-2026-07-05-1); only the bytecode/pattern path (always
+            # forced to MMC3) still resolves here, after export.
+            if mapper is None:
+                try:
+                    mapper = resolve_mapper(get_mapper_choice(args), str(music_asm))
+                except ValueError as e:
+                    print(f"[ERROR] {e}")
+                    sys.exit(1)
 
             # Capacity pre-flight (#11): catch an oversized song with a clear
             # message before ld65 reports a raw region overflow.
@@ -1025,6 +1072,10 @@ def main():
     # offering it made `--format nsf` a silent no-op rather than a real export.
     p_export.add_argument('--format', choices=['ca65'], default='ca65')
     p_export.add_argument('--patterns', help='Path to pattern data JSON (optional)')
+    p_export.add_argument('--mapper', choices=['auto', 'nrom', 'mmc1', 'mmc3'], default='mmc3',
+                           help="NES mapper this export targets (must match the mapper "
+                                "later passed to `prepare`); only affects direct (no "
+                                "patterns) exports. Default: mmc3")
     p_export.set_defaults(func=run_export)
 
     # Keep other existing commands...

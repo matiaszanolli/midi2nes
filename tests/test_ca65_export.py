@@ -1,10 +1,13 @@
 import unittest
+import re
 import subprocess
 import tempfile
 from pathlib import Path
 from exporter.exporter_ca65 import CA65Exporter
 from nes.project_builder import NESProjectBuilder
 from mappers.mmc3 import MMC3Mapper
+from mappers.mmc1 import MMC1Mapper
+from core.exceptions import ExportError
 
 class TestCA65Export(unittest.TestCase):
     def setUp(self):
@@ -479,6 +482,109 @@ class TestCA65Export(unittest.TestCase):
             if test_output.exists():
                 test_output.unlink()
 
+def _patch_music_asm(music_asm_path):
+    """Fix missing entry points in the generated music.asm to ensure compilation."""
+    with open(music_asm_path, 'r') as f:
+        content = f.read()
+
+    append_text = ""
+    if "init_music:" not in content and ".proc init_music" not in content:
+        append_text += "\n.segment \"CODE\"\n.export init_music\ninit_music:\n  rts\n"
+
+    if "update_music:" not in content and ".proc update_music" not in content:
+        append_text += "\n.segment \"CODE\"\n.export update_music\nupdate_music:\n"
+        if "play_music_frame" in content:
+            append_text += "  jsr play_music_frame\n"
+        elif "play_pattern_frame" in content:
+            append_text += "  jsr play_pattern_frame\n"
+        append_text += "  rts\n"
+
+    if append_text:
+        with open(music_asm_path, 'a') as f:
+            f.write(append_text)
+
+
+def _patch_nes_cfg(project_path):
+    """Ensure nes.cfg has the necessary segments for the export."""
+    nes_cfg = project_path / "nes.cfg"
+    if nes_cfg.exists():
+        # Dynamically detect all segments requested by the assembly files
+        required_segments = set()
+        for asm_file in project_path.glob("*.asm"):
+            content = asm_file.read_text()
+            segments = re.findall(r'\.segment\s+"([^"]+)"', content)
+            required_segments.update(segments)
+
+        content = nes_cfg.read_text()
+        modified = False
+
+        # Find default fallback load area (last non-bank specific PRG area)
+        default_load_area = "PRG"
+        for area in ["PRGFIXED", "PRG_ROM", "PRG_BANK_0", "PRG"]:
+            if f"{area}: start =" in content or f"{area}: file =" in content:
+                default_load_area = area
+                break
+
+        if "SEGMENTS {" in content:
+            for seg in required_segments:
+                # Skip standard system segments that require specific memory mapping (ZP, RAM)
+                if f"{seg}:" not in content and seg not in ["ZEROPAGE", "BSS", "HEADER", "VECTORS"]:
+                    # Handle MMC3 Bank switching segments
+                    load_area = default_load_area
+                    if seg.startswith("BANK_"):
+                        bank_num = seg.split("_")[1]
+                        if f"PRG_BANK_{bank_num}: start =" in content:
+                            load_area = f"PRG_BANK_{bank_num}"
+                        elif f"PRG_BANK_{int(bank_num)}: start =" in content:
+                            load_area = f"PRG_BANK_{int(bank_num)}"
+
+                    align = ", align = 64" if seg == "DPCM" else ""
+                    content = content.replace("SEGMENTS {", f"SEGMENTS {{\n    {seg}: load = {load_area}, type = ro{align}, optional = yes;")
+                    modified = True
+
+        if modified:
+            nes_cfg.write_text(content)
+
+
+def _compile_and_link(project_path):
+    """Compile and link the project, return (success, output)"""
+    _patch_nes_cfg(Path(project_path))
+    try:
+        # Compile main.asm
+        result = subprocess.run(
+            ['ca65', 'main.asm', '-o', 'main.o'],
+            cwd=project_path,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            return False, f"Failed to compile main.asm:\n{result.stderr}"
+
+        # Compile music.asm
+        result = subprocess.run(
+            ['ca65', 'music.asm', '-o', 'music.o'],
+            cwd=project_path,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            return False, f"Failed to compile music.asm:\n{result.stderr}"
+
+        # Link the objects
+        result = subprocess.run(
+            ['ld65', '-C', 'nes.cfg', 'main.o', 'music.o', '-o', 'game.nes'],
+            cwd=project_path,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            return False, f"Failed to link:\n{result.stderr}"
+
+        return True, "Compilation successful"
+    except Exception as e:
+        return False, f"Error during compilation: {str(e)}"
+
+
 class TestCA65CompilationIntegration(unittest.TestCase):
     def setUp(self):
         self.exporter = CA65Exporter()
@@ -513,105 +619,15 @@ class TestCA65CompilationIntegration(unittest.TestCase):
 
     def patch_music_asm(self, music_asm_path):
         """Fix missing entry points in the generated music.asm to ensure compilation."""
-        with open(music_asm_path, 'r') as f:
-            content = f.read()
-            
-        append_text = ""
-        if "init_music:" not in content and ".proc init_music" not in content:
-            append_text += "\n.segment \"CODE\"\n.export init_music\ninit_music:\n  rts\n"
-            
-        if "update_music:" not in content and ".proc update_music" not in content:
-            append_text += "\n.segment \"CODE\"\n.export update_music\nupdate_music:\n"
-            if "play_music_frame" in content:
-                append_text += "  jsr play_music_frame\n"
-            elif "play_pattern_frame" in content:
-                append_text += "  jsr play_pattern_frame\n"
-            append_text += "  rts\n"
-            
-        if append_text:
-            with open(music_asm_path, 'a') as f:
-                f.write(append_text)
+        _patch_music_asm(music_asm_path)
 
     def patch_nes_cfg(self):
         """Ensure nes.cfg has the necessary segments for the export."""
-        nes_cfg = self.project_path / "nes.cfg"
-        if nes_cfg.exists():
-            import re
-            
-            # Dynamically detect all segments requested by the assembly files
-            required_segments = set()
-            for asm_file in self.project_path.glob("*.asm"):
-                content = asm_file.read_text()
-                segments = re.findall(r'\.segment\s+"([^"]+)"', content)
-                required_segments.update(segments)
-                
-            content = nes_cfg.read_text()
-            modified = False
-            
-            # Find default fallback load area (last non-bank specific PRG area)
-            default_load_area = "PRG"
-            for area in ["PRGFIXED", "PRG_ROM", "PRG_BANK_0", "PRG"]:
-                if f"{area}: start =" in content or f"{area}: file =" in content:
-                    default_load_area = area
-                    break
-                    
-            if "SEGMENTS {" in content:
-                for seg in required_segments:
-                    # Skip standard system segments that require specific memory mapping (ZP, RAM)
-                    if f"{seg}:" not in content and seg not in ["ZEROPAGE", "BSS", "HEADER", "VECTORS"]:
-                        # Handle MMC3 Bank switching segments
-                        load_area = default_load_area
-                        if seg.startswith("BANK_"):
-                            bank_num = seg.split("_")[1]
-                            if f"PRG_BANK_{bank_num}: start =" in content:
-                                load_area = f"PRG_BANK_{bank_num}"
-                            elif f"PRG_BANK_{int(bank_num)}: start =" in content:
-                                load_area = f"PRG_BANK_{int(bank_num)}"
-                        
-                        align = ", align = 64" if seg == "DPCM" else ""
-                        content = content.replace("SEGMENTS {", f"SEGMENTS {{\n    {seg}: load = {load_area}, type = ro{align}, optional = yes;")
-                        modified = True
-                        
-            if modified:
-                nes_cfg.write_text(content)
+        _patch_nes_cfg(self.project_path)
 
     def compile_and_link(self, project_path):
         """Compile and link the project, return (success, output)"""
-        self.patch_nes_cfg()
-        try:
-            # Compile main.asm
-            result = subprocess.run(
-                ['ca65', 'main.asm', '-o', 'main.o'],
-                cwd=project_path,
-                capture_output=True,
-                text=True
-            )
-            if result.returncode != 0:
-                return False, f"Failed to compile main.asm:\n{result.stderr}"
-
-            # Compile music.asm
-            result = subprocess.run(
-                ['ca65', 'music.asm', '-o', 'music.o'],
-                cwd=project_path,
-                capture_output=True,
-                text=True
-            )
-            if result.returncode != 0:
-                return False, f"Failed to compile music.asm:\n{result.stderr}"
-
-            # Link the objects
-            result = subprocess.run(
-                ['ld65', '-C', 'nes.cfg', 'main.o', 'music.o', '-o', 'game.nes'],
-                cwd=project_path,
-                capture_output=True,
-                text=True
-            )
-            if result.returncode != 0:
-                return False, f"Failed to link:\n{result.stderr}"
-
-            return True, "Compilation successful"
-        except Exception as e:
-            return False, f"Error during compilation: {str(e)}"
+        return _compile_and_link(project_path)
 
     def test_basic_project_compilation(self):
         """Test that a basic project with minimal music data compiles"""
@@ -838,6 +854,218 @@ class TestCA65CompilationIntegration(unittest.TestCase):
 
         self.assertEqual(header[0:4], b'NES\x1a', "Invalid iNES header")
         self.assertEqual(header[6] & 0xF0, 0x40, "Mapper should be MMC3 (4)")
+
+
+class TestPackDirectTablesIntoBanks(unittest.TestCase):
+    """Unit tests for _pack_direct_tables_into_banks (#255/MAP-2026-07-05-1)."""
+
+    def setUp(self):
+        self.exporter = CA65Exporter()
+
+    def test_tables_fitting_one_bank_all_land_in_bank_zero(self):
+        names = ['pulse1_note', 'pulse1_control', 'pulse1_timer_lo', 'pulse1_timer_hi']
+        result = self.exporter._pack_direct_tables_into_banks(names, table_length=100, bank_size=16384)
+        self.assertEqual(set(result.values()), {0})
+
+    def test_tables_overflowing_one_bank_spill_into_the_next(self):
+        # 5 tables x 4000 bytes = 20000 bytes; a 16384-byte bank only fits 4.
+        names = [f'table_{i}' for i in range(5)]
+        result = self.exporter._pack_direct_tables_into_banks(names, table_length=4000, bank_size=16384)
+        self.assertEqual(result['table_0'], 0)
+        self.assertEqual(result['table_1'], 0)
+        self.assertEqual(result['table_2'], 0)
+        self.assertEqual(result['table_3'], 0)
+        self.assertEqual(result['table_4'], 1, "5th table must spill into bank 1")
+
+    def test_single_table_exceeding_bank_size_raises_export_error(self):
+        with self.assertRaises(ExportError):
+            self.exporter._pack_direct_tables_into_banks(['huge_table'], table_length=20000, bank_size=16384)
+
+    def test_table_exactly_at_bank_size_is_allowed(self):
+        result = self.exporter._pack_direct_tables_into_banks(['t'], table_length=16384, bank_size=16384)
+        self.assertEqual(result['t'], 0)
+
+
+class TestEstimateDirectExportSize(unittest.TestCase):
+    """Unit tests for estimate_direct_export_size (#255/MAP-2026-07-05-1)."""
+
+    def setUp(self):
+        self.exporter = CA65Exporter()
+
+    def test_matches_actual_export_size_for_tone_channels(self):
+        n = 500
+        frames = {
+            'pulse1': {str(i): {'note': 60, 'pitch': 400, 'control': 0x80} for i in range(n)},
+            'pulse2': {str(i): {'note': 55, 'pitch': 300, 'control': 0x40} for i in range(n)},
+        }
+        estimated = self.exporter.estimate_direct_export_size(frames)
+        # 2 channels x 4 bytes/frame x n frames.
+        self.assertEqual(estimated, 2 * 4 * n)
+
+    def test_accounts_for_noise_and_dpcm_byte_widths(self):
+        n = 200
+        frames = {
+            'noise': {str(i): {'note': 1, 'control': 0, 'volume': 5} for i in range(n)},
+            'dpcm': {str(i): {'note': 1, 'volume': 15} for i in range(n)},
+        }
+        estimated = self.exporter.estimate_direct_export_size(frames)
+        self.assertEqual(estimated, 3 * n + 1 * n)
+
+    def test_empty_frames_estimate_zero(self):
+        self.assertEqual(self.exporter.estimate_direct_export_size({}), 0)
+
+    def test_ignores_dpcm_sample_map_side_table(self):
+        frames = {
+            'pulse1': {'0': {'note': 60, 'pitch': 400, 'control': 0x80}},
+            'dpcm_sample_map': {'0': 1234},
+        }
+        # Only pulse1 (4 bytes x 1 frame) should count.
+        self.assertEqual(self.exporter.estimate_direct_export_size(frames), 4)
+
+
+class TestMMC1BankSwitchedDirectExportStructure(unittest.TestCase):
+    """Structural checks on export_direct_frames' MMC1 output (#255/MAP-2026-07-05-1)."""
+
+    def setUp(self):
+        self.exporter = CA65Exporter()
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _build_frames(self, n_frames, channels=('pulse1', 'pulse2', 'triangle')):
+        frames = {}
+        for ch in channels:
+            frames[ch] = {str(i): {'note': 60, 'pitch': 400, 'control': 0x80, 'volume': 10}
+                           for i in range(n_frames)}
+        return frames
+
+    def test_small_song_stays_on_one_bank_segment(self):
+        """A song small enough to fit one bank must emit only RODATA_BANK_00
+        -- but bank-switch code is still emitted before every table read
+        (even targeting bank 0), since a prior table read elsewhere in the
+        frame could have left a different bank selected."""
+        frames = self._build_frames(50)
+        out = Path(self.tmp) / "small.asm"
+        self.exporter.export_direct_frames(frames, str(out), standalone=False, mapper=MMC1Mapper())
+        content = out.read_text()
+        banks = set(re.findall(r'RODATA_BANK_(\d+)', content))
+        self.assertEqual(banks, {'00'})
+        self.assertIn('Bank-switch', content)
+
+    def test_large_song_spans_multiple_bank_segments_with_switches(self):
+        frames = self._build_frames(6000)  # 3 channels x 4 bytes x 6000 = 72,000 bytes
+        out = Path(self.tmp) / "large.asm"
+        self.exporter.export_direct_frames(frames, str(out), standalone=False, mapper=MMC1Mapper())
+        content = out.read_text()
+        banks = sorted(set(int(m) for m in re.findall(r'RODATA_BANK_(\d+)', content)))
+        self.assertGreater(len(banks), 1, "72,000 bytes must span more than one 16KB bank")
+        self.assertEqual(banks, list(range(len(banks))), "banks must be used contiguously from 0")
+        self.assertIn('Bank-switch', content)
+
+    def test_no_mapper_keeps_single_flat_rodata_segment(self):
+        """Backward compatibility: mapper=None (or a non-banked mapper) must
+        produce byte-for-byte the same single flat RODATA segment as before
+        this fix, with no bank-switch code inserted."""
+        frames = self._build_frames(6000)
+        out = Path(self.tmp) / "flat.asm"
+        self.exporter.export_direct_frames(frames, str(out), standalone=False, mapper=None)
+        content = out.read_text()
+        self.assertEqual(content.count('.segment "RODATA"'), 1)
+        self.assertNotIn('RODATA_BANK', content)
+        self.assertNotIn('Bank-switch', content)
+
+    def test_mmc3_mapper_also_keeps_flat_rodata(self):
+        """MMC3's direct-export mode isn't banked (direct_export_bank_size()
+        returns None), so it must behave like mapper=None too."""
+        frames = self._build_frames(6000)
+        out = Path(self.tmp) / "mmc3_flat.asm"
+        self.exporter.export_direct_frames(frames, str(out), standalone=False, mapper=MMC3Mapper())
+        content = out.read_text()
+        self.assertEqual(content.count('.segment "RODATA"'), 1)
+        self.assertNotIn('RODATA_BANK', content)
+
+    def test_single_channel_exceeding_one_bank_raises_export_error(self):
+        # A single table > 16384 bytes can't be packed into one bank, and the
+        # direct engine doesn't support mid-table bank splitting.
+        frames = self._build_frames(20000, channels=('pulse1',))
+        out = Path(self.tmp) / "toolong.asm"
+        with self.assertRaises(ExportError):
+            self.exporter.export_direct_frames(frames, str(out), standalone=False, mapper=MMC1Mapper())
+
+
+class TestMMC1BankSwitchedRealBuild(unittest.TestCase):
+    """Real ca65/ld65 build of a bank-switched MMC1 ROM (#255/MAP-2026-07-05-1).
+
+    Uses the same patch_music_asm/patch_nes_cfg/compile_and_link helpers as
+    TestCA65CompilationIntegration (module-level, shared rather than
+    duplicated) with an MMC1Mapper project. This is the exact kind of check
+    the issue's evidence section performed manually: the bug ASSEMBLED AND
+    LINKED CLEANLY while silently overflowing RODATA into the fixed engine
+    bank, so success here must additionally verify placement (every
+    RODATA_BANK_NN segment runs at $8000, never spilling into $C000+), not
+    just a nonzero exit code.
+    """
+
+    def setUp(self):
+        self.exporter = CA65Exporter()
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_path = Path(self.temp_dir) / "test_project"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_multi_bank_direct_export_links_with_correct_bank_placement(self):
+        self.project_path.mkdir(parents=True, exist_ok=True)
+        mapper = MMC1Mapper()
+        builder = NESProjectBuilder(str(self.project_path), mapper=mapper)
+
+        # 3 tone channels x 4 bytes/frame x 6000 frames = 72,000 bytes,
+        # spanning multiple 16KB banks -- the exact scenario from the issue.
+        n = 6000
+        frames = {
+            'pulse1': {str(i): {'note': 60 + (i % 12), 'pitch': 400, 'control': 0x80} for i in range(n)},
+            'pulse2': {str(i): {'note': 55, 'pitch': 300, 'control': 0x40} for i in range(n)},
+            'triangle': {str(i): {'note': 40, 'pitch': 200, 'volume': 10} for i in range(n)},
+        }
+
+        music_asm = self.project_path / "music.asm"
+        self.exporter.export_tables_with_patterns(
+            frames, {}, {}, music_asm, standalone=False, mapper=mapper
+        )
+        content = music_asm.read_text()
+        bank_ids = set(re.findall(r'RODATA_BANK_(\d+)', content))
+        self.assertGreater(len(bank_ids), 1,
+                            "fixture must span multiple MMC1 banks to exercise the fix")
+
+        _patch_music_asm(music_asm)
+        prepared = builder.prepare_project(str(music_asm))
+        self.assertTrue(prepared)
+
+        success, output = _compile_and_link(str(self.project_path))
+        self.assertTrue(success, f"MMC1 bank-switched build failed:\n{output}")
+
+        # The real regression check: every RODATA_BANK_NN segment must run at
+        # $8000 (the switchable window). Before the fix, ld65 linked a single
+        # linear PRGSWAP region with NO error, but data past the first 16KB
+        # ran at addresses >= $C000, aliasing the fixed engine bank at
+        # runtime -- exactly the silent failure mode this test must catch.
+        map_result = subprocess.run(
+            ['ld65', '-C', 'nes.cfg', 'main.o', 'music.o', '-o', 'game.nes', '-m', 'map.txt'],
+            cwd=str(self.project_path), capture_output=True, text=True
+        )
+        self.assertEqual(map_result.returncode, 0, map_result.stderr)
+        map_text = (self.project_path / 'map.txt').read_text()
+        bank_lines = [line for line in map_text.splitlines()
+                      if line.strip().startswith('RODATA_BANK_')
+                      and re.search(r'\bRODATA_BANK_\d+\s+[0-9A-F]{6}', line)]
+        self.assertTrue(bank_lines, f"expected RODATA_BANK_NN placement rows in map:\n{map_text}")
+        for line in bank_lines:
+            self.assertIn('008000', line,
+                          f"RODATA bank segment did not run at CPU address $8000: {line}")
+
 
 if __name__ == '__main__':
     unittest.main()
