@@ -106,9 +106,11 @@ class CA65Exporter(BaseExporter):
                 from mappers.mmc3 import MMC3Mapper
                 mapper = MMC3Mapper()
             header_asm = mapper.generate_header_asm()
-            # MMC3 embeds its own `.segment "HEADER"`; NROM/MMC1 don't.
-            if '.segment "HEADER"' not in header_asm:
-                lines.append('.segment "HEADER"')
+            # All mappers (NROM/MMC1/MMC3) return bare `.byte` header rows;
+            # this exporter is the sole owner of `.segment "HEADER"` (#22,
+            # #216/MAP-5 -- a stale comment here used to claim MMC3 embedded
+            # its own segment, which is no longer true for any mapper).
+            lines.append('.segment "HEADER"')
             lines.append(header_asm)
             lines.append('')
 

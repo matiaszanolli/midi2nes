@@ -25,11 +25,11 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import main
 from main import (
-    run_parse, run_map, run_frames, run_prepare, run_export,
+    run_parse, run_map, run_frames, run_prepare, run_export, run_compile,
     run_detect_patterns, run_song_add, run_song_list, run_song_remove,
     load_config, run_config_init, run_config_validate,
     run_benchmark, run_benchmark_memory, run_full_pipeline, main,
-    DETECTOR_MAX_EVENTS
+    DETECTOR_MAX_EVENTS, resolve_mapper, get_mapper_choice
 )
 
 
@@ -132,6 +132,68 @@ class TestMainArgumentParsing:
     def test_default_path_config_flag_requires_value(self):
         """--config with no trailing path must exit 2, not crash or hang."""
         with patch('sys.argv', ['main.py', '--config']):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 2
+
+    def test_default_path_mapper_flag_is_accepted_and_threaded(self):
+        """Regression (#217/MAP-6): --mapper on the default (no-subcommand)
+        pipeline must be accepted and reach run_full_pipeline's args.mapper."""
+        with patch('main.run_full_pipeline') as mock_run:
+            with patch('sys.argv', ['main.py', '--mapper', 'auto', 'song.mid', 'out.nes']):
+                main()
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0].mapper == 'auto'
+
+    def test_default_path_mapper_flag_defaults_to_mmc3(self):
+        """With no --mapper on the default path, args.mapper must default to
+        'mmc3' so run_full_pipeline's behavior is unchanged for existing callers."""
+        with patch('main.run_full_pipeline') as mock_run:
+            with patch('sys.argv', ['main.py', 'song.mid', 'out.nes']):
+                main()
+        assert mock_run.call_args[0][0].mapper == 'mmc3'
+
+    def test_default_path_mapper_flag_rejects_unknown_value(self):
+        """--mapper with an unrecognized value must exit 2, not silently pass
+        a bad string through to resolve_mapper deep in the pipeline."""
+        with patch('sys.argv', ['main.py', '--mapper', 'bogus', 'song.mid', 'out.nes']):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 2
+
+    def test_default_path_mapper_flag_requires_value(self):
+        """--mapper with no trailing value must exit 2, not crash or hang."""
+        with patch('sys.argv', ['main.py', '--mapper']):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 2
+
+    def test_prepare_subcommand_accepts_mapper_choices(self):
+        """The `prepare` subcommand must expose --mapper with the auto/nrom/
+        mmc1/mmc3 choices (#217/MAP-6)."""
+        with patch('main.run_prepare') as mock_run:
+            with patch('sys.argv', ['main.py', 'prepare', 'music.asm', 'out_dir', '--mapper', 'nrom']):
+                main()
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0].mapper == 'nrom'
+
+    def test_prepare_subcommand_rejects_unknown_mapper(self):
+        with patch('sys.argv', ['main.py', 'prepare', 'music.asm', 'out_dir', '--mapper', 'bogus']):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 2
+
+    def test_compile_subcommand_accepts_mapper_but_not_auto(self):
+        """The `compile` subcommand's --mapper must accept concrete mapper
+        names but not 'auto' -- there is no music.asm data size to derive an
+        auto-selection from once a project directory is already prepared."""
+        with patch('main.run_compile') as mock_run:
+            with patch('sys.argv', ['main.py', 'compile', 'project_dir', 'out.nes', '--mapper', 'mmc1']):
+                main()
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0].mapper == 'mmc1'
+
+        with patch('sys.argv', ['main.py', 'compile', 'project_dir', 'out.nes', '--mapper', 'auto']):
             with pytest.raises(SystemExit) as exc:
                 main()
             assert exc.value.code == 2
@@ -382,8 +444,9 @@ class TestRunPrepare:
         assert mock_builder_class.call_args[0][0] == str(self.test_output)
         mock_builder.prepare_project.assert_called_once_with(str(self.test_input))
         
-        # Check success print calls (now includes the `compile` hint line, #15)
-        assert mock_print.call_count == 6
+        # Check success print calls (now includes the `compile` hint line, #15,
+        # and the mapper-capacity line, #217/MAP-6)
+        assert mock_print.call_count == 7
         mock_print.assert_any_call(f" Prepared NES project -> {args.output}")
         mock_print.assert_any_call(" Ready for CC65 compilation!")
 
@@ -431,6 +494,194 @@ class TestRunPrepare:
 
         assert mock_builder_class.call_args.kwargs['debug_mode'] is False
         assert mock_builder_class.call_args[0][0] == str(self.test_output)
+
+    @patch('main.NESProjectBuilder')
+    @patch('builtins.print')
+    def test_run_prepare_defaults_to_mmc3(self, mock_print, mock_builder_class):
+        """Regression (#217/MAP-6): with no --mapper, prepare must still
+        default to MMC3, matching pre-existing behavior."""
+        from mappers.mmc3 import MMC3Mapper
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        args = Namespace(input=str(self.test_input), output=str(self.test_output))
+        run_prepare(args)
+
+        used_mapper = mock_builder_class.call_args.kwargs['mapper']
+        assert isinstance(used_mapper, MMC3Mapper)
+
+    @patch('main.NESProjectBuilder')
+    @patch('builtins.print')
+    def test_run_prepare_honors_explicit_mapper(self, mock_print, mock_builder_class):
+        """Regression (#217/MAP-6): --mapper nrom must reach the builder as an
+        NROMMapper instance, not always MMC3Mapper."""
+        from mappers.nrom import NROMMapper
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        args = Namespace(input=str(self.test_input), output=str(self.test_output), mapper='nrom')
+        run_prepare(args)
+
+        used_mapper = mock_builder_class.call_args.kwargs['mapper']
+        assert isinstance(used_mapper, NROMMapper)
+
+    @patch('main.NESProjectBuilder')
+    @patch('builtins.print')
+    def test_run_prepare_mapper_auto_selects_smallest_that_fits(self, mock_print, mock_builder_class):
+        """Regression (#217/MAP-6): --mapper auto must reach
+        MapperFactory.auto_select() via a real pipeline path, not just
+        tests/test_mappers.py. A tiny music.asm easily fits NROM."""
+        from mappers.nrom import NROMMapper
+        self.test_input.write_text('.segment "CODE"\n.byte 1, 2, 3, 4\n')
+
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        args = Namespace(input=str(self.test_input), output=str(self.test_output), mapper='auto')
+        run_prepare(args)
+
+        used_mapper = mock_builder_class.call_args.kwargs['mapper']
+        assert isinstance(used_mapper, NROMMapper)
+
+
+class TestResolveMapper:
+    """Regression tests for resolve_mapper() (#217/MAP-6): wires
+    MapperFactory.auto_select()/get_mapper() to a real CLI path instead of
+    leaving them reachable only from tests/test_mappers.py."""
+
+    def setup_method(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+
+    def teardown_method(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_explicit_name_returns_matching_mapper(self):
+        from mappers.mmc1 import MMC1Mapper
+        assert isinstance(resolve_mapper('mmc1'), MMC1Mapper)
+
+    def test_get_mapper_choice_defaults_for_magicmock_args(self):
+        """Regression: discovered via tests/test_e2e_pipeline.py's
+        MagicMock()-based args fixture. MagicMock auto-vivifies any accessed
+        attribute instead of raising AttributeError, so a plain
+        getattr(args, 'mapper', 'mmc3') silently returns a MagicMock instead
+        of falling back to 'mmc3' -- get_mapper_choice() must catch this."""
+        args = MagicMock()
+        assert get_mapper_choice(args) == 'mmc3'
+
+    def test_get_mapper_choice_honors_real_string(self):
+        args = Namespace(mapper='nrom')
+        assert get_mapper_choice(args) == 'nrom'
+
+    def test_get_mapper_choice_defaults_for_missing_attribute(self):
+        args = Namespace()
+        assert get_mapper_choice(args) == 'mmc3'
+
+    def test_unknown_name_raises_value_error(self):
+        with pytest.raises(ValueError):
+            resolve_mapper('not-a-real-mapper')
+
+    def test_auto_selects_smallest_mapper_that_fits(self):
+        from mappers.nrom import NROMMapper
+        music_asm = self.temp_dir / "music.asm"
+        music_asm.write_text('.segment "CODE"\n.byte 1, 2, 3\n')
+        assert isinstance(resolve_mapper('auto', str(music_asm)), NROMMapper)
+
+    def test_auto_selects_larger_mapper_for_larger_data(self):
+        from mappers.nrom import NROMMapper
+        from mappers.mmc3 import MMC3Mapper
+        music_asm = self.temp_dir / "music.asm"
+        # NROM's usable capacity is well under 32KB; emit enough .byte data
+        # to overflow it so auto-select must skip up to a bigger mapper.
+        nrom_capacity = NROMMapper().get_data_capacity()
+        lines = ['.segment "CODE"']
+        row = ", ".join(["1"] * 40)
+        rows_needed = (nrom_capacity // 40) + 100
+        lines.extend([f'.byte {row}'] * rows_needed)
+        music_asm.write_text("\n".join(lines))
+        mapper = resolve_mapper('auto', str(music_asm))
+        assert not isinstance(mapper, NROMMapper)
+
+    def test_auto_forces_mmc3_for_bytecode_music_asm(self):
+        """Regression: discovered while wiring up #217/MAP-6. A music.asm
+        built by the MMC3 macro-bytecode exporter references
+        `switch_dpcm_bank`, which only MMC3's generate_bank_switch_code()
+        actually defines as a labeled routine -- NROM/MMC1 builds in this
+        mode fail to link. 'auto' must not pick a smaller mapper just
+        because the (tiny) data would otherwise fit it."""
+        from mappers.mmc3 import MMC3Mapper
+        music_asm = self.temp_dir / "music.asm"
+        music_asm.write_text('; CA65 Assembly Export (MMC3 Macro Bytecode)\n.segment "CODE"\n.byte 1\n')
+        assert isinstance(resolve_mapper('auto', str(music_asm)), MMC3Mapper)
+
+    def test_explicit_non_mmc3_mapper_rejected_for_bytecode_music_asm(self):
+        """Regression: same discovery as above, for an explicit (non-auto)
+        --mapper choice. Must fail with a clear ValueError, not proceed to a
+        cryptic ld65 'unresolved external' at link time."""
+        music_asm = self.temp_dir / "music.asm"
+        music_asm.write_text('; CA65 Assembly Export (MMC3 Macro Bytecode)\n.segment "CODE"\n.byte 1\n')
+        with pytest.raises(ValueError, match="MMC3 macro-bytecode"):
+            resolve_mapper('nrom', str(music_asm))
+
+    def test_explicit_mmc3_accepted_for_bytecode_music_asm(self):
+        from mappers.mmc3 import MMC3Mapper
+        music_asm = self.temp_dir / "music.asm"
+        music_asm.write_text('; CA65 Assembly Export (MMC3 Macro Bytecode)\n.segment "CODE"\n.byte 1\n')
+        assert isinstance(resolve_mapper('mmc3', str(music_asm)), MMC3Mapper)
+
+    def test_non_bytecode_music_asm_does_not_force_mmc3(self):
+        """A direct-frame-export music.asm (no patterns) has no bank-switching
+        dependency, so a small/explicit non-MMC3 mapper choice must proceed
+        normally."""
+        from mappers.nrom import NROMMapper
+        music_asm = self.temp_dir / "music.asm"
+        music_asm.write_text('; CA65 Assembly Export (Direct Frame Data)\n.segment "CODE"\n.byte 1\n')
+        assert isinstance(resolve_mapper('nrom', str(music_asm)), NROMMapper)
+
+
+class TestRunCompile:
+    """Test run_compile's --mapper wiring (#217/MAP-6)."""
+
+    def setup_method(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.project_dir = self.temp_dir / "project"
+        self.project_dir.mkdir()
+        self.output_rom = self.temp_dir / "out.nes"
+
+    def teardown_method(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    @patch('main.validate_rom')
+    @patch('main.compile_rom')
+    def test_run_compile_defaults_to_mmc3(self, mock_compile, mock_validate):
+        from mappers.mmc3 import MMC3Mapper
+        mock_compile.return_value = True
+        mock_validate.return_value = True
+
+        args = Namespace(input=str(self.project_dir), output=str(self.output_rom),
+                          skip_validation=True, verbose=False)
+        run_compile(args)
+
+        used_mapper = mock_compile.call_args.kwargs['mapper']
+        assert isinstance(used_mapper, MMC3Mapper)
+
+    @patch('main.validate_rom')
+    @patch('main.compile_rom')
+    def test_run_compile_honors_explicit_mapper(self, mock_compile, mock_validate):
+        from mappers.nrom import NROMMapper
+        mock_compile.return_value = True
+        mock_validate.return_value = True
+
+        args = Namespace(input=str(self.project_dir), output=str(self.output_rom),
+                          skip_validation=True, verbose=False, mapper='nrom')
+        run_compile(args)
+
+        used_mapper = mock_compile.call_args.kwargs['mapper']
+        assert isinstance(used_mapper, NROMMapper)
 
 
 class TestRunExport:

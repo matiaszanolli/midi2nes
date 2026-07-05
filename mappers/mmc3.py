@@ -51,7 +51,6 @@ class MMC3Mapper(BaseMapper):
         lines = [
             "MEMORY {",
             '    ZP:      start = $00,    size = $0100, type = rw, file = "";',
-            '    OAM:     start = $0200,  size = $0100, type = rw, file = "";',
             '    RAM:     start = $0300,  size = $0500, type = rw, file = "";',
             '    HDR:     start = $0000,  size = $0010, type = ro, file = %O, fill = yes, fillval = $00;'
         ]
@@ -75,7 +74,6 @@ class MMC3Mapper(BaseMapper):
             '    HEADER:   load = HDR, type = ro;',
             '    ZEROPAGE: load = ZP,  type = zp;',
             '    BSS:      load = RAM, type = bss, define = yes;',
-            '    OAM:      load = OAM, type = bss, align = $100;',
             # Lookup/macro/instrument tables are read with absolute addressing by
             # the engine, so they must live in an always-mapped bank. In PRG mode 1
             # the $8000-$9FFF window is the fixed second-to-last bank.
