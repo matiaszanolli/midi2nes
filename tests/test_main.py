@@ -762,7 +762,78 @@ class TestRunExport:
         call_args = mock_exporter.export_tables_with_patterns.call_args
         assert call_args[0][1] == {}  # empty patterns
         assert call_args[0][2] == {}  # empty references
-    
+
+    @patch('main.CA65Exporter')
+    @patch('builtins.print')
+    def test_run_export_resolves_explicit_mapper_before_direct_export(self, mock_print, mock_exporter_class):
+        """Regression (#255/MAP-2026-07-05-1): a bank-switching-aware direct
+        export needs to know the target mapper up front, not after the fact
+        (unlike the old behavior of measuring an already-exported file).
+        run_export must resolve --mapper and pass a real mapper instance into
+        export_tables_with_patterns for a direct (no-patterns) export."""
+        from mappers.mmc1 import MMC1Mapper
+        mock_exporter = Mock()
+        mock_exporter_class.return_value = mock_exporter
+
+        args = Namespace(
+            input=str(self.test_input),
+            output=str(self.test_output),
+            format="ca65",
+            patterns=None,
+            mapper='mmc1'
+        )
+        run_export(args)
+
+        call_kwargs = mock_exporter.export_tables_with_patterns.call_args.kwargs
+        assert isinstance(call_kwargs['mapper'], MMC1Mapper)
+        # estimate_direct_export_size is only needed for 'auto'.
+        mock_exporter.estimate_direct_export_size.assert_not_called()
+
+    @patch('main.CA65Exporter')
+    @patch('builtins.print')
+    def test_run_export_auto_mapper_estimates_size_before_export(self, mock_print, mock_exporter_class):
+        """--mapper auto must estimate size from `frames` (via the exporter's
+        own estimate_direct_export_size) BEFORE exporting, then pass the
+        resolved mapper through -- not measure the file after export."""
+        from mappers.nrom import NROMMapper
+        mock_exporter = Mock()
+        mock_exporter.estimate_direct_export_size.return_value = 1024
+        mock_exporter_class.return_value = mock_exporter
+
+        args = Namespace(
+            input=str(self.test_input),
+            output=str(self.test_output),
+            format="ca65",
+            patterns=None,
+            mapper='auto'
+        )
+        run_export(args)
+
+        mock_exporter.estimate_direct_export_size.assert_called_once()
+        call_kwargs = mock_exporter.export_tables_with_patterns.call_args.kwargs
+        assert isinstance(call_kwargs['mapper'], NROMMapper)
+
+    @patch('main.CA65Exporter')
+    @patch('builtins.print')
+    def test_run_export_bytecode_mode_leaves_mapper_unresolved(self, mock_print, mock_exporter_class):
+        """When real patterns are supplied (bytecode/MMC3 path), run_export
+        must not try to resolve a mapper itself -- it passes mapper=None
+        through, matching prior behavior for that path."""
+        mock_exporter = Mock()
+        mock_exporter_class.return_value = mock_exporter
+
+        args = Namespace(
+            input=str(self.test_input),
+            output=str(self.test_output),
+            format="ca65",
+            patterns=str(self.test_patterns),
+            mapper='mmc1'
+        )
+        run_export(args)
+
+        call_kwargs = mock_exporter.export_tables_with_patterns.call_args.kwargs
+        assert call_kwargs['mapper'] is None
+
     def test_run_export_missing_frames_file(self):
         """Regression (#120): a missing frames file must fail with a clear
         [ERROR] message and exit 1, not a bare FileNotFoundError traceback."""

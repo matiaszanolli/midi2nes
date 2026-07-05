@@ -6,7 +6,7 @@ Each mapper generates its own header, linker config, and init code.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import os
 
 
@@ -93,6 +93,21 @@ class BaseMapper(ABC):
             CA65 assembly code to switch banks
         """
         return ""  # Default: no bank switching (NROM)
+
+    def direct_export_bank_size(self) -> Optional[int]:
+        """Bytes of switchable-window capacity per bank for direct
+        (``--no-patterns``) export, or None if this mapper's PRG is flat/
+        fixed and needs no runtime bank-switching there (NROM's single flat
+        region; MMC3's direct export uses its always-mapped fixed windows).
+
+        Overridden by mappers whose switchable pool exceeds one CPU-visible
+        window (MMC1: a 112KB pool behind a 16KB $8000-$BFFF window) --
+        CA65Exporter.export_direct_frames uses this to bin-pack frame tables
+        into per-bank segments and emit a bank-switch before each table read,
+        instead of linking table data past the window into unreachable
+        address space (#255/MAP-2026-07-05-1).
+        """
+        return None
 
     def generate_build_script(self, is_windows: bool = False) -> str:
         """

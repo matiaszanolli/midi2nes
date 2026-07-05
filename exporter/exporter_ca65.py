@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 from exporter.base_exporter import BaseExporter
 from nes.pitch_table import NES_NOTE_TABLE, NES_TRIANGLE_TABLE
+from core.exceptions import ExportError
 
 # NES APU register addresses
 APU_PULSE1_CTRL = 0x4000
@@ -85,6 +86,105 @@ class CA65Exporter(BaseExporter):
             byte = 0xFD
         return byte
 
+    def estimate_direct_export_size(self, frames):
+        """Predict export_direct_frames' total RODATA byte count from
+        ``frames`` alone, without actually exporting (#255/MAP-2026-07-05-1).
+
+        A bank-switching-aware export needs to know the target mapper before
+        it writes anything, but main.py's `--mapper auto` selection has
+        historically measured the *already-exported* music.asm. This lets
+        callers resolve the mapper first and pass it into
+        export_tables_with_patterns/export_direct_frames from the start.
+
+        Mirrors export_direct_frames' own accounting exactly: 4 bytes/frame
+        for each active tone channel (note+control+timer_lo+timer_hi), 3 for
+        noise (note+ctrl+reg), 1 for dpcm (note) -- so a drift between the
+        two would only under/over-estimate, never silently diverge in shape.
+        """
+        active = [name for name, data in frames.items()
+                  if name != 'dpcm_sample_map' and data]
+        if not active:
+            return 0
+        max_frame = max(int(f) for name in active for f in frames[name].keys())
+        bytes_per_frame = {'pulse1': 4, 'pulse2': 4, 'triangle': 4, 'noise': 3, 'dpcm': 1}
+        per_frame_total = sum(bytes_per_frame.get(name, 0) for name in active)
+        return per_frame_total * (max_frame + 1)
+
+    def _pack_direct_tables_into_banks(self, table_names, table_length, bank_size):
+        """Assign each direct-export frame table to a bank index (#255/MAP-2026-07-05-1).
+
+        Every table `export_direct_frames` emits (note/control/timer_lo/
+        timer_hi per tone channel, note/ctrl/reg for noise, note for dpcm) is
+        exactly ``table_length`` (== max_frame + 1) bytes long, so bin-packing
+        reduces to a simple division: ``bank_size // table_length`` whole
+        tables fit per bank. Tables are packed whole -- never split across a
+        bank boundary -- because the runtime bank-switch happens once per
+        table access (see _emit_table_read_lines), not per byte.
+
+        Raises ExportError if a single table alone exceeds bank_size (would
+        need mid-table bank switching, which the direct engine does not do).
+        """
+        if table_length > bank_size:
+            raise ExportError(
+                f"Direct-export frame table is {table_length:,} bytes, exceeding "
+                f"the {bank_size:,}-byte switchable bank window -- shorten the "
+                f"song, drop a channel, or use a mapper with flat PRG addressing "
+                f"(NROM) or pattern compression (MMC3)."
+            )
+        tables_per_bank = max(1, bank_size // table_length)
+        return {name: i // tables_per_bank for i, name in enumerate(table_names)}
+
+    def _emit_table_read_lines(self, table_name, mapper, table_bank):
+        """CA65 lines that load A = table_name[frame_counter], Y left at 0.
+
+        If ``table_name`` has a bank assignment in ``table_bank``, a
+        bank-switch is emitted first so the table's actual bank is mapped
+        into the mapper's switchable window before the read (#255/MAP-2026-07-05-1).
+        Replaces the ~9-line pointer computation that used to be duplicated
+        inline at every one of the ~16 table-read call sites in this method.
+        """
+        lines = []
+        bank = table_bank.get(table_name) if table_bank else None
+        if bank is not None:
+            lines.append(f'    ; Bank-switch for {table_name} (#255/MAP-2026-07-05-1)')
+            lines.append(mapper.generate_bank_switch_code(bank))
+        lines.extend([
+            f'    lda #<{table_name}',
+            '    clc',
+            '    adc frame_counter',
+            '    sta temp_ptr',
+            f'    lda #>{table_name}',
+            '    adc frame_counter+1',
+            '    sta temp_ptr+1',
+            '    ldy #0',
+            '    lda (temp_ptr),y',
+        ])
+        return lines
+
+    def _emit_safe_beq(self, target, unique_suffix, bank_size, comment=''):
+        """Emit ``beq target`` (#255/MAP-2026-07-05-1), safe against the
+        6502's +-127-byte relative-branch range.
+
+        Discovered via a real ca65 assemble: bank-switch code inserted
+        between a channel's note-changed check and its `@sustain`/`@silence`
+        label (both defined near the end of the enclosing .proc) can push
+        the plain relative `beq` out of range ("Range error (N not in
+        [-128..127])"). When bank-switching is active (bank_size is not
+        None), falls back to an inverted `bne` over an absolute `jmp` (no
+        distance limit) instead. When bank_size is None, emits the original
+        single-instruction relative branch, byte-for-byte unchanged, since
+        no extra bytes were inserted for mappers that don't need this.
+        """
+        suffix = f'{"":<11}{comment}' if comment else ''
+        if bank_size is None:
+            return [f'    beq {target}{suffix}']
+        skip_label = f'@skip_{unique_suffix}'
+        return [
+            f'    bne {skip_label}',
+            f'    jmp {target}{suffix}',
+            f'{skip_label}:',
+        ]
+
     def export_direct_frames(self, frames, output_path, standalone=True, mapper=None):
         """Export frames data directly using efficient lookup tables.
 
@@ -152,9 +252,44 @@ class CA65Exporter(BaseExporter):
         print(f"  Max frame: {max_frame}")
         print(f"  Total frames to export: {max_frame + 1}")
 
-        # Generate ROM data segment with frame tables
-        lines.append('.segment "RODATA"')
-        lines.append('')
+        # Bank-pack frame tables if the mapper's switchable window is smaller
+        # than the aggregate PRG pool (MMC1, #255/MAP-2026-07-05-1). All tables
+        # are exactly max_frame + 1 bytes, so the table names alone (in emission
+        # order) are enough to compute bank assignment before any are written.
+        bank_size = mapper.direct_export_bank_size() if mapper is not None else None
+        table_names = []
+        for channel_name in ['pulse1', 'pulse2', 'triangle']:
+            if channel_name in all_channels:
+                table_names.extend([f'{channel_name}_note', f'{channel_name}_control',
+                                     f'{channel_name}_timer_lo', f'{channel_name}_timer_hi'])
+        has_noise = 'noise' in all_channels
+        if has_noise:
+            table_names.extend(['noise_note', 'noise_ctrl', 'noise_reg'])
+        has_dpcm = 'dpcm' in all_channels
+        if has_dpcm:
+            table_names.append('dpcm_note')
+
+        table_bank = {}
+        if bank_size is not None:
+            table_bank = self._pack_direct_tables_into_banks(table_names, max_frame + 1, bank_size)
+
+        # Generate ROM data segment(s) with frame tables. When bank-packed,
+        # segment switches are interleaved with table emission below instead
+        # of one segment up front, since different tables can land in
+        # different banks.
+        current_segment = ['']  # mutable cell for the nested closure below
+
+        def _ensure_segment(table_name):
+            target = f'RODATA_BANK_{table_bank[table_name]:02d}' if table_name in table_bank else 'RODATA'
+            if target != current_segment[0]:
+                lines.append(f'.segment "{target}"')
+                lines.append('')
+                current_segment[0] = target
+
+        if bank_size is None:
+            lines.append('.segment "RODATA"')
+            lines.append('')
+            current_segment[0] = 'RODATA'
 
         # Create sparse frame lookup tables for each channel
         # Format: For each active frame, store (note, control_byte, timer_lo, timer_hi)
@@ -163,6 +298,7 @@ class CA65Exporter(BaseExporter):
                 continue
 
             channel_data = all_channels[channel_name]
+            _ensure_segment(f'{channel_name}_note')
             lines.append(f'; {channel_name.upper()} Frame Data Tables')
 
             # Create arrays that are indexed by frame number
@@ -216,21 +352,25 @@ class CA65Exporter(BaseExporter):
                 timer_hi_table.append(f"${((pitch >> 8) & 0x07):02X}")
 
             # Write tables in chunks of 16 bytes per line
+            _ensure_segment(f'{channel_name}_note')
             lines.append(f'{channel_name}_note:')
             for i in range(0, len(note_table), 16):
                 chunk = note_table[i:i+16]
                 lines.append(f'    .byte {", ".join(chunk)}')
 
+            _ensure_segment(f'{channel_name}_control')
             lines.append(f'{channel_name}_control:')
             for i in range(0, len(control_table), 16):
                 chunk = control_table[i:i+16]
                 lines.append(f'    .byte {", ".join(chunk)}')
 
+            _ensure_segment(f'{channel_name}_timer_lo')
             lines.append(f'{channel_name}_timer_lo:')
             for i in range(0, len(timer_lo_table), 16):
                 chunk = timer_lo_table[i:i+16]
                 lines.append(f'    .byte {", ".join(chunk)}')
 
+            _ensure_segment(f'{channel_name}_timer_hi')
             lines.append(f'{channel_name}_timer_hi:')
             for i in range(0, len(timer_hi_table), 16):
                 chunk = timer_hi_table[i:i+16]
@@ -238,6 +378,7 @@ class CA65Exporter(BaseExporter):
             lines.append('')
 
         def _emit_byte_table(label, values):
+            _ensure_segment(label)
             lines.append(f'{label}:')
             for i in range(0, len(values), 16):
                 lines.append(f'    .byte {", ".join(values[i:i+16])}')
@@ -245,7 +386,6 @@ class CA65Exporter(BaseExporter):
         # Noise frame tables (#9). note = 4-bit period index (0 = rest/change
         # sentinel); ctrl = $400C byte ($30 | volume); reg = $400E byte
         # (mode bit 7 | period). Drum hits are sparse, so empty frames are rests.
-        has_noise = 'noise' in all_channels
         if has_noise:
             channel_data = all_channels['noise']
             n_note, n_ctrl, n_reg = [], [], []
@@ -268,7 +408,6 @@ class CA65Exporter(BaseExporter):
 
         # DPCM frame tables (#9). note = sample_id + 1 (0 = rest/change sentinel).
         # The trigger reuses the packer/engine sample tables (dpcm_*_table).
-        has_dpcm = 'dpcm' in all_channels
         if has_dpcm:
             channel_data = all_channels['dpcm']
             d_note = []
@@ -440,56 +579,41 @@ class CA65Exporter(BaseExporter):
             lines.extend([
                 '.proc play_pulse1',
                 '    ; Get note number for this frame',
-                '    lda #<pulse1_note',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>pulse1_note',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    ldy #0',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('pulse1_note', mapper, table_bank))
+            lines.extend([
                 '    ',
                 '    ; Check if note changed',
                 '    cmp last_pulse1_note',
-                '    beq @sustain           ; Same note - sustain, don\'t retrigger',
+            ])
+            lines.extend(self._emit_safe_beq('@sustain', 'p1_sustain', bank_size,
+                                              "; Same note - sustain, don't retrigger"))
+            lines.extend([
                 '    sta last_pulse1_note   ; Different note - update tracker',
                 '    ',
                 '    ; Note changed - check if new note is silence',
-                '    beq @silence           ; If note is 0, silence the channel',
+            ])
+            lines.extend(self._emit_safe_beq('@silence', 'p1_silence', bank_size,
+                                              '; If note is 0, silence the channel'))
+            lines.extend([
                 '    ',
                 '    ; New note - write full channel state',
                 '    ; Get and write control byte',
-                '    lda #<pulse1_control',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>pulse1_control',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('pulse1_control', mapper, table_bank))
+            lines.extend([
                 '    sta $4000',
                 '    ',
                 '    ; Get and write timer low',
-                '    lda #<pulse1_timer_lo',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>pulse1_timer_lo',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('pulse1_timer_lo', mapper, table_bank))
+            lines.extend([
                 '    sta $4002',
                 '    ',
                 '    ; Get and write timer high with length counter reload',
-                '    lda #<pulse1_timer_hi',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>pulse1_timer_hi',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('pulse1_timer_hi', mapper, table_bank))
+            lines.extend([
                 '    ora #$08               ; Set length reload for new notes',
                 '    sta $4003',
                 '    rts',
@@ -511,56 +635,39 @@ class CA65Exporter(BaseExporter):
             lines.extend([
                 '.proc play_pulse2',
                 '    ; Get note number for this frame',
-                '    lda #<pulse2_note',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>pulse2_note',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    ldy #0',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('pulse2_note', mapper, table_bank))
+            lines.extend([
                 '    ',
                 '    ; Check if note changed',
                 '    cmp last_pulse2_note',
-                '    beq @sustain',
+            ])
+            lines.extend(self._emit_safe_beq('@sustain', 'p2_sustain', bank_size))
+            lines.extend([
                 '    sta last_pulse2_note',
                 '    ',
                 '    ; Note changed - check if silence',
-                '    beq @silence',
+            ])
+            lines.extend(self._emit_safe_beq('@silence', 'p2_silence', bank_size))
+            lines.extend([
                 '    ',
                 '    ; New note - write full channel state',
                 '    ; Get and write control byte',
-                '    lda #<pulse2_control',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>pulse2_control',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('pulse2_control', mapper, table_bank))
+            lines.extend([
                 '    sta $4004',
                 '    ',
                 '    ; Get and write timer low',
-                '    lda #<pulse2_timer_lo',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>pulse2_timer_lo',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('pulse2_timer_lo', mapper, table_bank))
+            lines.extend([
                 '    sta $4006',
                 '    ',
                 '    ; Get and write timer high',
-                '    lda #<pulse2_timer_hi',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>pulse2_timer_hi',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('pulse2_timer_hi', mapper, table_bank))
+            lines.extend([
                 '    ora #$08',
                 '    sta $4007',
                 '    rts',
@@ -580,56 +687,39 @@ class CA65Exporter(BaseExporter):
             lines.extend([
                 '.proc play_triangle',
                 '    ; Get note number for this frame',
-                '    lda #<triangle_note',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>triangle_note',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    ldy #0',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('triangle_note', mapper, table_bank))
+            lines.extend([
                 '    ',
                 '    ; Check if note changed',
                 '    cmp last_triangle_note',
-                '    beq @sustain',
+            ])
+            lines.extend(self._emit_safe_beq('@sustain', 'tri_sustain', bank_size))
+            lines.extend([
                 '    sta last_triangle_note',
                 '    ',
                 '    ; Note changed - check if silence',
-                '    beq @silence',
+            ])
+            lines.extend(self._emit_safe_beq('@silence', 'tri_silence', bank_size))
+            lines.extend([
                 '    ',
                 '    ; New note - write full channel state',
                 '    ; Get and write control byte',
-                '    lda #<triangle_control',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>triangle_control',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('triangle_control', mapper, table_bank))
+            lines.extend([
                 '    sta $4008',
                 '    ',
                 '    ; Get and write timer low',
-                '    lda #<triangle_timer_lo',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>triangle_timer_lo',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('triangle_timer_lo', mapper, table_bank))
+            lines.extend([
                 '    sta $400A',
                 '    ',
                 '    ; Get and write timer high',
-                '    lda #<triangle_timer_hi',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>triangle_timer_hi',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('triangle_timer_hi', mapper, table_bank))
+            lines.extend([
                 '    ora #$08',
                 '    sta $400B',
                 '    rts',
@@ -649,16 +739,11 @@ class CA65Exporter(BaseExporter):
             lines.extend([
                 '.proc play_noise',
                 '    ; Index noise_note[frame_counter]',
-                '    lda #<noise_note',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>noise_note',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    ldy #0',
-                '    lda (temp_ptr),y',
-                '    beq @silence         ; note 0 -> silence',
+            ])
+            lines.extend(self._emit_table_read_lines('noise_note', mapper, table_bank))
+            lines.extend(self._emit_safe_beq('@silence', 'noise_silence', bank_size,
+                                              '; note 0 -> silence'))
+            lines.extend([
                 '    ; Active hit -- rewrite $400C/$400E/$400F every frame from',
                 '    ; the tables, even while the period is unchanged from the',
                 '    ; last frame. The length counter is always halted and constant',
@@ -667,24 +752,14 @@ class CA65Exporter(BaseExporter):
                 '    ; ramp into noise_ctrl per frame, and $400E/$400F writes never',
                 '    ; reset the noise phase (docs/APU_NOISE_REFERENCE.md section 6),',
                 '    ; so writing unconditionally is both safe and required.',
-                '    lda #<noise_ctrl',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>noise_ctrl',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('noise_ctrl', mapper, table_bank))
+            lines.extend([
                 '    sta $400C',
                 '    ; $400E from noise_reg (mode bit 7 | period)',
-                '    lda #<noise_reg',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>noise_reg',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('noise_reg', mapper, table_bank))
+            lines.extend([
                 '    sta $400E',
                 '    lda #$08             ; length counter load (harmless: halted)',
                 '    sta $400F',
@@ -703,20 +778,20 @@ class CA65Exporter(BaseExporter):
             lines.extend([
                 '.proc play_dpcm',
                 '    ; Index dpcm_note[frame_counter]',
-                '    lda #<dpcm_note',
-                '    clc',
-                '    adc frame_counter',
-                '    sta temp_ptr',
-                '    lda #>dpcm_note',
-                '    adc frame_counter+1',
-                '    sta temp_ptr+1',
-                '    ldy #0',
-                '    lda (temp_ptr),y',
+            ])
+            lines.extend(self._emit_table_read_lines('dpcm_note', mapper, table_bank))
+            lines.extend([
                 '    cmp last_dpcm_note',
-                '    beq @done            ; unchanged - sample already triggered',
+            ])
+            lines.extend(self._emit_safe_beq('@done', 'dpcm_unchanged', bank_size,
+                                              '; unchanged - sample already triggered'))
+            lines.extend([
                 '    sta last_dpcm_note   ; NB: STA does not affect Z',
                 '    cmp #0               ; re-test the note (A still holds it); STA left the stale CMP flags (#66)',
-                '    beq @done            ; note 0 (rest) -> nothing to trigger, no dpcm_*_table[$FF] over-read',
+            ])
+            lines.extend(self._emit_safe_beq('@done', 'dpcm_rest', bank_size,
+                                              '; note 0 (rest) -> nothing to trigger, no dpcm_*_table[$FF] over-read'))
+            lines.extend([
                 '    ; New sample: sample_id = note - 1',
                 '    sec',
                 '    sbc #1',

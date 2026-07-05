@@ -226,5 +226,79 @@ class TestHeaderAsmIsBareBytes(unittest.TestCase):
                               f"{mapper_cls.__name__} embeds its own HEADER segment")
 
 
+class TestMMC1BankedLinkerConfig(unittest.TestCase):
+    """Regression (#255/MAP-2026-07-05-1): MMC1's switchable pool must be
+    declared as separate per-bank $8000-based MEMORY/SEGMENTS entries (like
+    MMC3), not one linear region -- a linear PRGSWAP region let ld65 place
+    RODATA past the first 16KB at run addresses >= $C000, aliasing the fixed
+    engine bank at runtime with no link error."""
+
+    def test_direct_export_bank_size_is_the_16kb_window(self):
+        self.assertEqual(MMC1Mapper().direct_export_bank_size(), 0x4000)
+
+    def test_other_mappers_do_not_need_direct_export_bank_switching(self):
+        # NROM is a single flat region; MMC3's direct export uses its
+        # always-mapped fixed windows. Neither needs runtime bank-switching.
+        self.assertIsNone(NROMMapper().direct_export_bank_size())
+        self.assertIsNone(MMC3Mapper().direct_export_bank_size())
+
+    def test_linker_config_declares_one_memory_region_per_switchable_bank(self):
+        mmc1 = MMC1Mapper()
+        cfg = mmc1.generate_linker_config()
+        for i in range(mmc1.SWAP_BANK_COUNT):
+            self.assertIn(f'PRG_BANK_{i:02d}: start = $8000', cfg,
+                          f"missing MEMORY region for bank {i}")
+            self.assertIn(f'RODATA_BANK_{i:02d}: load = PRG_BANK_{i:02d}', cfg,
+                          f"missing SEGMENTS entry for bank {i}")
+        # No single linear region spanning the whole switchable pool remains.
+        self.assertNotIn('$1C000', cfg)
+
+    def test_plain_rodata_segment_still_has_a_home(self):
+        """The DPCM packer/project-builder stub still emit a plain
+        `.segment "RODATA"` (unrelated to the exporter's per-bank frame-table
+        packing) -- it must still resolve to a real MEMORY region, sharing
+        bank 0, or ld65 fails with 'Missing memory area assignment'."""
+        cfg = MMC1Mapper().generate_linker_config()
+        self.assertIn('RODATA:   load = PRG_BANK_00', cfg)
+
+    def test_fixed_bank_unchanged_for_code_and_vectors(self):
+        cfg = MMC1Mapper().generate_linker_config()
+        self.assertIn('CODE:     load = PRGFIXED', cfg)
+        self.assertIn('VECTORS:  load = PRGFIXED', cfg)
+
+    def test_validate_segment_sizes_flags_bank_overflow(self):
+        mmc1 = MMC1Mapper()
+        errors = mmc1.validate_segment_sizes({'RODATA_BANK_00': mmc1.PRG_WINDOW_SIZE + 1})
+        self.assertTrue(errors, "a single bank segment over 16KB must be flagged")
+
+    def test_validate_segment_sizes_sums_plain_rodata_with_bank_00(self):
+        """Plain RODATA (DPCM stub/packer) shares bank 0 with
+        RODATA_BANK_00's frame tables -- their combined size, not each in
+        isolation, must be checked against the 16KB window."""
+        mmc1 = MMC1Mapper()
+        half = mmc1.PRG_WINDOW_SIZE // 2 + 100
+        errors = mmc1.validate_segment_sizes({'RODATA_BANK_00': half, 'RODATA': half})
+        self.assertTrue(errors, "combined bank-0 usage over 16KB must be flagged")
+        # Individually each fits; only combined they overflow.
+        self.assertLess(half, mmc1.PRG_WINDOW_SIZE)
+
+    def test_validate_segment_sizes_flags_bank_index_beyond_swap_count(self):
+        mmc1 = MMC1Mapper()
+        errors = mmc1.validate_segment_sizes({f'RODATA_BANK_{mmc1.SWAP_BANK_COUNT:02d}': 100})
+        self.assertTrue(errors, "a bank index beyond SWAP_BANK_COUNT must be flagged")
+
+    def test_validate_segment_sizes_accepts_well_formed_multi_bank_usage(self):
+        mmc1 = MMC1Mapper()
+        segment_sizes = {f'RODATA_BANK_{i:02d}': mmc1.PRG_WINDOW_SIZE
+                          for i in range(mmc1.SWAP_BANK_COUNT)}
+        self.assertEqual(mmc1.validate_segment_sizes(segment_sizes), [])
+
+    def test_get_data_capacity_unchanged_at_112kb(self):
+        # Bank-switching now delivers the real 112KB honestly, instead of
+        # capping capacity to the addressable window (the alternative,
+        # cheaper fix this issue considered but did not take).
+        self.assertEqual(MMC1Mapper().get_data_capacity(), 112 * 1024)
+
+
 if __name__ == "__main__":
     unittest.main()
