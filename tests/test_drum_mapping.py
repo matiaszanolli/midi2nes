@@ -1,5 +1,7 @@
 # New file: tests/test_drum_mapping.py
 import json
+import os
+import tempfile
 import unittest
 from dpcm_sampler.drum_engine import map_drums_to_dpcm, optimize_dpcm_samples
 
@@ -12,7 +14,11 @@ class TestDrumMapping(unittest.TestCase):
                 {"frame": 20, "note": 38, "velocity": 127}  # Snare hard
             ]
         }
-        self.test_index_path = "test_dpcm_index.json"
+        # Use the checked-in fixture (matches test_track_mapper.py /
+        # test_enhanced_drum_mapper.py). The bare "test_dpcm_index.json"
+        # resolved against the repo root, where the file is gitignored and
+        # untracked — a fresh clone / CI would FileNotFoundError (#231).
+        self.test_index_path = "tests/fixtures/test_dpcm_index.json"
         
     def test_velocity_ranges(self):
         dpcm_events, noise_events = map_drums_to_dpcm(
@@ -64,10 +70,14 @@ class TestDrumMapping(unittest.TestCase):
             map_drums_to_dpcm(self.test_events, "nonexistent.json")
             
     def test_invalid_index_file(self):
-        with open("invalid.json", "w") as f:
-            f.write("invalid json")
-        with self.assertRaises(json.JSONDecodeError):
-            map_drums_to_dpcm(self.test_events, "invalid.json")
+        # Write the malformed file into a temp dir that is cleaned up, instead
+        # of leaking a gitignored invalid.json into the repo root (#231).
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_path = os.path.join(tmp, "invalid.json")
+            with open(bad_path, "w") as f:
+                f.write("invalid json")
+            with self.assertRaises(json.JSONDecodeError):
+                map_drums_to_dpcm(self.test_events, bad_path)
             
     def test_noise_fallback(self):
         events = {9: [{"frame": 0, "note": 99, "velocity": 100}]}  # Invalid note
