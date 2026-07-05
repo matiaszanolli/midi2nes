@@ -896,7 +896,8 @@ class TestRunDetectPatterns:
         mock_detector.detect_patterns.return_value = {
             'patterns': {'pattern_0': [{'frame': 0, 'note': 60}]},
             'references': {'channel_0': ['pattern_0']},
-            'stats': {'compression_ratio': 2.5}
+            'stats': {'compression_ratio': 2.5, 'total_events': 40,
+                      'coverage_ratio': 30.0}
         }
         mock_detector_class.return_value = mock_detector
         
@@ -925,11 +926,14 @@ class TestRunDetectPatterns:
         assert content['stats']['compression_ratio'] == 2.5
         
         # Verify print calls
-        assert mock_print.call_count == 2
+        assert mock_print.call_count == 3
         mock_print.assert_any_call(f" Detected patterns -> {args.output}")
         # Regression (#17): compression_ratio is a percentage reduction, so it is
         # printed with a `%` unit, never a bare number or an `x` multiplier.
-        mock_print.assert_any_call(" Compression ratio: 2.5% reduction")
+        # Regression (#169/PAT-03): labeled as a patterned-subset-only dedup
+        # ratio, not a whole-song metric, with a separate coverage line.
+        mock_print.assert_any_call(" Pattern dedup ratio: 2.5% reduction (patterned subset only)")
+        mock_print.assert_any_call(" Pattern coverage: 30.0% of 40 events matched a detected pattern")
     
     def test_run_detect_patterns_empty_frames(self):
         """Test pattern detection with empty frames."""
@@ -942,7 +946,8 @@ class TestRunDetectPatterns:
                 mock_detector.detect_patterns.return_value = {
                     'patterns': {},
                     'references': {},
-                    'stats': {'compression_ratio': 1.0}
+                    'stats': {'compression_ratio': 1.0, 'total_events': 0,
+                              'coverage_ratio': 0}
                 }
                 mock_detector_class.return_value = mock_detector
                 

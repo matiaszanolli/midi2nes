@@ -230,18 +230,26 @@ class PatternDetector:
                         pattern_score = score_pattern(length, len(exact_matches), len(variations))
                         
                         if pattern_score > 0:
-                            all_positions = exact_matches + [var['position'] for var in variations]
+                            # `positions` is exact-only (#168/PAT-01): a variation
+                            # position's actual content differs from `events`
+                            # (the anchor's events), so merging it in here made
+                            # `references` claim the pattern reproduces content it
+                            # doesn't. `occupied_positions` (exact + variations)
+                            # still blocks a *different* candidate from claiming
+                            # the same frames during the non-overlap selection below.
+                            occupied_positions = exact_matches + [var['position'] for var in variations]
                             candidate_patterns.append({
                                 'start': start,
                                 'length': length,
                                 'pattern': pattern,
                                 'exact_matches': exact_matches,
                                 'variations': variations,
-                                'positions': sorted(set(all_positions)),
+                                'positions': sorted(set(exact_matches)),
+                                'occupied_positions': sorted(set(occupied_positions)),
                                 'score': pattern_score,
                                 'events': [events[i] for i in range(start, start + length)]
                             })
-                        
+
                         pbar.update(1)
                         pbar.set_postfix(candidates=len(candidate_patterns))
         else:
@@ -256,14 +264,17 @@ class PatternDetector:
                     pattern_score = score_pattern(length, len(exact_matches), len(variations))
                     
                     if pattern_score > 0:
-                        all_positions = exact_matches + [var['position'] for var in variations]
+                        # See the tqdm branch above for why `positions` is
+                        # exact-only and `occupied_positions` keeps both (#168/PAT-01).
+                        occupied_positions = exact_matches + [var['position'] for var in variations]
                         candidate_patterns.append({
                             'start': start,
                             'length': length,
                             'pattern': pattern,
                             'exact_matches': exact_matches,
                             'variations': variations,
-                            'positions': sorted(set(all_positions)),
+                            'positions': sorted(set(exact_matches)),
+                            'occupied_positions': sorted(set(occupied_positions)),
                             'score': pattern_score,
                             'events': [events[i] for i in range(start, start + length)]
                         })
@@ -275,11 +286,15 @@ class PatternDetector:
         used_positions = set()
         
         for candidate in candidate_patterns:
-            # Check if this pattern overlaps with already selected patterns
+            # Check if this pattern overlaps with already selected patterns.
+            # Uses occupied_positions (exact + variations, #168/PAT-01) so a
+            # variation window still blocks a different candidate from
+            # claiming the same frames, even though it's excluded from the
+            # persisted `positions`/`references` (which must stay exact-only).
             pattern_positions = set()
-            for pos in candidate['positions']:
+            for pos in candidate['occupied_positions']:
                 pattern_positions.update(range(pos, pos + candidate['length']))
-            
+
             if not pattern_positions.intersection(used_positions):
                 pattern_id = f"pattern_{len(patterns)}"
                 patterns[pattern_id] = {
@@ -376,9 +391,17 @@ class EnhancedPatternDetector(PatternDetector):
             return {
                 'patterns': {},
                 'references': {},
-                'stats': {'compression_ratio': 0, 'original_size': 0, 'compressed_size': 0, 'unique_patterns': 0},
+                'stats': {'compression_ratio': 0, 'original_size': 0, 'compressed_size': 0,
+                          'unique_patterns': 0, 'total_events': 0, 'patterned_events': 0,
+                          'coverage_ratio': 0},
                 'variations': {}
             }
+
+        # Total events this detection run actually covers (#169/PAT-03) --
+        # captured before super().detect_patterns() does its own internal
+        # validation/sampling, so this reflects what was handed to the
+        # detector, not a narrower post-filter count.
+        total_events = len(events)
 
         # Detect patterns with variations using parent class
         patterns = super().detect_patterns(events)
@@ -398,9 +421,9 @@ class EnhancedPatternDetector(PatternDetector):
         
         # Add compression information to the result
         compression_stats = self.compressor.calculate_compression_stats(
-            patterns, compressed_patterns
+            patterns, compressed_patterns, total_events
         )
-        
+
         return {
             'patterns': compressed_patterns,
             'references': pattern_refs,
@@ -790,29 +813,52 @@ class PatternCompressor:
         """Create a unique hash for a pattern based on its events"""
         return hash(tuple((e['note'], e['volume']) for e in events))
     
-    def calculate_compression_stats(self, original: Dict, compressed: Dict) -> Dict:
+    def calculate_compression_stats(self, original: Dict, compressed: Dict,
+                                     total_events: int = 0) -> Dict:
         """Calculate compression statistics.
 
         NOTE: ``compression_ratio`` is a percentage *reduction* in [0, 100]
         (``(original - compressed) / original * 100``), not a multiplier. Callers
         must print it with a ``%`` label, never an ``x`` suffix — a 96% reduction
-        is not "96x" (#17).
+        is not "96x" (#17). It measures dedup within the *patterned subset only*
+        (how much smaller the unique templates are vs. storing every occurrence)
+        -- it is NOT a measure of the whole song, and has no relationship to
+        emitted ROM bytes (#4).
+
+        ``total_events`` (the event count pattern detection actually ran over,
+        i.e. after any upstream sampling) is optional for backward
+        compatibility, but callers should always pass it (#169/PAT-03):
+        without it, ``coverage_ratio`` reads 0 even though most of a song is
+        typically un-patterned, which is the exact "96% reduction on an
+        un-patterned song" confusion this field exists to prevent.
         """
         original_size = sum(
-            len(p['events']) * len(p['positions']) 
+            len(p['events']) * len(p['positions'])
             for p in original.values()
         )
         compressed_size = sum(
             len(p['events']) for p in compressed.values()
         )
-        
+
         compression_ratio = 0
         if original_size > 0:
             compression_ratio = ((original_size - compressed_size) / original_size) * 100
-            
+
+        # patterned_events is the exact-only event count covered by a detected
+        # pattern occurrence (== original_size now that positions is exact-only,
+        # #168/PAT-01) -- named separately here so a consumer doesn't have to
+        # know that equivalence to read "how much of the song is patterned".
+        patterned_events = original_size
+        coverage_ratio = 0
+        if total_events > 0:
+            coverage_ratio = (patterned_events / total_events) * 100
+
         return {
             'original_size': original_size,
             'compressed_size': compressed_size,
             'compression_ratio': compression_ratio,
-            'unique_patterns': len(compressed)
+            'unique_patterns': len(compressed),
+            'total_events': total_events,
+            'patterned_events': patterned_events,
+            'coverage_ratio': coverage_ratio
         }

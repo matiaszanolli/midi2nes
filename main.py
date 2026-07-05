@@ -552,7 +552,13 @@ def run_detect_patterns(args):
     }
     Path(args.output).write_text(json.dumps(output, separators=(',', ':')))
     print(f" Detected patterns -> {args.output}")
-    print(f" Compression ratio: {pattern_result['stats']['compression_ratio']:.1f}% reduction")
+    # compression_ratio is a dedup ratio within the patterned subset only, not
+    # a measure of the whole song (#169/PAT-03) -- the coverage line says what
+    # fraction of the song that subset actually is.
+    print(f" Pattern dedup ratio: {pattern_result['stats']['compression_ratio']:.1f}% "
+          f"reduction (patterned subset only)")
+    print(f" Pattern coverage: {pattern_result['stats']['coverage_ratio']:.1f}% of "
+          f"{pattern_result['stats']['total_events']:,} events matched a detected pattern")
 
 def run_song_add(args):
     """Add a song to the song bank"""
@@ -764,9 +770,11 @@ def run_full_pipeline(args):
                 print(f"  📊 Processing direct frame export for complete data preservation")
                 # Create dummy pattern result for direct export. The stats must
                 # use the SAME schema the detectors emit (original_size /
-                # compressed_size / compression_ratio / unique_patterns) so any
+                # compressed_size / compression_ratio / unique_patterns /
+                # total_events / patterned_events / coverage_ratio) so any
                 # consumer sees one shape regardless of path (#104). Direct export
-                # applies no pattern compression, so ratio is 0% reduction (#17).
+                # applies no pattern compression, so ratio is 0% reduction (#17)
+                # and coverage is 0% -- nothing is patterned (#169/PAT-03).
                 direct_size = sum(len(ch) for ch in frames.values())
                 pattern_result = {
                     'patterns': {},
@@ -775,7 +783,10 @@ def run_full_pipeline(args):
                         'original_size': direct_size,
                         'compressed_size': direct_size,
                         'compression_ratio': 0,
-                        'unique_patterns': 0
+                        'unique_patterns': 0,
+                        'total_events': direct_size,
+                        'patterned_events': 0,
+                        'coverage_ratio': 0
                     }
                 }
                 events = []  # Not needed for direct export
@@ -910,7 +921,15 @@ def run_full_pipeline(args):
             print("\n" + "=" * 60)
             print(f"✅ SUCCESS! ROM created: {output_rom.name}")
             print(f"   ROM size: {rom_size:,} bytes ({rom_size / 1024:.1f} KB)")
-            print(f"   Compression ratio: {pattern_result['stats']['compression_ratio']:.1f}% reduction")
+            # compression_ratio is a pattern-analysis metric over the patterned
+            # subset only, unrelated to the ROM size above (actual size
+            # reduction comes from macro/instrument dedup in the bytecode
+            # serializer, #4) -- labeled and paired with a coverage line so it
+            # isn't misread as describing this ROM (#169/PAT-03).
+            print(f"   Pattern dedup ratio: {pattern_result['stats']['compression_ratio']:.1f}% "
+                  f"reduction (patterned subset only, pattern-analysis metric)")
+            print(f"   Pattern coverage: {pattern_result['stats']['coverage_ratio']:.1f}% of "
+                  f"{pattern_result['stats']['total_events']:,} events matched a detected pattern")
             print(f"   Total patterns detected: {len(pattern_result['patterns'])}")
             if pattern_loss_warning:
                 print(f"\n   ⚠️  {pattern_loss_warning}")
