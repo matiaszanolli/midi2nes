@@ -76,7 +76,16 @@ class DpcmPacker:
 
     def _place_sample(self, sample: dict, bank_id: int, start_address: int):
         dpcm_address_val = (start_address - 0xC000) // 64
-        dpcm_length_val = (sample['size'] - 1) // 16
+        # $4013 = length_reg; the DMC engine reads (length_reg*16)+1 bytes
+        # (docs/APU_DMC_REFERENCE.md §2/§4). Ceiling division (not floor)
+        # so every sample not exactly 16k+1 bytes still gets its full tail
+        # read -- flooring under-read up to 15 trailing bytes (regression
+        # of #75, #295/DP-01). The `.align 64` gap after each sample makes
+        # the few extra bytes a ceiling read pulls in safe zero-pad, not
+        # neighbouring sample data. size is already bounded to 4081 by the
+        # truncate/raise guard in add_sample, so this can't exceed the
+        # register's 8-bit range (max(0,...) only guards a size==0 sample).
+        dpcm_length_val = max(0, (sample['size'] + 14) // 16)
         dpcm_pitch_val = sample['pitch'] & 0x0F
         
         self.sample_metadata[sample['id']] = {

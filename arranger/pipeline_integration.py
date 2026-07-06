@@ -32,7 +32,18 @@ def _apply_sustain(notes: List[NoteInfo], max_gap: int) -> List[NoteInfo]:
     current_chord = [notes[0]]
 
     for note in notes[1:]:
-        if note.start_frame - current_chord[0].start_frame <= chord_tolerance:
+        # A close onset alone isn't enough to call two notes a chord: a fast
+        # sequential monophonic run (e.g. a 32nd-note passage) also has notes
+        # starting within `chord_tolerance` of each other, but they don't
+        # overlap in time. Merging those manufactured false polyphony that
+        # the arpeggiator then silently dropped every other note of, once
+        # extended to share one end_frame (#296/ARR-NEW-4). Require actual
+        # overlap with an existing chord member's *original* end_frame too
+        # (strict `<`, so two notes that merely touch -- one ends exactly as
+        # the next begins -- count as sequential, not simultaneous).
+        starts_close = note.start_frame - current_chord[0].start_frame <= chord_tolerance
+        overlaps_chord = any(note.start_frame < member.end_frame for member in current_chord)
+        if starts_close and overlaps_chord:
             current_chord.append(note)
         else:
             chords.append(current_chord)

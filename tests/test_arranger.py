@@ -41,6 +41,42 @@ class TestArrangerRoleAnalysis(unittest.TestCase):
         self.assertEqual(roles['high'], MusicalRole.MELODY)
 
 
+class TestApplySustainDoesNotMergeFastSequentialNotes(unittest.TestCase):
+    """Regression (#296/ARR-NEW-4): _apply_sustain grouped any notes starting
+    within chord_tolerance (2 frames) of each other into a "chord" and
+    stretched every member to the group's max end_frame, regardless of
+    whether they actually overlapped. A fast sequential monophonic run
+    (notes <=2 frames apart, non-overlapping) got merged this way,
+    manufacturing false polyphony that the arpeggiator then silently
+    dropped every other note of."""
+
+    def test_fast_sequential_run_keeps_every_note(self):
+        pitches = [60, 62, 64, 65, 67, 69, 71, 72]
+        events = []
+        for i, p in enumerate(pitches):
+            events.extend(_held(p, i * 2, 2))  # back-to-back, 2 frames apart
+        _, notes_by_track, _ = analyze_midi_events({'melody': events})
+        surviving_pitches = sorted(n.pitch for n in notes_by_track[0])
+        self.assertEqual(surviving_pitches, sorted(pitches))
+
+    def test_genuine_chord_still_extends_to_shared_end(self):
+        """A real chord (near-simultaneous onset, genuinely overlapping
+        durations) must still be recognized and extended together -- the fix
+        must only stop merging non-overlapping notes, not chords."""
+        events = (
+            _held(60, 0, 20) +   # bass note: start=0, end=20
+            _held(64, 1, 19) +   # third: start=1, end=20, overlaps the bass note
+            _held(67, 2, 15)     # fifth: start=2, end=17, overlaps both -- shorter
+        )
+        _, notes_by_track, _ = analyze_midi_events({'chord': events})
+        ends = {n.pitch: n.end_frame for n in notes_by_track[0]}
+        # All three overlap in time, so they form one chord and extend to
+        # the group's max end_frame (20).
+        self.assertEqual(ends[60], 20)
+        self.assertEqual(ends[64], 20)
+        self.assertEqual(ends[67], 20)
+
+
 class TestDrumTrackAnalysisNoDeadAttribute(unittest.TestCase):
     """Regression (#207/ARR-12): _analyze_drum_track used to set an ad-hoc
     `analysis.notes` instance attribute -- not a declared TrackAnalysis
