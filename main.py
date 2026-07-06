@@ -252,6 +252,42 @@ def resolve_mapper(mapper_choice, music_asm_path=None):
     return mapper
 
 
+def enforce_direct_export_dpcm_mapper(mapper, mapper_choice, frames):
+    """Direct-export (--no-patterns) DPCM is MMC3-only. Return the mapper to
+    actually build with, forcing MMC3 for 'auto' and rejecting an explicit
+    non-MMC3 request (#281/MAP-2026-07-05B-1, #282/MAP-2026-07-05B-2).
+
+    A song with a non-empty ``dpcm`` channel emits two hardcoded MMC3-only
+    pieces in the direct-export path:
+      - ``play_dpcm`` triggers a sample by writing MMC3's R6 bank-select port
+        (``$8000``/``$8001``); on MMC1 those addresses are a 5-write serial
+        shift register, so the two raw writes corrupt MMC1's Control register
+        and can un-fix the engine/vector bank mid-song (#281);
+      - ``DpcmPacker`` emits ``DPCM_NN`` segments only mmc3's nes.cfg defines,
+        so a sample that actually packs fails to link on MMC1/NROM (#282).
+
+    Neither path is mapper-aware yet (the MMC1 Mode-2 streaming design in
+    docs/MAPPER_MMC1_REFERENCE.md §4 is unimplemented), so rather than ship a
+    ROM that corrupts or won't link, mirror the bytecode path (always MMC3):
+    'auto' picks MMC3 (a mapper that works); an explicit mmc1/nrom is a clean
+    ValueError. Called only on the direct-export branch — the bytecode/pattern
+    path is already forced to MMC3.
+    """
+    if not frames.get('dpcm'):
+        return mapper
+    if mapper.mapper_number == 4:  # MMC3
+        return mapper
+    if mapper_choice == 'auto':
+        from mappers.mmc3 import MMC3Mapper
+        return MMC3Mapper()
+    raise ValueError(
+        f"--mapper {mapper_choice} does not support DPCM samples in direct-export "
+        f"(--no-patterns) mode: this song maps drums to the DPCM channel, whose "
+        f"trigger/sample code is MMC3-only. Use --mapper mmc3 (the default) or "
+        f"--mapper auto, or rebuild without --no-patterns."
+    )
+
+
 def get_mapper_choice(args):
     """Read args.mapper defensively, defaulting to 'mmc3' (#217/MAP-6).
 
@@ -500,6 +536,9 @@ def run_export(args):
                     mapper = MapperFactory.auto_select(estimated_size)
                 else:
                     mapper = MapperFactory.get_mapper(mapper_choice)
+                # Direct-export DPCM is MMC3-only: force MMC3 for 'auto', reject
+                # an explicit non-MMC3 mapper (#281/#282).
+                mapper = enforce_direct_export_dpcm_mapper(mapper, mapper_choice, frames)
             except ValueError as e:
                 print(f"[ERROR] {e}")
                 sys.exit(1)
@@ -855,6 +894,9 @@ def run_full_pipeline(args):
                         mapper = MapperFactory.auto_select(estimated_size)
                     else:
                         mapper = MapperFactory.get_mapper(mapper_choice)
+                    # Direct-export DPCM is MMC3-only: force MMC3 for 'auto',
+                    # reject an explicit non-MMC3 mapper (#281/#282).
+                    mapper = enforce_direct_export_dpcm_mapper(mapper, mapper_choice, frames)
                 except ValueError as e:
                     print(f"[ERROR] {e}")
                     sys.exit(1)
