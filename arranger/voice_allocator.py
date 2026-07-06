@@ -409,7 +409,11 @@ class FrameByFrameAllocator:
                 note, vel, duty = allocation.pulse1
                 frames["pulse1"][frame] = {
                     "note": note,
-                    "volume": vel // 8,  # Scale to 0-15
+                    # Floor at 1: vel // 8 truncates to 0 for velocity 1-7,
+                    # silencing soft/ppp notes despite an active pitch/duty
+                    # write (#268/NH-30) -- mirrors the legacy front-end's
+                    # max(1, ...) volume floor in nes/emulator_core.py.
+                    "volume": max(1, vel // 8),  # Scale to 1-15
                     "duty": duty.value,
                 }
 
@@ -417,7 +421,7 @@ class FrameByFrameAllocator:
                 note, vel, duty = allocation.pulse2
                 frames["pulse2"][frame] = {
                     "note": note,
-                    "volume": vel // 8,
+                    "volume": max(1, vel // 8),
                     "duty": duty.value,
                 }
 

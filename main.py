@@ -25,6 +25,7 @@ from tracker.pattern_detector import (
 from tracker.tempo_map import EnhancedTempoMap
 from dpcm_sampler.enhanced_drum_mapper import DrumMapperConfig
 from config.config_manager import ConfigManager
+from core.exceptions import ConfigurationError
 from benchmarks.performance_suite import PerformanceBenchmark
 from utils.profiling import get_memory_usage, log_memory_usage
 from compiler import compile_rom
@@ -47,7 +48,14 @@ def get_pattern_detection_caps(config_path: Optional[str] = None):
     max_events = DETECTOR_MAX_EVENTS
     max_pattern_events = MAX_PATTERN_EVENTS
     if config_path:
-        config_manager = ConfigManager(config_path)
+        try:
+            config_manager = ConfigManager(config_path)
+        except ConfigurationError as e:
+            # Clean [ERROR] + exit, matching load_json_stage's convention --
+            # main.py has no outer caller to catch this for every subcommand
+            # that reaches here (#267/PL-07).
+            print(f"[ERROR] {e}")
+            sys.exit(1)
         max_events = config_manager.get("processing.pattern_detection.max_events", DETECTOR_MAX_EVENTS)
         max_pattern_events = config_manager.get(
             "processing.pattern_detection.max_pattern_events", MAX_PATTERN_EVENTS)
