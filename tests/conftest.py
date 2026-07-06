@@ -9,10 +9,14 @@ This module provides:
 """
 
 import pytest
+import shutil
 import tempfile
 import struct
 from pathlib import Path
 import mido
+
+
+CC65_AVAILABLE = bool(shutil.which("ca65") and shutil.which("ld65"))
 
 
 def pytest_configure(config):
@@ -26,6 +30,17 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: integration tests (test entire pipeline)"
     )
+
+
+def pytest_runtest_setup(item):
+    """Skip @pytest.mark.requires_cc65 tests only when ca65/ld65 are genuinely
+    absent. The marker used to be decorative, so those tests instead caught a
+    real compile failure in a broad `except -> pytest.skip("...CC65 may not be
+    installed")` — masking engine/fixture bugs as a missing-toolchain skip
+    (#128/#129). With this gate, a compile failure when CC65 *is* present now
+    FAILs the test instead of skipping."""
+    if "requires_cc65" in item.keywords and not CC65_AVAILABLE:
+        pytest.skip("CC65 toolchain (ca65/ld65) not installed")
 
 
 # ============================================================================
@@ -138,6 +153,10 @@ def minimal_music_asm(temp_dir):
 ; Exports init_music and update_music functions
 
 .importzp frame_counter, ptr1, temp1, temp2
+; The real CA65 exporter emits this .export; without it ld65 fails with
+; 'Unresolved external init_music', which the integration tests used to mask
+; as a "CC65 may not be installed" skip (#128).
+.export init_music, update_music
 
 .segment "CODE"
 

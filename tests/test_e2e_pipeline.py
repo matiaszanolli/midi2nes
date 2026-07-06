@@ -149,43 +149,63 @@ class TestEndToEndPipeline:
         assert output_path.exists()
 
 
+    def _run_pipeline(self, rom_path, **overrides):
+        """Run the real full pipeline into ``rom_path``.
+
+        Sets every attribute run_full_pipeline reads explicitly (input, output,
+        no_patterns, arranger, debug, verbose, skip_validation) so an unset
+        MagicMock attribute can't silently flip a mode to a truthy Mock.
+        Validation defaults ON (skip_validation=False) so the post-build ROM
+        gate actually runs — the whole point of this anchor (#129)."""
+        args = MagicMock()
+        args.input = str(self.create_test_midi())
+        args.output = str(rom_path)
+        args.no_patterns = False
+        args.arranger = False
+        args.debug = False
+        args.verbose = False
+        args.skip_validation = False
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        main.run_full_pipeline(args)
+
+    def _assert_valid_rom(self, rom_path):
+        assert rom_path.exists(), "pipeline must produce a ROM file"
+        from debug.rom_diagnostics import ROMDiagnostics
+        result = ROMDiagnostics(verbose=False).diagnose_rom(str(rom_path))
+        assert result.is_valid_nes, "generated ROM should have a valid iNES header"
+        assert result.reset_vectors_valid, "generated ROM should have valid reset vectors"
+        assert result.overall_health in ["HEALTHY", "GOOD", "FAIR"], \
+            f"generated ROM should be at least FAIR health, got {result.overall_health}"
+
     @pytest.mark.slow
     @pytest.mark.requires_cc65
     def test_full_pipeline_midi_to_validated_rom(self):
-        """Test complete pipeline from MIDI to validated ROM.
-
-        This test generates a real ROM file and validates it using ROM diagnostics.
+        """Anchor: the default pipeline (MIDI -> MMC3 ROM) must produce a
+        validatable ROM. No try/except -> skip and no `if rom_path.exists()`
+        guard, so a raise, a missing ROM, or a bad ROM all FAIL — the three
+        failure modes that previously produced a false-green or a skip (#129).
         """
-        midi_path = self.create_test_midi()
         rom_path = self.temp_path / "output.nes"
+        self._run_pipeline(rom_path)
+        self._assert_valid_rom(rom_path)
 
-        # Create args for full pipeline
-        args = MagicMock()
-        args.input = str(midi_path)
-        args.output = str(rom_path)
-        args.no_patterns = False
-        args.debug = False
-        args.verbose = False
-        args.skip_validation = True  # Skip validation for this test if integrated
+    @pytest.mark.slow
+    @pytest.mark.requires_cc65
+    def test_full_pipeline_arranger_mode(self):
+        """The anchor round trip must also hold in --arranger mode (#129)."""
+        rom_path = self.temp_path / "arranger.nes"
+        self._run_pipeline(rom_path, arranger=True)
+        self._assert_valid_rom(rom_path)
 
-        try:
-            # Run full pipeline (if available)
-            from main import run_full_pipeline
-            run_full_pipeline(args)
-
-            # Check if ROM was generated
-            if rom_path.exists():
-                # Validate the generated ROM
-                from debug.rom_diagnostics import ROMDiagnostics
-                diagnostics = ROMDiagnostics(verbose=False)
-                result = diagnostics.diagnose_rom(str(rom_path))
-
-                assert result.is_valid_nes == True, "Generated ROM should have valid iNES header"
-                assert result.reset_vectors_valid == True, "Generated ROM should have valid reset vectors"
-                assert result.overall_health in ["HEALTHY", "GOOD", "FAIR"], \
-                    f"Generated ROM should be at least FAIR health, got {result.overall_health}"
-        except Exception as e:
-            pytest.skip(f"Full pipeline test skipped: {str(e)}")
+    @pytest.mark.slow
+    @pytest.mark.requires_cc65
+    def test_full_pipeline_no_patterns_direct_export(self):
+        """The anchor round trip must also hold for --no-patterns direct export,
+        with post-build validation ON (#129)."""
+        rom_path = self.temp_path / "direct.nes"
+        self._run_pipeline(rom_path, no_patterns=True)
+        self._assert_valid_rom(rom_path)
 
     @pytest.mark.integration
     def test_pipeline_project_structure(self):

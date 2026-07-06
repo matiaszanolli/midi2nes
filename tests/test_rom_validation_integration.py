@@ -12,17 +12,23 @@ Pytest markers:
 
 import pytest
 import sys
-import os
-import shutil
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from main import run_parse, run_map, run_frames, run_export, run_prepare, compile_rom
+from main import compile_rom
 from nes.project_builder import NESProjectBuilder
 from debug.rom_diagnostics import ROMDiagnostics
 from tracker.parser_fast import parse_midi_to_frames
+
+
+def test_shared_music_asm_fixture_is_linkable(minimal_music_asm):
+    """Regression for #128: the shared music.asm fixture must .export its entry
+    points (init_music/update_music) exactly like the real CA65 exporter, or
+    ld65 fails with 'Unresolved external' — which the integration tests here
+    used to mask as a misleading 'CC65 may not be installed' skip."""
+    content = minimal_music_asm.read_text()
+    assert ".export init_music, update_music" in content
 
 
 @pytest.mark.slow
@@ -31,7 +37,7 @@ from tracker.parser_fast import parse_midi_to_frames
 class TestFullPipelineWithROMGeneration:
     """Test complete MIDI to ROM pipeline with real ROM generation."""
 
-    def test_generate_and_validate_real_rom(self, temp_dir, minimal_midi_file):
+    def test_generate_and_validate_real_rom(self, temp_dir, minimal_midi_file, minimal_music_asm):
         """
         THE CRITICAL TEST: Generate real ROM from MIDI and validate with diagnostics.
 
@@ -52,53 +58,25 @@ class TestFullPipelineWithROMGeneration:
         assert frames_data is not None
         assert "events" in frames_data or "frames" in frames_data
 
-        # Step 2: Create directories
-        export_dir = temp_dir / "export"
-        export_dir.mkdir()
-
-        music_asm = export_dir / "music.asm"
+        # Step 2: Create directories. music.asm comes from the shared
+        # minimal_music_asm fixture, which emits `.export init_music,
+        # update_music` exactly like the real CA65 exporter — so it LINKS
+        # (#128); a missing export used to fail ld65 and get masked as a skip.
         project_dir = temp_dir / "nes_project"
         rom_output = temp_dir / "output.nes"
 
-        # Step 3: Export to assembly (simplified - just create minimal music.asm)
-        music_asm.write_text("""; Generated music.asm
-.importzp frame_counter
-
-.segment "CODE"
-
-; APU initialization - CRITICAL for validation
-init_music:
-    lda #$0F
-    sta $4015              ; APU Enable - CRITICAL PATTERN
-    lda #$BF
-    sta $4000              ; Pulse1 Init - GOOD PATTERN
-    lda #$BF
-    sta $4004              ; Pulse2 Init - GOOD PATTERN
-    rts
-
-update_music:
-    inc frame_counter
-    bne :+
-    inc frame_counter+1
-:
-    rts
-""")
-
-        # Step 4: Prepare project
+        # Step 4: Prepare project (default mapper = MMC3).
         builder = NESProjectBuilder(str(project_dir))
-        result = builder.prepare_project(str(music_asm))
+        result = builder.prepare_project(str(minimal_music_asm))
         assert result == True
         assert (project_dir / "main.asm").exists()
         assert (project_dir / "nes.cfg").exists()
 
-        # Step 5: Compile ROM with CC65 (this is where real validation should happen)
-        try:
-            result = compile_rom(project_dir, rom_output)
-            if not result:
-                pytest.skip("CC65 compilation failed - CC65 may not be installed")
-        except Exception as e:
-            pytest.skip(f"CC65 compilation failed: {str(e)}")
-
+        # Step 5: Compile ROM with CC65. The class is @requires_cc65, so this
+        # runs only when ca65/ld65 are present — a False result here is a REAL
+        # engine/fixture failure and must FAIL, not skip (#128).
+        assert compile_rom(project_dir, rom_output), \
+            "compile_rom failed with CC65 present — the project emitted unlinkable asm"
         assert rom_output.exists(), "ROM file should exist after compilation"
 
         # Step 6: VALIDATE ROM - THE CRITICAL STEP
@@ -123,34 +101,20 @@ update_music:
         assert rom_result.assembly_code_score > 30, \
             f"Generated ROM has low assembly code score ({rom_result.assembly_code_score})"
 
-    def test_rom_binary_contents_validation(self, temp_dir, minimal_midi_file):
-        """Test that generated ROM contains correct binary patterns."""
-        # Setup
-        music_asm = temp_dir / "music.asm"
-        music_asm.write_text("""; Music with APU init
-.importzp frame_counter
-.segment "CODE"
-init_music:
-    lda #$0F
-    sta $4015              ; APU Enable pattern
-    rts
-update_music:
-    inc frame_counter
-    rts
-""")
+    def test_rom_binary_contents_validation(self, temp_dir, minimal_music_asm):
+        """Test that generated ROM contains correct binary patterns.
 
+        The byte-level assertions below (8 PRG banks = 128 KB, vectors at the
+        128 KB offset) are MMC1-specific, so this builds explicitly with MMC1
+        rather than the MMC3 default (which would be 512 KB / 32 banks)."""
         project_dir = temp_dir / "project"
         rom_output = temp_dir / "output.nes"
 
-        builder = NESProjectBuilder(str(project_dir))
-        builder.prepare_project(str(music_asm))
+        builder = NESProjectBuilder(str(project_dir), mapper_name="mmc1")
+        builder.prepare_project(str(minimal_music_asm))
 
-        try:
-            result = compile_rom(project_dir, rom_output)
-            if not result:
-                pytest.skip("CC65 compilation failed")
-        except Exception:
-            pytest.skip("CC65 not installed")
+        assert compile_rom(project_dir, rom_output), \
+            "compile_rom failed with CC65 present — unlinkable asm (#128)"
 
         # Read ROM binary
         with open(rom_output, 'rb') as f:
@@ -175,34 +139,16 @@ update_music:
         # Vectors should not be 0x0000
         assert rom_data[vectors_offset:vectors_offset+2] != b'\x00\x00'
 
-    def test_rom_health_check_integration(self, temp_dir, minimal_midi_file):
+    def test_rom_health_check_integration(self, temp_dir, minimal_music_asm):
         """Test that generated ROM passes health checks."""
-        music_asm = temp_dir / "music.asm"
-        music_asm.write_text("""; Music with APU init
-.importzp frame_counter
-.segment "CODE"
-init_music:
-    lda #$0F
-    sta $4015
-    lda #$BF
-    sta $4000
-    rts
-update_music:
-    rts
-""")
-
         project_dir = temp_dir / "project"
         rom_output = temp_dir / "output.nes"
 
         builder = NESProjectBuilder(str(project_dir))
-        builder.prepare_project(str(music_asm))
+        builder.prepare_project(str(minimal_music_asm))
 
-        try:
-            result = compile_rom(project_dir, rom_output)
-            if not result:
-                pytest.skip("CC65 compilation failed")
-        except Exception:
-            pytest.skip("CC65 not installed")
+        assert compile_rom(project_dir, rom_output), \
+            "compile_rom failed with CC65 present — unlinkable asm (#128)"
 
         # Validate ROM
         diagnostics = ROMDiagnostics(verbose=False)
@@ -224,25 +170,13 @@ update_music:
 class TestDebugModeROMGeneration:
     """Test ROM generation with debug mode enabled."""
 
-    def test_debug_mode_rom_generation(self, temp_dir, minimal_midi_file):
+    def test_debug_mode_rom_generation(self, temp_dir, minimal_music_asm):
         """Test that debug mode ROM generation works."""
-        music_asm = temp_dir / "music.asm"
-        music_asm.write_text("""; Basic music.asm
-.importzp frame_counter
-.segment "CODE"
-init_music:
-    lda #$0F
-    sta $4015
-    rts
-update_music:
-    rts
-""")
-
         project_dir = temp_dir / "debug_project"
 
         # Generate with debug mode
         builder = NESProjectBuilder(str(project_dir), debug_mode=True)
-        result = builder.prepare_project(str(music_asm))
+        result = builder.prepare_project(str(minimal_music_asm))
         assert result == True
 
         # Verify debug-related files exist
@@ -251,12 +185,8 @@ update_music:
 
         rom_output = temp_dir / "debug_output.nes"
 
-        try:
-            result = compile_rom(project_dir, rom_output)
-            if not result:
-                pytest.skip("CC65 compilation failed")
-        except Exception:
-            pytest.skip("CC65 not installed")
+        assert compile_rom(project_dir, rom_output), \
+            "compile_rom failed with CC65 present — unlinkable asm (#128)"
 
         # Validate debug ROM
         diagnostics = ROMDiagnostics(verbose=False)
@@ -307,32 +237,23 @@ class TestROMCompilationErrorHandling:
             pytest.skip("CC65 not installed")
 
 
+@pytest.mark.slow
+@pytest.mark.requires_cc65
 @pytest.mark.integration
 class TestROMSizeValidation:
     """Test ROM size validation."""
 
-    def test_generated_rom_has_expected_size(self, temp_dir):
-        """Test that generated ROM has the expected size."""
-        music_asm = temp_dir / "music.asm"
-        music_asm.write_text("""; Music
-.importzp frame_counter
-.segment "CODE"
-init_music: rts
-update_music: rts
-""")
-
+    def test_generated_rom_has_expected_size(self, temp_dir, minimal_music_asm):
+        """Test that generated ROM has the expected size. The 128 KB assertion
+        is MMC1-specific, so build MMC1 explicitly (the MMC3 default is 512 KB)."""
         project_dir = temp_dir / "project"
         rom_output = temp_dir / "output.nes"
 
-        builder = NESProjectBuilder(str(project_dir))
-        builder.prepare_project(str(music_asm))
+        builder = NESProjectBuilder(str(project_dir), mapper_name="mmc1")
+        builder.prepare_project(str(minimal_music_asm))
 
-        try:
-            result = compile_rom(project_dir, rom_output)
-            if not result:
-                pytest.skip("CC65 compilation failed")
-        except Exception:
-            pytest.skip("CC65 not installed")
+        assert compile_rom(project_dir, rom_output), \
+            "compile_rom failed with CC65 present — unlinkable asm (#128)"
 
         # ROM should be approximately: 16 bytes (header) + 128KB (PRG)
         expected_min = 16 + (128 * 1024)
