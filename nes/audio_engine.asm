@@ -128,8 +128,8 @@ audio_init:
     sta $4011
 
     ; Initialize the APU so the NMI-driven engine owns the channels.
-    ; $4017 = $40: frame counter mode 1, disable frame IRQ so it cannot
-    ; clock length/envelope units against us (docs/NES_APU_REFERENCE.md §3.2).
+    ; $4017 = $40: frame counter 4-step mode (mode 0), disable frame IRQ so it
+    ; cannot clock length/envelope units against us (docs/NES_APU_REFERENCE.md §3.2).
     lda #$40
     sta $4017
     ; $4015 = $0F: enable Pulse1/Pulse2/Triangle/Noise. DMC (bit 4) is enabled

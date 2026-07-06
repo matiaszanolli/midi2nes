@@ -53,13 +53,18 @@ class CA65Exporter(BaseExporter):
             return NES_TRIANGLE_TABLE[midi_note]
         return NES_NOTE_TABLE[midi_note]
 
-    # $FF and $FE are reserved as macro *control* bytes: _compress_macro appends
-    # $FF (end/sustain) and [$FE, loop_start] (loop), and the engine's EVAL_MACRO
-    # reads the first $FF as end-of-macro. A signed pitch/arp offset spans the
-    # whole byte, so the offsets -1 (0xFF) and -2 (0xFE) would be misread as
-    # control codes mid-stream, truncating or desyncing the macro (#77). There is
-    # no spare byte in a full signed domain, so the encoder must keep those two
-    # values out of the data: snap each to its nearest non-reserved encoding.
+    # $FF is the only macro *control* byte the live engine understands:
+    # _compress_macro appends it as end/sustain, and EVAL_MACRO
+    # (nes/audio_engine.asm) reads the first $FF as end-of-macro -- it has no
+    # branch for $FE at all, so _compress_macro intentionally never emits
+    # $FE either (loop compression was removed, #163/NH-21). $FE is still
+    # kept out of the *data* domain here as a forward-compatible reservation
+    # in case loop support is ever added to both sides together; a signed
+    # pitch/arp offset spans the whole byte, so the offsets -1 (0xFF) and
+    # -2 (0xFE) would otherwise be misread as control codes mid-stream,
+    # truncating or desyncing the macro (#77). There is no spare byte in a
+    # full signed domain, so the encoder keeps both values out of the data:
+    # snap each to its nearest non-reserved encoding.
     MACRO_CTRL_END = 0xFF
     MACRO_CTRL_LOOP = 0xFE
 
@@ -840,7 +845,7 @@ class CA65Exporter(BaseExporter):
                 'init_music:',
                 '    ; Initialize APU for music playback',
                 '    lda #$40',
-                '    sta $4017  ; Frame counter mode 1, disable frame IRQ (NES_APU_REFERENCE 3.2)',
+                '    sta $4017  ; Frame counter 4-step mode (mode 0), disable frame IRQ (NES_APU_REFERENCE 3.2)',
                 '    lda #$0F',
                 '    sta $4015  ; Enable all channels',
                 '    lda #$08    ; Disable sweep units (APU_PULSE_REFERENCE §1, §5)',
@@ -920,60 +925,37 @@ class CA65Exporter(BaseExporter):
 
     def _compress_macro(self, data):
         """
-        Compresses a macro list (volume, pitch, duty) using $FF (sustain) and $FE (loop).
+        Compresses a macro list (volume, pitch, duty) using $FF (sustain).
+
+        $FE (loop) is part of the documented bytecode contract
+        (docs/AUDIO_BYTECODE_SPEC.md §2.3) but the live EVAL_MACRO evaluator
+        in nes/audio_engine.asm only implements $FF -- it has no branch for
+        $FE at all, so a $FE byte is read as ordinary data and the following
+        loop_start operand is consumed as the next frame's value, desyncing
+        the stream. Sustain compression alone is a strict subset of what the
+        engine can decode, so loop compression is intentionally not
+        attempted here (#163/NH-21) rather than emitting a format the
+        engine cannot honor.
         """
         if not data:
             return [0xFF]
-            
+
         n = len(data)
-        
+
         # Baseline: No compression, just end with $FF (sustain)
         best_compression = data + [0xFF]
         best_len = len(best_compression)
-        
-        # 1. Try Sustain Compression ($FF)
+
+        # Try Sustain Compression ($FF)
         # E.g., [15, 14, 13, 10, 10, 10, 10] -> [15, 14, 13, 10, 0xFF]
         sustain_idx = n - 1
         while sustain_idx > 0 and data[sustain_idx - 1] == data[-1]:
             sustain_idx -= 1
-        
+
         sustain_comp = data[:sustain_idx + 1] + [0xFF]
         if len(sustain_comp) < best_len:
             best_compression = sustain_comp
             best_len = len(sustain_comp)
-
-        # 2. Try Loop Compression ($FE)
-        # E.g., [15, 12, 10, 8, 10, 12, 10, 8, 10, 12] -> [15, 12, 10, 8, 0xFE, 0x01]
-        for p_len in range(1, n // 2 + 1):
-            pattern = data[-p_len:]
-            
-            # Count backwards to see how many times this exact pattern repeats
-            repeats = 0
-            while True:
-                start_idx = n - (repeats + 2) * p_len
-                if start_idx < 0:
-                    break
-                if data[start_idx : start_idx + p_len] == pattern:
-                    repeats += 1
-                else:
-                    break
-                    
-            if repeats > 0:
-                loop_start = n - (repeats + 1) * p_len
-                # $FE's operand is a single byte (#80/EXP-04): a note held over
-                # ~4.3s (256 frames) whose best-found loop starts past byte 255
-                # would emit an out-of-range `.byte` ca65 rejects (or a
-                # misread offset). Skip this candidate -- the sustain/no-
-                # compression baseline above is always a valid, byte-safe
-                # fallback, so a single overlong macro degrades to a slightly
-                # larger encoding instead of failing the whole export.
-                if loop_start > 0xFF:
-                    continue
-                # Output the prefix + one instance of the pattern + $FE + loop_start index
-                comp = data[:loop_start + p_len] + [0xFE, loop_start]
-                if len(comp) < best_len:
-                    best_compression = comp
-                    best_len = len(comp)
 
         return best_compression
 

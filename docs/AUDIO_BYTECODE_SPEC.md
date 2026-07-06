@@ -38,14 +38,26 @@ Macros are lists of offsets or absolute values evaluated frame-by-frame.
 *   **Arpeggio Macros:** Half-step offsets from the base note (e.g., `0, 4, 7, 12`).
 *   **Pitch Macros:** Fine-tuning offsets added to the raw APU timer value.
 *   **Control Bytes in Macros:**
-    *   `$FF`: End of macro (sustain last value).
-    *   `$FE, <offset>`: Loop macro back to offset.
+    *   `$FF`: End of macro (sustain last value). The only control byte the
+        live evaluator (`EVAL_MACRO` in `nes/audio_engine.asm`) implements.
+    *   `$FE, <offset>`: Loop macro back to offset. **Reserved for a future
+        implementation, not currently functional** — `_compress_macro`
+        (`exporter/exporter_ca65.py`) does not emit it, and `EVAL_MACRO` has
+        no branch for it (a `$FE` byte would be misread as ordinary data,
+        desyncing the stream). A prior version of the exporter did emit
+        `$FE` when loop compression won on size, which the engine could not
+        decode (#163/NH-21) — loop compression was removed rather than
+        implementing the engine side, since no producer currently emits
+        non-constant macros that would benefit from it.
 *   **Reserved data values:** Because `$FF`/`$FE` are control bytes, signed
-    pitch/arp *data* offsets may never encode to them. The exporter snaps the two
-    colliding offsets to the nearest non-reserved byte — `-1` (`$FF`) → `0`
-    (`$00`) and `-2` (`$FE`) → `-3` (`$FD`) — so a small downward bend can never
-    be misread as an end/loop command mid-macro. For pitch these are period-unit
-    deltas, so the ≤1-unit nudge is sub-cent and inaudible. (#77)
+    pitch/arp *data* offsets may never encode to them (even though `$FE` is
+    not currently emitted as a control byte, the reservation is kept so a
+    future loop implementation doesn't have to re-derive this). The exporter
+    snaps the two colliding offsets to the nearest non-reserved byte — `-1`
+    (`$FF`) → `0` (`$00`) and `-2` (`$FE`) → `-3` (`$FD`) — so a small
+    downward bend can never be misread as an end/loop command mid-macro. For
+    pitch these are period-unit deltas, so the ≤1-unit nudge is sub-cent and
+    inaudible. (#77)
 
 ---
 
