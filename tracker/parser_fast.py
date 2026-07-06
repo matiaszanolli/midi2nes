@@ -23,6 +23,52 @@ def _open_midi_file(midi_path):
         raise InvalidMIDIError(str(midi_path), str(e)) from e
 
 
+def _build_tempo_map(mid, config):
+    """Build a tempo map from an already-opened MIDI file's `set_tempo`
+    events, counting and warning on any rejected change instead of dropping
+    it silently (#94/TEMPO-02).
+
+    Shared by `parse_midi_to_frames` and `parse_midi_to_frames_with_analysis`
+    so their two tempo-collection passes (previously duplicated, one fixed
+    and one not) can't drift out of sync again (#259/TEMPO-12,
+    #260/TEMPO-13) -- this also fixes the analysis path never having passed
+    `ticks_per_beat`, since the caller now always constructs the map here
+    from the real `mid.ticks_per_beat`.
+    """
+    tempo_map = EnhancedTempoMap(
+        initial_tempo=500000,  # 120 BPM
+        ticks_per_beat=mid.ticks_per_beat,  # Use actual MIDI resolution
+        validation_config=config,
+        optimization_strategy=None  # Disable expensive optimization
+    )
+
+    dropped_tempo_changes = 0
+    for track in mid.tracks:
+        current_tick = 0
+        for msg in track:
+            current_tick += msg.time
+            if msg.type == 'set_tempo':
+                try:
+                    # Use IMMEDIATE tempo changes for speed
+                    tempo_map.add_tempo_change(
+                        current_tick,
+                        msg.tempo,
+                        TempoChangeType.IMMEDIATE
+                    )
+                except TempoValidationError:
+                    # With the widened config this should be rare; never drop a
+                    # tempo change silently (the song would play at the wrong
+                    # tempo from here on) — count it and warn after the pass (#94).
+                    dropped_tempo_changes += 1
+                    continue
+
+    if dropped_tempo_changes:
+        print(f"Warning: dropped {dropped_tempo_changes} out-of-range tempo "
+              f"change(s); affected sections will play at the preceding tempo.")
+
+    return tempo_map
+
+
 def parse_midi_to_frames(midi_path):
     """
     Fast MIDI parser that only does basic MIDI-to-frames conversion.
@@ -58,39 +104,9 @@ def parse_midi_to_frames(midi_path):
         max_duration_frames=FRAME_RATE_HZ * 300,  # Allow up to 5 minutes
         max_tempo_change_ratio=float('inf')
     )
-    tempo_map = EnhancedTempoMap(
-        initial_tempo=500000,  # 120 BPM
-        ticks_per_beat=mid.ticks_per_beat,  # Use actual MIDI resolution
-        validation_config=config,
-        optimization_strategy=None  # Disable expensive optimization
-    )
+    tempo_map = _build_tempo_map(mid, config)
 
     track_events = defaultdict(list)
-
-    # First pass: collect tempo changes efficiently
-    dropped_tempo_changes = 0
-    for track in mid.tracks:
-        current_tick = 0
-        for msg in track:
-            current_tick += msg.time
-            if msg.type == 'set_tempo':
-                try:
-                    # Use IMMEDIATE tempo changes for speed
-                    tempo_map.add_tempo_change(
-                        current_tick,
-                        msg.tempo,
-                        TempoChangeType.IMMEDIATE
-                    )
-                except TempoValidationError:
-                    # With the widened config this should be rare; never drop a
-                    # tempo change silently (the song would play at the wrong
-                    # tempo from here on) — count it and warn after the pass (#94).
-                    dropped_tempo_changes += 1
-                    continue
-
-    if dropped_tempo_changes:
-        print(f"Warning: dropped {dropped_tempo_changes} out-of-range tempo "
-              f"change(s); affected sections will play at the preceding tempo.")
 
     # Second pass: process notes efficiently
     dropped_note_events = 0
@@ -170,11 +186,13 @@ def parse_midi_to_frames_with_analysis(midi_path):
     # Then add expensive analysis if needed
     from tracker.pattern_detector import EnhancedPatternDetector
     from tracker.loop_manager import EnhancedLoopManager
-    from tracker.tempo_map import EnhancedTempoMap
-    
+
     # Create tempo map again (could be optimized with caching). Same widened
     # band / disabled ratio gate as the first pass so analysis sees the real
-    # tempos rather than the narrow 40-250 BPM subset (#94).
+    # tempos rather than the narrow 40-250 BPM subset (#94). Rebuilt via the
+    # shared _build_tempo_map helper so this pass gets the same real
+    # ticks_per_beat and count-and-warn-on-drop behavior as the first pass,
+    # instead of silently diverging (#259/TEMPO-12, #260/TEMPO-13).
     config = TempoValidationConfig(
         min_tempo_bpm=1.0,
         max_tempo_bpm=2000.0,
@@ -182,24 +200,9 @@ def parse_midi_to_frames_with_analysis(midi_path):
         max_duration_frames=FRAME_RATE_HZ * 300,
         max_tempo_change_ratio=float('inf')
     )
-    tempo_map = EnhancedTempoMap(
-        initial_tempo=500000,
-        validation_config=config,
-        optimization_strategy=None
-    )
-
-    # Rebuild tempo map (this could be cached from first pass)
     mid = _open_midi_file(midi_path)
-    for track in mid.tracks:
-        current_tick = 0
-        for msg in track:
-            current_tick += msg.time
-            if msg.type == 'set_tempo':
-                try:
-                    tempo_map.add_tempo_change(current_tick, msg.tempo, TempoChangeType.IMMEDIATE)
-                except TempoValidationError:
-                    continue
-    
+    tempo_map = _build_tempo_map(mid, config)
+
     # Now do expensive analysis
     pattern_detector = EnhancedPatternDetector(tempo_map)
     loop_manager = EnhancedLoopManager(tempo_map)

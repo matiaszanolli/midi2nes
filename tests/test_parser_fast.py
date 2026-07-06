@@ -550,32 +550,88 @@ class TestParseMidiToFramesWithAnalysis:
     
     def test_tempo_validation_error_handling(self):
         """Test handling of tempo validation errors in analysis parser"""
-        # Create a real MIDI file with invalid tempo that will trigger TempoValidationError 
-        # in the analysis parser's tempo map rebuild section (lines 122-123)
+        # Create a real MIDI file with invalid tempo that will trigger TempoValidationError
+        # in the analysis parser's tempo map rebuild section.
         tracks = [
             [
-                mido.MetaMessage('set_tempo', tempo=1, time=0),  # Extremely low tempo - invalid
+                mido.MetaMessage('set_tempo', tempo=1, time=0),  # Extremely high BPM - invalid
                 mido.Message('note_on', channel=0, note=60, velocity=64, time=0),
                 mido.Message('note_off', channel=0, note=60, velocity=0, time=480),
                 mido.MetaMessage('end_of_track', time=0)
             ]
         ]
-        
+
         mid = mido.MidiFile()
         for track_data in tracks:
             track = mido.MidiTrack()
             track.extend(track_data)
             mid.tracks.append(track)
-        
+
         midi_path = self.temp_dir / "invalid_tempo.mid"
         mid.save(str(midi_path))
-        
-        # This should not raise an exception even with invalid tempo
-        # The TempoValidationError should be caught and silently skipped
+
+        # This should not raise an exception even with invalid tempo -- the
+        # TempoValidationError is caught and the change dropped, not fatal.
         result = parse_midi_to_frames_with_analysis(str(midi_path))
         assert isinstance(result, dict)
         assert 'events' in result
         assert 'metadata' in result
+
+    def test_dropped_tempo_change_warns_on_analysis_path(self, capsys):
+        """Regression (#259/TEMPO-12): the analysis-path tempo rebuild used to
+        drop a rejected tempo change with a bare `except: continue` -- no
+        counter, no warning -- diverging from the fixed default parser, which
+        counts and prints a warning (#94). Both paths now share
+        `_build_tempo_map`, so a rejected change must warn here too."""
+        tracks = [[
+            mido.MetaMessage('set_tempo', tempo=1, time=0),  # ~60,000,000 BPM
+            mido.Message('note_on', channel=0, note=60, velocity=64, time=0),
+            mido.Message('note_off', channel=0, note=60, velocity=0, time=480),
+        ]]
+        mid = mido.MidiFile()
+        for track_data in tracks:
+            track = mido.MidiTrack()
+            track.extend(track_data)
+            mid.tracks.append(track)
+        midi_path = self.temp_dir / "dropped_tempo_warns.mid"
+        mid.save(str(midi_path))
+
+        parse_midi_to_frames_with_analysis(str(midi_path))
+
+        captured = capsys.readouterr()
+        assert "dropped" in captured.out and "out-of-range tempo" in captured.out
+
+    def test_analysis_tempo_map_uses_real_ticks_per_beat(self):
+        """Regression (#260/TEMPO-13): the analysis-path tempo map used to be
+        constructed without `ticks_per_beat`, silently defaulting to 480
+        regardless of the file's real PPQ. _build_tempo_map (shared with the
+        fixed default parser) must always pass the file's actual value."""
+        from tracker.parser_fast import _build_tempo_map, _open_midi_file
+        from tracker.tempo_map import TempoValidationConfig
+
+        tracks = [[
+            mido.MetaMessage('set_tempo', tempo=500000, time=0),
+            mido.Message('note_on', channel=0, note=60, velocity=64, time=0),
+            mido.Message('note_off', channel=0, note=60, velocity=0, time=96),
+        ]]
+        mid = mido.MidiFile(ticks_per_beat=96)  # deliberately not 480
+        for track_data in tracks:
+            track = mido.MidiTrack()
+            track.extend(track_data)
+            mid.tracks.append(track)
+        midi_path = self.temp_dir / "nonstandard_ppq.mid"
+        mid.save(str(midi_path))
+
+        reopened = _open_midi_file(str(midi_path))
+        assert reopened.ticks_per_beat == 96  # sanity: mido preserved our PPQ
+
+        config = TempoValidationConfig(
+            min_tempo_bpm=1.0, max_tempo_bpm=2000.0,
+            min_duration_frames=2, max_duration_frames=18000,
+            max_tempo_change_ratio=float('inf'),
+        )
+        tempo_map = _build_tempo_map(reopened, config)
+        assert tempo_map.ticks_per_beat == 96
 
 
 class TestCommandLineInterface:
