@@ -95,8 +95,10 @@ class NESEmulatorCore:
 
             # Use the pitch_processor instance instead of static function
             pitch = self.midi_to_nes_pitch(event['note'], channel_type)
+            # envelope_type is currently always 'default' — no pipeline stage sets
+            # it yet (the ADSR/effects engine is inert scaffolding, #166). Kept so
+            # a future GM-based producer can drive real envelopes without re-plumbing.
             envelope_type = event.get('envelope_type', 'default')
-            arpeggio = event.get('arpeggio', False)
 
             for f in range(start_frame, end_frame):
                 frame_offset = f - start_frame
@@ -107,7 +109,6 @@ class NESEmulatorCore:
                     frames[f] = {
                         "pitch": pitch,
                         "control": control_byte,
-                        "arpeggio": arpeggio,
                         "note": event['note'],
                         "volume": max(1, int(15 * math.pow(velocity / 127.0, 1.5)))
                     }
@@ -121,7 +122,6 @@ class NESEmulatorCore:
                     frames[f] = {
                         "pitch": pitch,
                         "volume": volume,
-                        "arpeggio": arpeggio,
                         "note": event['note']
                     }
 
