@@ -51,6 +51,15 @@ The MMC1 has 4 distinct modes for mapping PRG-ROM into the CPU's memory space (`
 
 ## 4. Engine Implementation Notes (midi2nes)
 
+> **Status (as of #281/#282): NOT YET IMPLEMENTED.** The Mode-2 DPCM-streaming
+> design below is the *target* design, not the current behavior. The direct-export
+> (`--no-patterns`) engine's `play_dpcm` trigger and the DPCM sample packer are
+> still MMC3-only (MMC3 R6 bank-select + `DPCM_NN` segments). Until this design
+> lands, a `--no-patterns` build of a song with a DPCM channel forces `--mapper
+> mmc3` under `auto` and is rejected outright for an explicit `--mapper mmc1`/
+> `nrom` (a clean error, not a corrupting/unlinkable ROM). DPCM drums otherwise
+> ship via the MMC3 macro-bytecode (pattern) path, which is always MMC3.
+
 ### Bank Layout Strategy (Mode 2 is Mandatory)
 As noted in the APU DMC Reference, **DPCM samples MUST reside in the `$C000-$FFFF` range.** 
 
