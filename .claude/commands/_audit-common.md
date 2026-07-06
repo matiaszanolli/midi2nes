@@ -64,7 +64,7 @@ Config:           config/config_manager.py + config/default_config.yaml
 Benchmarks:       benchmarks/performance_suite.py + benchmarks/run_benchmarks.py
 Profiling:        utils/profiling.py                   (get_memory_usage, log_memory_usage)
 Debug tools:      debug/                               (rom_diagnostics, check_rom, rom_tester, nes_devtools)
-Tests:            tests/                               (43 test_*.py + conftest.py)
+Tests:            tests/                               (52 test_*.py + conftest.py)
 ```
 
 ## Key Reference Docs
@@ -176,14 +176,18 @@ Some audits add extra fields (e.g. `Changed in`, `Hardware ref`) — see each sk
 
 ## Labels
 
-The repo currently has only the **default GitHub label set**
-(`bug`, `enhancement`, `duplicate`, `question`, `help wanted`, `invalid`, `wontfix`).
-There are **no** severity or domain labels yet. `/audit-publish` is the single place
-this is reconciled: it pulls the live label set with
-`gh label list --repo matiaszanolli/midi2nes`, and either (a) creates the recommended
-severity/domain set once (deliberate, see `/audit-publish`), or (b) files with `bug` /
-`enhancement` only and encodes severity + domain as a badge line in the issue body.
-**Never** pass a label to `gh issue create` that is not in the live set — it rejects unknown labels.
+The repo now has the full audit label set (created once, deliberately) on top of the
+default GitHub labels:
+- **Severity**: `critical`, `high`, `medium`, `low`.
+- **Domain** (one per subsystem audit): `pipeline`, `nes-hardware`, `mappers`,
+  `exporters`, `patterns`, `dpcm`, `arranger`, `performance`, `safety`, `tech-debt`,
+  `regression`, `tempo`, plus `documentation`.
+
+`/audit-publish` pulls the live set with `gh label list --repo matiaszanolli/midi2nes`
+and applies the matching severity + domain labels directly (it no longer needs the old
+"badge-line only" fallback, since the labels exist). **Never** pass a label to
+`gh issue create` that is not in the live set — `gh` rejects unknown labels; if one is
+ever missing, `/audit-publish` recreates just that one before filing.
 
 ## Report Finalization
 

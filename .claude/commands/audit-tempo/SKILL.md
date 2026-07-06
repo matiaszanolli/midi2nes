@@ -59,7 +59,7 @@ walking `get_tempo_at_tick` in a loop. Audit:
 - Duplicate tempo changes at the same tick (multi-track MIDI) — does the last-wins/sort behavior of `tempo_changes.sort()` (line ~119) plus `get_tempo_at_tick`'s `bisect_right` (line ~165) match MIDI semantics?
 
 ### Dimension 3: Default / Missing Tempo Fallback
-`main.py`'s `run_detect_patterns` (line ~357) and `run_full_pipeline` (line ~536) each build
+`main.py`'s `run_detect_patterns` (line ~621) and `run_full_pipeline` (line ~811) each build
 `EnhancedTempoMap(initial_tempo=500000)` — 120 BPM — **without passing `ticks_per_beat`, so it
 defaults to 480** even though the MIDI file may declare a different PPQ. `tracker/parser_fast.py`
 (line ~51) *does* pass `ticks_per_beat=mid.ticks_per_beat`. Audit:
@@ -102,10 +102,10 @@ Verify fix completeness:
   (equal velocity) deterministically keep the later event as documented (line ~39), and that the
   arranger path (which allocates/arpeggiates polyphony across channels) genuinely never hits this
   collapse for legitimately polyphonic content.
-- Very slow tempo / very high tick counts: `_frame_times = np.arange(0, 10000)` in
-  `EnhancedTempoMap.__init__` (line ~242) is unused dead state — nothing reads `self._frame_times`
-  anywhere in `tracker/tempo_map.py` (confirmed by grep). It is not a hidden cap on anything; flag as
-  dead code (LOW), not a functional bound.
+- Very slow tempo / very high tick counts: the previously-dead `_frame_times = np.arange(0, 10000)`
+  buffer in `EnhancedTempoMap.__init__` has since been removed — grep for `_frame_times` in
+  `tracker/tempo_map.py` now returns nothing. There is no fixed frame-count buffer capping anything;
+  confirm nothing has reintroduced such a cap.
 - Overflow: extremely large `tick * us_per_tick` staying in float64 range (`_build_tempo_index` /
   `_cumulative_ms`, lines ~137-160).
 
@@ -138,11 +138,11 @@ is reachable and its correctness matters whenever either path is used:
 - `register_loop_point` (line ~503) / the `loop_points` dict only stores *tempo* at the boundaries — confirm a tempo change spanning the loop boundary doesn't leave the loop restarting at the wrong tempo.
 
 ### Dimension 7: Validation / Optimization Fidelity
-`optimize_tempo_changes` (`tracker/tempo_map.py`, lines ~638-658) and `_align_to_frames`
-(~595-636), `_minimize_tempo_changes` (~554-566), `_smooth_tempo_transitions` (~568-593) can
+`optimize_tempo_changes` (`tracker/tempo_map.py`, lines ~668-688) and `_align_to_frames`
+(~622-666), `_minimize_tempo_changes` (~581-593), `_smooth_tempo_transitions` (~595-620) can
 *rewrite* the tempo list. **Confirmed still dead on the live path (TEMPO-05, #97)**: both
 `tracker/parser_fast.py`'s `parse_midi_to_frames` (line ~53) and `main.py`'s
-`EnhancedTempoMap` construction sites (lines ~357, ~536) pass or default to
+`EnhancedTempoMap` construction sites (lines ~621, ~811) pass or default to
 `optimization_strategy=None` / never call `optimize_tempo_changes()` — grep confirms no call site
 outside `tracker/tempo_map.py` itself and its tests. The invariant if it's ever wired up: optimization
 may change *representation* but must not change *musical timing* of notes. Audit:
@@ -162,7 +162,7 @@ Boundary correctness:
   matching note-off event where available (lines ~76-86), falling back to `sustain_frames` only
   when unpaired.
 - Frame-alignment tolerance consolidation (**TEMPO-07, #99, now fixed**): `is_frame_aligned`
-  (line ~251), `_validate_frame_boundaries` (line ~441), and `_check_frame_alignment` (line ~800) all
+  (line ~254), `_validate_frame_boundaries` (line ~468), and `_check_frame_alignment` (line ~830) all
   now reference the single `FRAME_ALIGNMENT_TOLERANCE_MS = 0.5` constant (line ~23) instead of
   independent hardcoded thresholds. The dead `_frame_cache` (assigned but never read) was removed in
   the same fix. Verify fix completeness:
@@ -172,7 +172,7 @@ Boundary correctness:
     distinction actually holds: could a tick accepted by the wider re-snap tolerance later fail one of
     the three verdict predicates (or vice versa), producing a tempo change that "succeeded" but is
     then reported as misaligned elsewhere?
-  - `find_nearest_frame_aligned_tick` (line ~348) and `_align_to_frames` (line ~595) use a
+  - `find_nearest_frame_aligned_tick` (line ~359) and `_align_to_frames` (line ~622) use a
     `0.001` ms exact-match short-circuit — confirm this doesn't leave a not-quite-aligned tick
     (between 0.001 and 0.5ms off) that the verdict predicates would then call "aligned" but that
     wasn't actually snapped.

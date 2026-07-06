@@ -28,11 +28,11 @@ The hot files for this audit:
 `exporter/exporter_ca65.py`.
 
 > **Note on recent history**: this repo just closed ~100 issues in a bug-fixing sprint.
-> Several hardware bugs previously tracked here (NH-01..NH-10, NH-15..NH-20) are now
+> Most hardware bugs previously tracked here (NH-01..NH-11, NH-15..NH-24) are now
 > **fixed** — the bullets below describe the current (fixed) behavior and ask you to
 > verify the fix is complete/holds under edge cases, rather than hunt for the original
-> bug. A smaller set (NH-11, NH-14, NH-21..NH-25) is still **open** — keep hunting those
-> at full strength. Don't assume either list is exhaustive; re-derive from the code.
+> bug. A smaller set (NH-14, NH-25) is still **open** — keep hunting those at full
+> strength. Don't assume either list is exhaustive; re-derive from the code.
 
 ## Parameters (from $ARGUMENTS)
 - `--focus <dims>` — comma-separated dimension numbers (e.g. `--focus 1,5,9`). Default: all.
@@ -217,7 +217,9 @@ gone). Verify:
 ### Dimension 7: Envelope / ADSR behavior
 The engine bypasses the hardware envelope and drives constant volume per frame
 (`docs/APU_ENVELOPE_REFERENCE.md` §4 Constant Volume Output, §5 Engine Implementation).
-**Open (NH-24, #166)**: the ADSR/effects/arpeggio plumbing is inert. Verify in
+**Closed as documented (NH-24, #166)**: the ADSR/effects/arpeggio plumbing is
+intentionally inert scaffolding (kept for a future GM-based producer), not a bug to
+fix — but the behavior below still holds, so verify it hasn't silently changed. Check in
 `nes/envelope_processor.py` and its only caller (`nes/emulator_core.py`):
 - `compile_channel_to_frames` calls `get_envelope_control_byte(envelope_type,
   frame_offset, ..., default_duty, None, velocity)` with the `effects` argument
@@ -253,12 +255,12 @@ initialized to disable the hardware sequencer interfering with the NMI engine
   — `$40` = `%01000000`, i.e. Mode bit (bit 7) clear = **4-step mode**, Interrupt
   Inhibit (bit 6) set = frame IRQ disabled (`docs/APU_FRAME_COUNTER_REFERENCE.md` §2
   Register Map, §3 Sequencer Modes). This is the correct value.
-- **Open (NH-22, #164)**: `init_music`'s comment on that line still reads `; Frame
-  counter mode 1, disable frame IRQ` — `$40` is **mode 0** (4-step), not mode 1
-  (5-step is `$C0`/`$80`). The standalone `reset` proc's `sta $4017` carries no such
-  comment, so this doc-rot is scoped to the `init_music` routine only. LOW severity
-  (comment-only; the byte value itself is correct) — fix the comment, don't touch
-  the value.
+- **Fixed (NH-22, #164)**: `init_music`'s comment on that line previously read `; Frame
+  counter mode 1, disable frame IRQ`, which was doc-rot — `$40` is **mode 0** (4-step),
+  not mode 1 (5-step is `$C0`/`$80`). Both live init sites now read `4-step mode
+  (mode 0)` (`exporter/exporter_ca65.py` init_music and `nes/audio_engine.asm`'s
+  `$4017` write). Confirm the comment still matches the byte and no new init path
+  reintroduces the wrong "mode 1" description.
 - The frame model is one-entry-per-tick (`compile_channel_to_frames` iterates integer
   frames `range(start_frame, end_frame)`). Flag any float tempo→frame accumulation
   that drifts off the 60Hz grid over a song (HIGH; cross-refs the tempo audit, but

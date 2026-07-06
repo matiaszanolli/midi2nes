@@ -16,23 +16,25 @@ a path that *has had bugs* or that emits NES register data is MEDIUM (the blast 
 silently-broken ROM).
 
 A recent sprint closed ~100 issues, several against the test suite itself (REG-01 through
-REG-11 below, from `AUDIT_REGRESSION_2026-06-28.md` / `-06-29.md`). Most are now fixed —
+REG-11 below, from `AUDIT_REGRESSION_2026-06-28.md` / `-06-29.md`). All are now fixed —
 don't re-report them — but re-verify status on every run: a fix landing doesn't guarantee it
-stays landed, and the two still-open items (REG-10, REG-11) are exactly the kind of
-skip-masking this audit exists to catch.
+stays landed, and the skip-masking that REG-10/REG-11 removed (CC65-gated suites reporting
+real compile failures as "CC65 may not be installed" skips) is exactly the failure shape
+this audit exists to catch.
 
 ## Parameters
 - `--limit <N>` — cap findings (report the top N by risk). Default: no cap.
 
 ## Step 1: Inventory
 ```bash
-ls tests/                                   # 50 test_*.py + conftest.py
+ls tests/                                   # 52 test_*.py + conftest.py
 python -m pytest -q --collect-only | tail -5
 python -m pytest --cov=. --cov-report=term-missing -q   # if pytest-cov present
 
-# The two CC65-gated suites mask real failures as skips (see Dimension 3/4) — run
-# them directly with the toolchain present and read the skip reasons, don't trust
-# a green summary:
+# The CC65-gated suites now use a real gate: `conftest.py:pytest_runtest_setup`
+# skips @requires_cc65 only when ca65/ld65 are genuinely absent (via `shutil.which`),
+# so with the toolchain present they compile real ROMs and assert unconditionally.
+# Run them directly to confirm they PASS (not skip), don't just trust a green summary:
 python -m pytest tests/test_ca65_export.py::TestCA65CompilationIntegration -v
 python -m pytest tests/test_rom_validation_integration.py -v
 ```
@@ -73,8 +75,10 @@ the coverage didn't regress rather than re-flagging from scratch:
   arpeggiation cadence, triangle no-duty invariant, frames-contract parity with
   `process_all_tracks`), plus `tests/test_arranger_drum_detection.py`,
   `tests/test_arranger_frame_contract.py`, and `tests/test_voice_allocator.py`
-  (DPCM routing, noise-period routing). Still worth checking: no test drives
-  `--arranger` through the *real* ROM-compile path (see Dimension 3).
+  (DPCM routing, noise-period routing). `--arranger` now also gets a real
+  ROM-compile round trip
+  (`tests/test_e2e_pipeline.py::TestEndToEndPipeline::test_full_pipeline_arranger_mode`,
+  #129) — see Dimension 3.
 
 ### Dimension 2: Weak assertions
 Tests that run code but assert almost nothing — `assert result is not None`, `assert
@@ -107,29 +111,29 @@ compression is MEDIUM (it guards a CRITICAL failure mode).
   `bcc`) — confirmed: all 9 tests in `TestCA65CompilationIntegration` pass with the
   toolchain present. Re-verify this stays green; a relative-branch regression here is
   silent until an assembler is actually invoked.
-- **Still open (REG-10/#128, MEDIUM)**: `tests/test_rom_validation_integration.py` is
-  the designated "compile a real ROM and validate its bytes" gate, but **5 of its 9
-  tests still SKIP** even with `ca65`/`ld65` present (confirmed: `ssss..s..` — 4
-  passed, 5 skipped). Root cause unchanged: the hand-written `music.asm` fixture
-  (`tests/test_rom_validation_integration.py:64-85`) defines `init_music:`/
-  `update_music:` as bare labels with no `.export`/`.global`, so `ld65` fails with
-  `Unresolved external 'init_music'` and the `except Exception → pytest.skip(...)` at
-  lines 98-100, 151-153, 203-205, 257-259, 333-335 reports "CC65 may not be installed"
-  — which is false; the toolchain is present, only the fixture is unlinkable. The real
-  exporter (`exporter/exporter_ca65.py:1138`) emits `.export init_music, update_music`,
-  so the actual pipeline is unaffected — only this test's own fixture is broken, and it
-  provides **zero coverage** on every run while reporting green-ish.
-- **Still open (REG-11/#129, LOW)**: the anchor
-  `test_full_pipeline_midi_to_validated_rom` (`tests/test_e2e_pipeline.py:154-188`)
-  cannot fail on a broken pipeline for valid input — only pass or skip. It (a) wraps
-  the whole run in `try: ... except Exception as e: pytest.skip(...)` (`:171,187-188`),
-  (b) sets `args.skip_validation = True` (`:169`), and (c) guards every assertion with
-  `if rom_path.exists():` (`:177`). Confirmed still present verbatim. It also still
-  does not exercise `--arranger` or `--no-patterns` through a real compile (confirmed:
-  no `arranger` reference anywhere in `tests/test_e2e_pipeline.py`, and
-  `tests/test_main_pipeline.py` exercises `no_patterns` only against mocked
-  `run_full_pipeline` calls, never a real `ca65`/`ld65` compile) — ties back to the
-  Dimension 1 arranger note above.
+- **Fixed (REG-10/#128)**: `tests/test_rom_validation_integration.py` is the designated
+  "compile a real ROM and validate its bytes" gate. It previously had 5 of 9 tests SKIP
+  even with `ca65`/`ld65` present, because the hand-written `music.asm` fixture defined
+  `init_music:`/`update_music:` as bare labels with no `.export`/`.global`, so `ld65`
+  failed with `Unresolved external 'init_music'` and an `except Exception → pytest.skip`
+  masked it as "CC65 may not be installed". Fixed: the fixture now lives in
+  `tests/conftest.py`'s `minimal_music_asm` and emits `.export init_music, update_music`
+  (matching the real exporter); the compile tests are gated with
+  `@pytest.mark.requires_cc65` (a real `shutil.which` gate in
+  `tests/conftest.py:pytest_runtest_setup`) and each asserts `compile_rom(...)`
+  unconditionally, and `test_shared_music_asm_fixture_is_linkable` pins the `.export`.
+  Re-verify these PASS (not skip) with the toolchain present — a re-introduced
+  `except → skip` here is exactly what this dimension catches.
+- **Fixed (REG-11/#129)**: the anchor `test_full_pipeline_midi_to_validated_rom`
+  (`tests/test_e2e_pipeline.py`) can now fail on a broken pipeline. The old
+  `try/except → pytest.skip`, `args.skip_validation = True`, and `if rom_path.exists():`
+  guards are gone: the shared `_run_pipeline` helper sets `skip_validation = False`
+  (validation ON) and `_assert_valid_rom` asserts unconditionally, all under a
+  `@pytest.mark.requires_cc65` gate. It also now exercises `--arranger`
+  (`test_full_pipeline_arranger_mode`) and `--no-patterns`
+  (`test_full_pipeline_no_patterns_direct_export`) through a *real* `ca65`/`ld65`
+  compile — closing the Dimension 1 arranger note above. Re-verify these assertions
+  stay unconditional.
 
 ### Dimension 4: Stale / wrong-target tests
 Tests referencing renamed symbols, skipped/`xfail` tests with no tracking issue, tests that
@@ -157,10 +161,11 @@ Two closed examples worth knowing so they aren't re-flagged:
   `NESProjectBuilder`, a file the project builder (not the CA65 exporter) still always
   emits with a HEADER segment; don't conflate the two files when re-auditing this.
 
-Still-open stale-artifact case: the `music.asm` fixture in
-`tests/test_rom_validation_integration.py` (REG-10 above) is a checked-in-by-hand
-artifact that has drifted from what the real exporter emits — the same failure shape
-this dimension exists to catch, just not yet fixed.
+Recently-fixed stale-artifact case worth knowing: the hand-written `music.asm` fixture
+behind the ROM-validation tests (REG-10 above) had drifted from what the real exporter
+emits (missing the `.export init_music, update_music` directives) — the same failure
+shape this dimension exists to catch. Now fixed by moving it to `tests/conftest.py`'s
+`minimal_music_asm` with the `.export` directives; don't re-flag it.
 
 ### Dimension 5: Determinism / flakiness
 Tests depending on multiprocessing scheduling (`ParallelPatternDetector`), dict/set
@@ -182,9 +187,10 @@ Tests that write into the repo root instead of a temp dir, leak state between te
 depend on a prior test having run. Check `tests/conftest.py` for shared fixtures (`temp_dir`,
 `project_dir`, `minimal_midi_file`, `minimal_music_asm`, `valid_rom_file`, and synthetic
 ROM-corruption fixtures) and whether they're used consistently — most compiler/ROM tests do
-use them. The one fixture that has actually drifted from reality is the hand-written
-`music.asm` in `tests/test_rom_validation_integration.py` (see Dimension 3/4, REG-10) — it
-predates the exporter adding `.export` directives and was never updated to match.
+use them. The `music.asm` fixture that had drifted from reality (missing `.export`
+directives) is now the shared `minimal_music_asm` fixture in `tests/conftest.py`, updated
+to emit `.export init_music, update_music` (see Dimension 3/4, REG-10) — re-verify the
+shared fixture is used consistently rather than re-hand-rolled per test.
 
 ## Step 3: For each gap, specify the test
 Don't just say "needs a test" — name the module, the property to assert, and the concrete
