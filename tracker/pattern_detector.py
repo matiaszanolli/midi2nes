@@ -489,15 +489,23 @@ class EnhancedPatternDetector(PatternDetector):
             }
 
     def _get_variation_summary(self, patterns: Dict) -> Dict:
-        """Generate summary of pattern variations"""
+        """Generate summary of pattern variations.
+
+        Both detectors emit this SAME per-pattern shape (#172) so a consumer can
+        read either path's `variations` uniformly:
+        `{variation_count, exact_match_count, transposition_range, volume_range}`.
+        The parallel detector finds exact repeats only, so on that path
+        variation_count is 0 and the ranges are neutral (0, 0); here all four
+        carry real data."""
         summary = {}
         for pattern_id, pattern_info in patterns.items():
-            if 'variations' in pattern_info:
-                summary[pattern_id] = {
-                    'variation_count': len(pattern_info['variations']),
-                    'transposition_range': self._get_transposition_range(pattern_info['variations']),
-                    'volume_range': self._get_volume_range(pattern_info['variations'])
-                }
+            variations = pattern_info.get('variations', [])
+            summary[pattern_id] = {
+                'variation_count': len(variations),
+                'exact_match_count': len(pattern_info.get('exact_matches', [])),
+                'transposition_range': self._get_transposition_range(variations),
+                'volume_range': self._get_volume_range(variations),
+            }
         return summary
 
     def _get_transposition_range(self, variations: List[Dict]) -> Tuple[int, int]:
@@ -809,9 +817,17 @@ class PatternCompressor:
         
         return compressed_data, dict(pattern_refs)
     
-    def _hash_pattern(self, events: List[Dict]) -> str:
-        """Create a unique hash for a pattern based on its events"""
-        return hash(tuple((e['note'], e['volume']) for e in events))
+    def _hash_pattern(self, events: List[Dict]) -> Tuple[Tuple[int, int], ...]:
+        """Return a pattern's exact identity key: the tuple of its (note, volume)
+        events.
+
+        This is used as the dedup key in compress_patterns. It returns the tuple
+        itself, not hash() of it: hash() is a lossy 64-bit int, and a collision
+        between two different event tuples would silently merge the second
+        pattern's references into the first (and drop its definition), since the
+        map has no equality check on a hit. The tuple is already hashable, so
+        keying on it directly is exact and collision-free (#173)."""
+        return tuple((e['note'], e['volume']) for e in events)
     
     def calculate_compression_stats(self, original: Dict, compressed: Dict,
                                      total_events: int = 0) -> Dict:

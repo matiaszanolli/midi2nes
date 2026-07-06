@@ -249,11 +249,19 @@ class ParallelPatternDetector:
         return patterns
 
     def _get_variation_summary(self, patterns: Dict) -> Dict:
-        """Generate summary of pattern variations"""
+        """Generate summary of pattern variations.
+
+        Emits the SAME per-pattern shape as the sequential detector (#172):
+        `{variation_count, exact_match_count, transposition_range, volume_range}`.
+        The O(n) hash grouping finds exact repeats only, so variation_count is
+        always 0 and the transposition/volume ranges are neutral (0, 0); only
+        exact_match_count carries data on this path."""
         return {
             pattern_id: {
                 'variation_count': len(pattern_info.get('variations', [])),
-                'exact_matches': len(pattern_info.get('exact_matches', []))
+                'exact_match_count': len(pattern_info.get('exact_matches', [])),
+                'transposition_range': (0, 0),
+                'volume_range': (0, 0),
             }
             for pattern_id, pattern_info in patterns.items()
         }
