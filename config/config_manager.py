@@ -108,7 +108,14 @@ class ConfigManager:
     
     def _load_config(self):
         """Load configuration from file or use defaults."""
-        if self.config_path and self.config_path.exists():
+        if self.config_path:
+            if not self.config_path.exists():
+                # A path was explicitly given -- treating "missing" the same
+                # as "not given" silently loads defaults and masks a typo'd
+                # --config path (#267/PL-07); raise instead so callers surface
+                # a clean error rather than silently ignoring the user's file.
+                raise ConfigurationError(
+                    f"Configuration file not found: {self.config_path}")
             self._load_from_file(self.config_path)
         else:
             self._load_defaults()

@@ -170,11 +170,20 @@ class TestConfigManager(unittest.TestCase):
         self.assertIn("nsf", yaml_data["export"])
     
     def test_missing_config_file(self):
-        """Test handling of missing configuration files."""
+        """Regression (#267/PL-07): a --config path that is given but does
+        not exist must raise ConfigurationError, not silently fall back to
+        defaults -- silent fallback let `config validate <typo'd path>`
+        report a nonexistent file as valid."""
         non_existent_path = Path(self.temp_dir) / "missing.yaml"
-        
-        # Should fall back to defaults without error
-        config = ConfigManager(non_existent_path)
+
+        with self.assertRaises(ConfigurationError):
+            ConfigManager(non_existent_path)
+
+    def test_no_config_path_falls_back_to_defaults(self):
+        """No path given at all (the normal no-config-file case) must still
+        load defaults without error -- only a given-but-missing path (above)
+        is an error."""
+        config = ConfigManager()
         self.assertEqual(config.get("processing.pattern_detection.min_length"), 3)
     
     def test_invalid_yaml_file(self):

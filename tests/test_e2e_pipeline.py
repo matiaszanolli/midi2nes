@@ -165,6 +165,7 @@ class TestEndToEndPipeline:
         args.debug = False
         args.verbose = False
         args.skip_validation = False
+        args.config = None
         for key, value in overrides.items():
             setattr(args, key, value)
         main.run_full_pipeline(args)

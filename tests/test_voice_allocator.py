@@ -12,6 +12,7 @@ import unittest
 
 from arranger import (
     VoiceAllocator, NoteInfo, TrackAnalysis, ArrangementPlan, NESChannel,
+    FrameByFrameAllocator,
 )
 
 
@@ -160,3 +161,44 @@ class TestDrumTrackDualRouting(unittest.TestCase):
         self.assertEqual(va.track_assignments[1], [NESChannel.PULSE1])
         alloc = va.allocate_frame({1: [_note(60)]})
         self.assertIsNotNone(alloc.pulse1)
+
+
+class TestPulseVolumeFloor(unittest.TestCase):
+    """Regression (#268/NH-30): FrameByFrameAllocator.process_song derived
+    pulse volume as a bare `vel // 8` with no floor, so any note with MIDI
+    velocity 1-7 (ppp phrasing, fade-ins/outs, ghost notes) integer-divided
+    to volume 0 -- pitch/duty were still written, but the channel played at
+    zero amplitude. Mirrors the legacy front-end's max(1, ...) volume floor
+    in nes/emulator_core.py; triangle/noise already floor elsewhere."""
+
+    def _pulse1_plan(self, track_id=1):
+        plan = ArrangementPlan()
+        plan.tracks = [TrackAnalysis(track_id=track_id)]
+        plan.pulse1_tracks = [track_id]
+        return plan
+
+    def _pulse2_plan(self, track_id=1):
+        plan = ArrangementPlan()
+        plan.tracks = [TrackAnalysis(track_id=track_id)]
+        plan.pulse2_tracks = [track_id]
+        return plan
+
+    def test_soft_velocity_pulse1_note_is_not_silenced(self):
+        notes_by_track = {1: [_note(60, vel=5)]}  # 5 // 8 == 0 without a floor
+        processor = FrameByFrameAllocator(total_frames=10)
+        frames = processor.process_song(notes_by_track, self._pulse1_plan())
+        self.assertIn(0, frames['pulse1'])
+        self.assertGreaterEqual(frames['pulse1'][0]['volume'], 1)
+
+    def test_soft_velocity_pulse2_note_is_not_silenced(self):
+        notes_by_track = {1: [_note(60, vel=5)]}
+        processor = FrameByFrameAllocator(total_frames=10)
+        frames = processor.process_song(notes_by_track, self._pulse2_plan())
+        self.assertIn(0, frames['pulse2'])
+        self.assertGreaterEqual(frames['pulse2'][0]['volume'], 1)
+
+    def test_loud_velocity_pulse1_volume_still_caps_at_15(self):
+        notes_by_track = {1: [_note(60, vel=127)]}
+        processor = FrameByFrameAllocator(total_frames=10)
+        frames = processor.process_song(notes_by_track, self._pulse1_plan())
+        self.assertEqual(frames['pulse1'][0]['volume'], 15)

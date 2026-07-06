@@ -1490,6 +1490,20 @@ class TestGetPatternDetectionCaps:
             import shutil
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_missing_config_path_exits_cleanly(self):
+        """Regression (#267/PL-07): a --config path that doesn't exist must
+        print a clean [ERROR] and exit 1, not silently use defaults and not
+        propagate a raw ConfigurationError traceback (this function has no
+        outer caller on the `detect-patterns` subcommand path)."""
+        from main import get_pattern_detection_caps
+        with patch('builtins.print') as mock_print, \
+             patch('sys.exit', side_effect=SystemExit) as mock_exit:
+            with pytest.raises(SystemExit):
+                get_pattern_detection_caps("/nonexistent/path/to/config.yaml")
+            mock_exit.assert_called_once_with(1)
+            printed = mock_print.call_args[0][0]
+            assert printed.startswith("[ERROR]")
+
 
 class TestBenchmarkCommands:
     """Test benchmark commands."""
