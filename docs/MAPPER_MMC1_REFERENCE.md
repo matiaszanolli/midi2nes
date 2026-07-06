@@ -51,18 +51,27 @@ The MMC1 has 4 distinct modes for mapping PRG-ROM into the CPU's memory space (`
 
 ## 4. Engine Implementation Notes (midi2nes)
 
-### Bank Layout Strategy (Mode 2 is Mandatory)
-As noted in the APU DMC Reference, **DPCM samples MUST reside in the `$C000-$FFFF` range.** 
+### Shipped Design: Mode 3 (frame-table capacity banking, no MMC1 DPCM)
+The current `MMC1Mapper` (`mappers/mmc1.py`) initializes the MMC1 to **Mode 3**
+(`generate_init_code` writes `$0C` to Control):
 
-If we use the default MMC1 Mode 3 (which fixes the last bank at `$C000`), we would be strictly limited to a maximum of 16KB of DPCM samples for the entire game, because that window could never be switched.
+1.  The 6502 Audio Driver (`music.asm`), Sequencer, vectors, and reset/init code
+    reside in the **fixed last bank at `$C000-$FFFF`**.
+2.  The `$8000-$BFFF` window is **switchable**; the direct-export
+    (`--no-patterns`) exporter bin-packs frame tables that overflow one 16 KB
+    window into per-bank `RODATA_BANK_NN` segments and emits a
+    `generate_bank_switch_code()` write to `$E000` before each (#255). This is
+    what MMC1 buys today: **frame-table capacity beyond NROM's 32 KB**, not DPCM.
+3.  **DPCM samples are not supported on MMC1.** DMC hardware can only fetch from
+    `$C000-$FFFF`, which Mode 3 permanently fixes, so the switchable window can't
+    stream sample banks. The direct-export DPCM trigger/packer are MMC3-only, so
+    a `--no-patterns` build of a song with a DPCM channel forces `--mapper mmc3`
+    under `auto` and is rejected for an explicit `--mapper mmc1`/`nrom`
+    (#281/#282). DPCM drums otherwise ship via the always-MMC3 bytecode path.
 
-Instead, `midi2nes` **must initialize the MMC1 to Mode 2**:
-1.  The 6502 Audio Driver (`music.asm`), Sequencer, and fixed Note tables will reside in **Bank 0**, which is permanently fixed to `$8000-$BFFF`.
-2.  The `$C000-$FFFF` window remains switchable. 
-3.  When a specific DPCM drum needs to play, the driver will bank-switch the appropriate 16KB Sample Bank into `$C000`, trigger the DMA, and continue executing safely from `$8000`.
-
-### 6502 Implementation of Bank Switch
-To switch banks efficiently without being interrupted by NMIs, our driver should implement a dedicated subroutine:
+### 6502 Implementation of Bank Switch (Mode 3, `$8000-$BFFF`)
+The shipped `generate_bank_switch_code()` serially writes the target bank number
+to the PRG Bank register (`$E000`), switching the `$8000-$BFFF` window:
 
 ```ca65
 ; A = Bank Number (0-15)
@@ -79,7 +88,28 @@ set_prg_bank:
     RTS
 ```
 
-### Reset Vector Consideration
-Because the MMC1 powers up in Mode 3 (fixing the *last* bank at `$C000`), our `RESET` vector and initialization code **must** be placed in the very last bank of the ROM. 
+Because MMC1 powers up in Mode 3 (fixing the *last* bank at `$C000`), the `RESET`
+vector and init code naturally live in that fixed last bank — no mode change is
+needed at boot.
 
-The initialization code will immediately reconfigure the MMC1 to Mode 2 (fixing Bank 0 at `$8000`), jump to Bank 0, and leave the upper window free for DPCM sample streaming!
+---
+
+### Future Target: Mode 2 + `$C000` DPCM streaming (NOT YET IMPLEMENTED)
+The design below would add real MMC1 DPCM support. It is **not implemented** — the
+shipped mapper is Mode 3 as described above. Kept here as the intended end state
+for the #281/#282 DPCM-on-MMC1 work.
+
+As noted in the APU DMC Reference, **DPCM samples MUST reside in the `$C000-$FFFF`
+range.** Under Mode 3 that window is fixed, capping DPCM at a single non-switchable
+16 KB bank. To stream large drum kits, `midi2nes` would instead initialize the
+MMC1 to **Mode 2**:
+1.  The audio driver, sequencer, and fixed note tables reside in **Bank 0**,
+    permanently fixed to `$8000-$BFFF`.
+2.  The `$C000-$FFFF` window remains switchable.
+3.  When a DPCM drum plays, the driver bank-switches the appropriate 16 KB sample
+    bank into `$C000`, triggers the DMA, and continues executing safely from
+    `$8000`.
+
+Since MMC1 powers up in Mode 3, the `RESET`/init code would sit in the last bank,
+immediately reconfigure to Mode 2 (fixing Bank 0 at `$8000`), jump to Bank 0, and
+leave the upper window free for DPCM streaming.

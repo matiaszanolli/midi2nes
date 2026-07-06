@@ -181,6 +181,32 @@ def _requires_mmc3_bytecode_engine(music_asm_path):
     return path.exists() and "MMC3 Macro Bytecode" in path.read_text()
 
 
+def _direct_export_packed_mapper_name(music_asm_path):
+    """Return the mapper name a direct-export music.asm was bin-packed for
+    (e.g. 'MMC1'), or None.
+
+    When a mapper's direct_export_bank_size() is not None (currently only
+    MMC1), CA65Exporter.export_direct_frames bin-packs the frame tables into
+    RODATA_BANK_NN segments that ONLY that mapper's linker config defines, and
+    stamps a "; Direct export bank-packed for <name>" marker. `prepare`/
+    `compile` parse their own --mapper independently, so a mismatched later
+    choice (e.g. `export --mapper mmc1` then `prepare` with the mmc3 default)
+    would otherwise pass check_mapper_capacity — which recognizes no
+    RODATA_BANK_NN branch for the wrong mapper — and defer the failure to a raw
+    ld65 "Missing memory area assignment" error (#283/MAP-2026-07-05B-3,
+    #285/PL-09). This is the direct-export mirror of the bytecode-path guard
+    _requires_mmc3_bytecode_engine.
+    """
+    path = Path(music_asm_path)
+    if not path.exists():
+        return None
+    for line in path.read_text().splitlines():
+        marker = "; Direct export bank-packed for "
+        if line.startswith(marker):
+            return line[len(marker):].strip()
+    return None
+
+
 def resolve_mapper(mapper_choice, music_asm_path=None):
     """Resolve a --mapper CLI value ('auto', 'nrom', 'mmc1', 'mmc3') to a
     mapper instance (#217/MAP-6).
@@ -195,9 +221,17 @@ def resolve_mapper(mapper_choice, music_asm_path=None):
     """
     from mappers.factory import MapperFactory
     needs_mmc3 = music_asm_path is not None and _requires_mmc3_bytecode_engine(music_asm_path)
+    packed_for = (_direct_export_packed_mapper_name(music_asm_path)
+                  if music_asm_path is not None else None)
     if mapper_choice == 'auto':
         if needs_mmc3:
             return MapperFactory.get_mapper('mmc3')
+        # A direct-export music.asm bin-packed for a specific banked mapper can
+        # only link against that mapper's RODATA_BANK_NN regions, so 'auto'
+        # must honor it rather than re-estimating a (smaller) mapper by size
+        # (#283/#285) -- mirrors forcing MMC3 for the bytecode marker above.
+        if packed_for:
+            return MapperFactory.get_mapper(packed_for)
         data_size = estimate_music_data_size(music_asm_path)
         return MapperFactory.auto_select(data_size)
     mapper = MapperFactory.get_mapper(mapper_choice)
@@ -206,6 +240,14 @@ def resolve_mapper(mapper_choice, music_asm_path=None):
             f"{mapper.name} cannot run the MMC3 macro-bytecode (pattern-compressed) "
             f"engine this music.asm was built with -- rebuild with --no-patterns "
             f"for direct frame export, or pass --mapper mmc3."
+        )
+    if packed_for and mapper.name != packed_for:
+        raise ValueError(
+            f"this music.asm's frame tables were bank-packed for {packed_for} at "
+            f"export time (RODATA_BANK_NN segments only {packed_for}'s linker config "
+            f"defines), but --mapper {mapper_choice} was selected here -- re-export "
+            f"with --mapper {mapper_choice} or run prepare/compile with "
+            f"--mapper {packed_for.lower()}."
         )
     return mapper
 

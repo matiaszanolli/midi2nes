@@ -641,6 +641,62 @@ class TestResolveMapper:
         music_asm.write_text('; CA65 Assembly Export (Direct Frame Data)\n.segment "CODE"\n.byte 1\n')
         assert isinstance(resolve_mapper('nrom', str(music_asm)), NROMMapper)
 
+    # --- Direct-export bank-pack mapper-identity guard (#283/MAP-2026-07-05B-3,
+    # #285/PL-09). CA65Exporter.export_direct_frames stamps a "; Direct export
+    # bank-packed for <name>" marker when it bin-packs frame tables into
+    # RODATA_BANK_NN segments only that mapper's linker config defines, so a
+    # mismatched --mapper at prepare/compile is caught up front instead of via a
+    # raw ld65 "Missing memory area assignment" error. Mirrors the bytecode
+    # marker guard above. ---
+
+    def _bank_packed_music_asm(self, name='MMC1'):
+        music_asm = self.temp_dir / "music.asm"
+        music_asm.write_text(
+            '; CA65 Assembly Export (Direct Frame Data)\n'
+            f'; Direct export bank-packed for {name}\n'
+            '.segment "RODATA_BANK_00"\n.byte 1\n')
+        return music_asm
+
+    def test_bank_packed_music_asm_rejects_mismatched_explicit_mapper(self):
+        music_asm = self._bank_packed_music_asm('MMC1')
+        with pytest.raises(ValueError, match="bank-packed for MMC1"):
+            resolve_mapper('mmc3', str(music_asm))
+
+    def test_bank_packed_music_asm_rejects_nrom(self):
+        music_asm = self._bank_packed_music_asm('MMC1')
+        with pytest.raises(ValueError, match="bank-packed for MMC1"):
+            resolve_mapper('nrom', str(music_asm))
+
+    def test_bank_packed_music_asm_accepts_matching_explicit_mapper(self):
+        from mappers.mmc1 import MMC1Mapper
+        music_asm = self._bank_packed_music_asm('MMC1')
+        assert isinstance(resolve_mapper('mmc1', str(music_asm)), MMC1Mapper)
+
+    def test_auto_honors_bank_pack_marker_over_size(self):
+        """'auto' must pick the mapper the tables were bank-packed for, not
+        re-estimate a smaller one by (tiny) data size."""
+        from mappers.mmc1 import MMC1Mapper
+        music_asm = self._bank_packed_music_asm('MMC1')
+        assert isinstance(resolve_mapper('auto', str(music_asm)), MMC1Mapper)
+
+    def test_unpacked_direct_export_has_no_bank_pack_constraint(self):
+        """A direct export that did NOT bank-pack (no marker) leaves the mapper
+        choice unconstrained -- a plain NROM/MMC3 build proceeds normally."""
+        from mappers.nrom import NROMMapper
+        music_asm = self.temp_dir / "music.asm"
+        music_asm.write_text('; CA65 Assembly Export (Direct Frame Data)\n.segment "RODATA"\n.byte 1\n')
+        assert isinstance(resolve_mapper('nrom', str(music_asm)), NROMMapper)
+
+    def test_bank_pack_marker_is_emitted_by_the_exporter(self):
+        """End-to-end pin: the MMC1 direct export actually stamps the marker
+        resolve_mapper reads back (guards against the two drifting apart)."""
+        from exporter.exporter_ca65 import CA65Exporter
+        from mappers.mmc1 import MMC1Mapper
+        frames = {'pulse1': {str(i): {'note': 60, 'volume': 8} for i in range(300)}}
+        out = self.temp_dir / "packed.asm"
+        CA65Exporter().export_direct_frames(frames, str(out), standalone=False, mapper=MMC1Mapper())
+        assert "; Direct export bank-packed for MMC1" in out.read_text()
+
 
 class TestRunCompile:
     """Test run_compile's --mapper wiring (#217/MAP-6)."""
