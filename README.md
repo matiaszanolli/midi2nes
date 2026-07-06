@@ -8,10 +8,10 @@ Convert MIDI files into playable NES ROMs or use the generated audio data in hom
 [![CPU](https://img.shields.io/badge/CPU-Multi--Core-blue)](#multiprocessing)
 [![Patterns](https://img.shields.io/badge/Patterns-Multicore%20Detection-orange)](#pattern-detection)
 [![Version](https://img.shields.io/badge/Version-v0.5.0--dev-blueviolet)](docs/ROADMAP.md)
-[![Tests](https://img.shields.io/badge/Tests-586%20passing-success)](#testing)
+[![Tests](https://img.shields.io/badge/Tests-passing-success)](#testing)
 
 > **Status:** Fully operational end-to-end pipeline (MIDI → playable NES ROM),
-> 586 tests passing. Current focus is stabilization on the road to v1.0.0.
+> with a comprehensive passing test suite. Current focus is stabilization on the road to v1.0.0.
 > See **[HISTORY.md](HISTORY.md)** · **[docs/ROADMAP.md](docs/ROADMAP.md)** ·
 > **[MEMORY.md](MEMORY.md)**.
 
@@ -295,7 +295,7 @@ For detailed debug tool documentation, see [debug/README.md](debug/README.md).
 
 ### Testing
 ```bash
-# Run all tests (586 tests across 45 files)
+# Run all tests
 python -m pytest
 
 # Run with coverage
