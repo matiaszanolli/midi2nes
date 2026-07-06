@@ -335,5 +335,39 @@ class TestPostProcessCommandsAreStatic(unittest.TestCase):
             self.assertEqual(first, second)
 
 
+class TestMMC3FixedBankOrdering(unittest.TestCase):
+    """Regression: the MMC3 audio engine reads its pitch/instrument/macro tables
+    (CODE_8000 -> PRG_80) with absolute addressing in the $8000-$9FFF window,
+    and the reset init configures PRG mode 1, which hardwires that window to the
+    *physical second-to-last* 8 KB bank. ld65 writes memory areas in declaration
+    order, so PRG_80 must be declared as the second-to-last PRG bank (immediately
+    before the fixed PRG_FIX) or the engine reads a different bank's $FF fill and
+    every note plays silence/garbage (booted fine, produced no audio)."""
+
+    def _ordered_prg_regions(self, cfg):
+        import re
+        names = []
+        for line in cfg.splitlines():
+            if line.strip() == "SEGMENTS {":
+                break
+            m = re.match(r'\s*(PRG_\w+):', line)
+            if m:
+                names.append(m.group(1))
+        return names
+
+    def test_prg_80_is_the_second_to_last_bank(self):
+        regions = self._ordered_prg_regions(MMC3Mapper().generate_linker_config())
+        # 60 swap banks + PRG_A0 + PRG_C0 + PRG_80 + PRG_FIX = 64 physical banks.
+        self.assertEqual(regions[-2:], ["PRG_80", "PRG_FIX"],
+                         "MMC3 mode-1 fixes $8000 to the second-to-last bank; "
+                         "CODE_8000 (PRG_80) must sit there, right before PRG_FIX")
+
+    def test_total_physical_bank_count_is_64(self):
+        # The iNES header declares 512 KB (32 x 16 KB = 64 x 8 KB); the fixed
+        # windows only land on banks 62/63 if the count is exactly 64.
+        regions = self._ordered_prg_regions(MMC3Mapper().generate_linker_config())
+        self.assertEqual(len(regions), 64)
+
+
 if __name__ == "__main__":
     unittest.main()
