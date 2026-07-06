@@ -4,7 +4,7 @@ Mapper Factory for MIDI2NES.
 Provides mapper selection with auto-detection based on data size.
 """
 
-from typing import Optional, Type
+from typing import Type
 from .base import BaseMapper
 from .nrom import NROMMapper
 from .mmc1 import MMC1Mapper

@@ -1,9 +1,8 @@
 import mido
 import json
 from collections import defaultdict
-from constants import FRAME_MS, FRAME_RATE_HZ
-from tracker.tempo_map import (EnhancedTempoMap, TempoValidationConfig, TempoOptimizationStrategy,
-                               TempoChangeType, TempoValidationError)
+from constants import FRAME_RATE_HZ
+from tracker.tempo_map import EnhancedTempoMap, TempoValidationConfig, TempoChangeType, TempoValidationError
 from tracker.pattern_detector import EnhancedPatternDetector
 from tracker.loop_manager import EnhancedLoopManager
 from core.exceptions import InvalidMIDIError

@@ -6,8 +6,7 @@ Each mapper generates its own header, linker config, and init code.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
-import os
+from typing import Dict, List, Optional
 
 
 class BaseMapper(ABC):

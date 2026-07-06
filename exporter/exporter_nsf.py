@@ -1,7 +1,6 @@
 # New file: exporter/exporter_nsf.py
 
 import struct
-from pathlib import Path
 from typing import Dict, Any, List
 from exporter.base_exporter import BaseExporter
 

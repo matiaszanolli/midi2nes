@@ -6,14 +6,11 @@ implementing arpeggiation for polyphonic content and priority-based voice steali
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 from enum import Enum
 from collections import defaultdict
 
-from .gm_instruments import (
-    MusicalRole, NESChannel, PlayStyle, DutyCycle,
-    get_instrument_mapping, get_drum_mapping,
-)
+from .gm_instruments import NESChannel, DutyCycle, get_drum_mapping
 from .role_analyzer import NoteInfo, TrackAnalysis, ArrangementPlan
 
 

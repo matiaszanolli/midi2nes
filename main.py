@@ -3,7 +3,7 @@ import sys
 import json
 import tempfile
 import shutil
-from typing import Dict, Optional
+from typing import Optional
 from pathlib import Path
 
 # Import version information
@@ -23,7 +23,7 @@ from tracker.pattern_detector import (
     EnhancedPatternDetector, sample_events_for_detection, DETECTOR_MAX_EVENTS, MAX_PATTERN_EVENTS
 )
 from tracker.tempo_map import EnhancedTempoMap
-from dpcm_sampler.enhanced_drum_mapper import EnhancedDrumMapper, DrumMapperConfig
+from dpcm_sampler.enhanced_drum_mapper import DrumMapperConfig
 from config.config_manager import ConfigManager
 from benchmarks.performance_suite import PerformanceBenchmark
 from utils.profiling import get_memory_usage, log_memory_usage

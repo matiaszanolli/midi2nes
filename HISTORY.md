@@ -96,4 +96,4 @@ a full intelligent-arrangement front-end was added.
 |------------------|---------------|
 | v0.3.5           | 177           |
 | v0.4.0 (config)  | 186           |
-| v0.5.0-dev       | 586 (45 files)|
+| v0.5.0-dev       | 963           |

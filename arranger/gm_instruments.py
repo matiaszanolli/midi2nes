@@ -10,7 +10,7 @@ Maps GM program numbers to NES handling strategies including:
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 
 
 class MusicalRole(Enum):

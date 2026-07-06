@@ -11,7 +11,6 @@ This helps debug ROM generation issues by providing visual feedback
 directly on the NES screen.
 """
 
-from typing import List, Dict, Optional
 
 
 class NESDebugOverlay:

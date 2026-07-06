@@ -21,7 +21,6 @@ from nes.emulator_core import NESEmulatorCore, frames_to_events
 from tracker.pattern_detector_parallel import ParallelPatternDetector
 from tracker.tempo_map import EnhancedTempoMap
 from exporter.exporter_ca65 import CA65Exporter
-from exporter.exporter_nsf import NSFExporter
 from utils.profiling import _tracemalloc_acquire, _tracemalloc_release
 
 

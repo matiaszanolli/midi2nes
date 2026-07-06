@@ -20,7 +20,7 @@ import sys
 import struct
 import json
 import argparse
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple
 from dataclasses import dataclass, asdict
 
 

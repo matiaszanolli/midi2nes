@@ -1,6 +1,5 @@
 # New file: exporter/exporter_famistudio.py
 
-import json
 from pathlib import Path
 from exporter.base_exporter import BaseExporter
 

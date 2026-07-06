@@ -7,7 +7,7 @@ Comprehensive ROM validation, MMC1 analysis, and debugging utilities
 import struct
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict
 
 class NESDevTools:
     """Comprehensive NES ROM development and debugging tools"""

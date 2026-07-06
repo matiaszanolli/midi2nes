@@ -10,11 +10,7 @@ from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 import statistics
 
-from .gm_instruments import (
-    MusicalRole, NESChannel, PlayStyle, DutyCycle,
-    get_instrument_mapping, get_drum_mapping,
-    InstrumentMapping, DrumMapping,
-)
+from .gm_instruments import MusicalRole, NESChannel, PlayStyle, DutyCycle, get_instrument_mapping
 
 
 @dataclass

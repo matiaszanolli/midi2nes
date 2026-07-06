@@ -1,8 +1,6 @@
-import os
 import wave
 import numpy as np
 import argparse
-import struct
 
 def convert_wav_to_unsigned_pcm(wav_path, sample_rate=8000):
     with wave.open(wav_path, 'rb') as wf:
