@@ -28,10 +28,19 @@ class TestPitchTableIntegration(unittest.TestCase):
             # Allow 0.5% frequency deviation
             self.assertLess(abs(actual_freq - freq) / freq, 0.005)
             
-    def test_invalid_notes(self):
-        """Test handling of notes outside valid range"""
-        invalid_notes = [-1, 0, 23, 96, 127, 128]
-        for note in invalid_notes:
-            with self.assertRaises(ValueError):
-                self.pitch_processor.note_to_timer(note)
+    def test_out_of_range_notes_clamp(self):
+        """Regression (#41/NH-11): note_to_timer clamps to the pulse channel
+        range (24-108) instead of raising, matching the rest of the module's
+        clamp policy. The old 24-95 guard wrongly rejected legal pulse notes."""
+        table = self.pitch_processor.note_table
+        # Legal pulse notes 96-108 (previously rejected by the stale 95 ceiling)
+        # are now accepted and return their own table entry.
+        for note in (96, 100, 108):
+            self.assertEqual(self.pitch_processor.note_to_timer(note), table[note])
+        # Below the range clamps up to 24; above (incl. non-MIDI values) clamps
+        # down to 108 -- never raises.
+        for low in (-5, 0, 23):
+            self.assertEqual(self.pitch_processor.note_to_timer(low), table[24])
+        for high in (109, 127, 128, 200):
+            self.assertEqual(self.pitch_processor.note_to_timer(high), table[108])
 
