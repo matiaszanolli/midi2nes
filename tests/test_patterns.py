@@ -1109,6 +1109,75 @@ class TestStatsSchemaConsistency(unittest.TestCase):
         self.assertNotIn("'original_events'", src)
         self.assertNotIn("'patterns_found'", src)
 
+    # The top-level envelope both detectors and the --no-patterns stub must emit.
+    TOP_LEVEL_KEYS = {'patterns', 'references', 'stats', 'variations'}
+
+    def test_both_detectors_emit_four_top_level_keys(self):
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        import io as _io
+        import contextlib as _cl
+        events = [{'frame': i, 'note': 60 + (i % 6), 'volume': 100} for i in range(120)]
+        for det in (EnhancedPatternDetector(EnhancedTempoMap(initial_tempo=500000)),
+                    ParallelPatternDetector(EnhancedTempoMap(initial_tempo=500000))):
+            with _cl.redirect_stdout(_io.StringIO()):
+                result = det.detect_patterns(events)
+            self.assertEqual(set(result), self.TOP_LEVEL_KEYS)
+
+    def test_no_patterns_stub_emits_variations_key(self):
+        # The stub previously returned only {patterns, references, stats}; a
+        # consumer doing pattern_result['variations'] would KeyError only on the
+        # --no-patterns path (#258/PAT-09). Pin that the inline stub now carries
+        # the top-level 'variations' key like both detectors.
+        import inspect
+        import main
+        src = inspect.getsource(main.run_full_pipeline)
+        self.assertIn("'variations'", src,
+                      "--no-patterns stub must emit the top-level 'variations' key")
+
+
+class TestCoverageRatioEventSpace(unittest.TestCase):
+    """coverage_ratio must be measured in the same (post-sampling) event space as
+    patterned_events. Using the pre-sampling full-song total as the denominator
+    scaled a large fully-patterned song's coverage down by (sampled / total),
+    the exact misleading-number class coverage_ratio exists to prevent (#257)."""
+
+    def _fully_patterned(self, n=60):
+        # Identical events: any uniform sub-sample is still fully patterned, so
+        # coverage stays high regardless of the cap.
+        return [{'frame': i, 'note': 60, 'volume': 100} for i in range(n)]
+
+    def _assert_analyzed_space(self, stats, analyzed):
+        # total_events is the analyzed (sampled) count, not the full song...
+        self.assertEqual(stats['total_events'], analyzed)
+        # ...coverage stays high (it would be ~30% if divided by the full 60)...
+        self.assertGreaterEqual(stats['coverage_ratio'], 85)
+        # ...and the invariant coverage == patterned / total holds.
+        self.assertAlmostEqual(
+            stats['coverage_ratio'],
+            stats['patterned_events'] / stats['total_events'] * 100, places=6)
+
+    def test_sequential_coverage_measured_in_analyzed_space(self):
+        import io as _io
+        import contextlib as _cl
+        det = EnhancedPatternDetector(
+            EnhancedTempoMap(initial_tempo=500000),
+            min_pattern_length=3, max_pattern_length=8, max_events=20)
+        with _cl.redirect_stdout(_io.StringIO()):
+            stats = det.detect_patterns(self._fully_patterned(60))['stats']
+        self._assert_analyzed_space(stats, analyzed=20)
+
+    def test_parallel_coverage_measured_in_analyzed_space(self):
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        import io as _io
+        import contextlib as _cl
+        det = ParallelPatternDetector(
+            EnhancedTempoMap(initial_tempo=500000),
+            min_pattern_length=3, max_pattern_length=8)
+        det.max_pattern_events = 20
+        with _cl.redirect_stdout(_io.StringIO()):
+            stats = det.detect_patterns(self._fully_patterned(60))['stats']
+        self._assert_analyzed_space(stats, analyzed=20)
+
 
 class TestEventLimitConsolidation(unittest.TestCase):
     """After #102 there are exactly TWO event caps (one per detector complexity

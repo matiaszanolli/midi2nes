@@ -162,6 +162,10 @@ class PatternDetector:
 
     def detect_patterns(self, events: List[Dict]) -> Dict:
         """Enhanced pattern detection with variation support optimized for NES"""
+        # Number of events actually analyzed after validation + internal
+        # sampling below. Exposed so callers (EnhancedPatternDetector) can report
+        # coverage in the same event space the patterns are measured in (#257).
+        self._last_analyzed_count = 0
         if not events:
             return {}
 
@@ -204,6 +208,10 @@ class PatternDetector:
 
         sequence = [(e['note'], e['volume']) for e in valid_events]
         events = valid_events  # Use cleaned events for the rest of the method
+        # Record the analyzed size (post validation + sampling) so coverage is
+        # measured against what the detector actually ran on, not the full song
+        # it was handed (#257/PAT-08).
+        self._last_analyzed_count = len(valid_events)
 
         # Scoring is the module-level score_pattern (shared with the parallel
         # detector so both rank exact-repeat candidates identically, #103).
@@ -397,14 +405,17 @@ class EnhancedPatternDetector(PatternDetector):
                 'variations': {}
             }
 
-        # Total events this detection run actually covers (#169/PAT-03) --
-        # captured before super().detect_patterns() does its own internal
-        # validation/sampling, so this reflects what was handed to the
-        # detector, not a narrower post-filter count.
-        total_events = len(events)
-
-        # Detect patterns with variations using parent class
+        # Detect patterns with variations using parent class. It validates and
+        # (for large inputs) uniformly samples the events internally.
         patterns = super().detect_patterns(events)
+
+        # coverage_ratio = patterned_events / total_events, and patterned_events
+        # is counted over the sampled sequence — so total_events must be the
+        # POST-sampling analyzed count, not the pre-sampling len(events). Using
+        # the latter made a large, fully-patterned song report coverage scaled
+        # down by (sampled / total) (#257/PAT-08). super() records the analyzed
+        # size for us; fall back to len(events) when nothing was sampled/filtered.
+        total_events = getattr(self, '_last_analyzed_count', 0) or len(events)
 
         # Enhance patterns with tempo information (#119: skippable when the
         # caller's tempo map carries no real data and the result is unused).

@@ -42,9 +42,8 @@ class ParallelPatternDetector:
                 'variations': {}
             }
 
-        # Total events this detection run actually covers (#169/PAT-03) --
-        # captured before validation/sampling narrows valid_events below, so
-        # this reflects what was handed to the detector.
+        # Provisional full-song count, used only for the no-valid-events early
+        # return below; narrowed to the analyzed count after sampling (#257).
         total_events = len(events)
 
         print(f"🚀 Starting parallel pattern detection with up to {self.max_workers} workers")
@@ -63,6 +62,12 @@ class ParallelPatternDetector:
             print(f"⚠️  Large sequence ({original_count} events), sampling to "
                   f"{len(valid_events)} ({len(valid_events)/original_count*100:.1f}%, lossy)")
             print(f"   ✅ Sampled {len(valid_events)} events preserving temporal distribution")
+
+        # coverage_ratio = patterned_events / total_events is measured over the
+        # sampled sequence, so total_events must be the POST-sampling analyzed
+        # count — using the pre-sampling len(events) understated coverage on a
+        # large, fully-patterned song by (sampled / total) (#257/PAT-08).
+        total_events = len(valid_events)
 
         # Convert to sequence for processing
         sequence = [(e['note'], e['volume']) for e in valid_events]
