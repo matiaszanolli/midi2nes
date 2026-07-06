@@ -784,7 +784,11 @@ def run_full_pipeline(args):
                         'total_events': direct_size,
                         'patterned_events': 0,
                         'coverage_ratio': 0
-                    }
+                    },
+                    # Match the 4-key top-level envelope both detectors emit so a
+                    # consumer doing pattern_result['variations'] can't KeyError
+                    # only on the --no-patterns path (#258/PAT-09).
+                    'variations': {}
                 }
                 events = []  # Not needed for direct export
             
