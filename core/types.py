@@ -5,7 +5,7 @@ Provides semantic type hints that make code more readable
 and enable better static analysis.
 """
 
-from typing import Dict, List, Tuple, Union, Literal
+from typing import Dict, List, Union, Literal
 
 # Basic numeric types with semantic meaning
 FrameNumber = int  # Frame number (0-65535 typically)

@@ -4,12 +4,10 @@ import functools
 import time
 import psutil
 import tracemalloc
-from typing import Dict, Any, Optional, Callable, Tuple
+from typing import Dict, Any, Optional, Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 import json
 import threading
-import weakref
 
 
 # Reference-counted tracemalloc start/stop shared by every profiler in this

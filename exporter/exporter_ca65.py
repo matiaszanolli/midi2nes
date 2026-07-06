@@ -1,6 +1,3 @@
-import json
-import math
-from pathlib import Path
 from exporter.base_exporter import BaseExporter
 from nes.pitch_table import NES_NOTE_TABLE, NES_TRIANGLE_TABLE
 from core.exceptions import ExportError

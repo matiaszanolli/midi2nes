@@ -7,8 +7,8 @@ and enables better static analysis.
 """
 
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Dict, List, Optional, Any, Tuple
+from enum import Enum
+from typing import Dict, List, Optional, Any
 
 
 class NESChannel(Enum):

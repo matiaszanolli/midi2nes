@@ -1,6 +1,6 @@
 import multiprocessing as mp
 import time
-from typing import List, Dict, Tuple, Any, Optional
+from typing import List, Dict, Tuple, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 from tracker.tempo_map import EnhancedTempoMap

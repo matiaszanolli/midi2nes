@@ -5,7 +5,7 @@ Provides advanced tempo tracking, validation, and optimization features
 
 import bisect
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 from collections import defaultdict
 from enum import Enum

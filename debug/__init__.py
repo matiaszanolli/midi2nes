@@ -29,7 +29,7 @@ __author__ = "MIDI2NES Team"
 
 # Make key classes available at package level
 try:
-    from .rom_diagnostics import ROMDiagnostics, ROMDiagnosticResult
+    from .rom_diagnostics import ROMDiagnostics
     __all__ = ['ROMDiagnostics', 'ROMDiagnosticResult']
 except ImportError:
     # Handle case where dependencies might not be available

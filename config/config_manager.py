@@ -1,6 +1,5 @@
 """Configuration management for MIDI2NES."""
 
-import os
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional, Union

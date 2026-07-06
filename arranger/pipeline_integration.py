@@ -5,17 +5,10 @@ Bridges the arranger module with the existing MIDI2NES pipeline,
 providing drop-in replacements for track mapping and frame generation.
 """
 
-from typing import Dict, List, Any, Optional, Tuple
-from collections import defaultdict
+from typing import Dict, List, Tuple
 
-from .gm_instruments import get_instrument_mapping, get_drum_mapping, NESChannel
 from .role_analyzer import VoiceRoleAnalyzer, NoteInfo, ArrangementPlan
-from .voice_allocator import (
-    FrameByFrameAllocator,
-    VoiceAllocator,
-    allocate_with_arpeggiation,
-    ArpStyle,
-)
+from .voice_allocator import allocate_with_arpeggiation
 from nes.pitch_table import NES_NOTE_TABLE, NES_TRIANGLE_TABLE
 
 

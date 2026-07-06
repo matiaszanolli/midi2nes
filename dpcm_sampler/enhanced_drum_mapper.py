@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 import json
-import os
 from tracker.pattern_detector import DrumPatternDetector
 from .dpcm_sample_manager import DPCMSampleManager
 from .drum_engine import DEFAULT_MIDI_DRUM_MAPPING, ADVANCED_MIDI_DRUM_MAPPING
