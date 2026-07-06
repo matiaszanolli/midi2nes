@@ -88,8 +88,16 @@ user-supplied paths as a final check.
 ### Dimension 3: Subprocess / CC65 Safety
 `compiler/cc65_wrapper.py` shells out to `ca65`/`ld65`. Confirmed still correct — flag
 any regression:
-- No `shell=True` anywhere in the repo (confirmed via
-  `grep -rnE 'shell=True' --include='*.py' .`) and every command is built as a list.
+- The `ca65`/`ld65` invocations are all built as argv lists (no `shell=True`). The one
+  deliberate `shell=True` in the repo is `ROMCompiler._run_post_process`
+  (`compiler/compiler.py:92`, `# nosec B602`) — the mapper post-link fixup snippet is
+  multi-line shell text, not an argv list, so it cannot be run without a shell. Its
+  safety rests on the invariant (fixed, #263/SAFE-13) that
+  `generate_post_process_commands` returns a **static compile-time constant** — see the
+  SECURITY INVARIANT docstring in `mappers/base.py:143`–`161` and the regression test in
+  `tests/test_mappers.py:306` that asserts every mapper returns a static `""` for both
+  `is_windows` values. Flag any override that interpolates a runtime/user-derived value
+  (project path, ROM name, song title) into that snippet as **HIGH** (shell injection).
 - Missing-tool detection: `check_toolchain()` (`compiler/cc65_wrapper.py:34`–`81`) uses
   `shutil.which` + a `--version` probe via the *resolved* path (`:57`–`67` for ca65,
   `:69`–`79` for ld65) and raises `ToolchainError`. `get_version()` (`:83`–`117`) now
@@ -116,9 +124,12 @@ any regression:
 ```bash
 grep -rnE 'eval\(|exec\(|yaml\.load\(|pickle\.load|os\.system|shell=True' --include='*.py' .
 ```
-Current state: this grep returns **no matches anywhere in the repo** — confirmed
-clean. Config loading uses `yaml.safe_load` (`config/config_manager.py:119`, line
-shifted from the SAFE-08 fix's added comment) — **confirm it stays `safe_load`**; a
+Current state: the only `shell=True` match is the documented, guarded mapper
+post-process call at `compiler/compiler.py:92` (fixed, #263/SAFE-13 — see Dimension 3);
+`eval(`/`exec(`/`yaml.load(`/`pickle.load`/`os.system` return **no matches anywhere in
+the repo** — confirmed clean. Config loading uses `yaml.safe_load`
+(`config/config_manager.py:127`, line shifted from the SAFE-08 fix's added comment) —
+**confirm it stays `safe_load`**; a
 switch to `yaml.load` without `SafeLoader` on a user-supplied config would be HIGH
 (arbitrary object construction). Flag any new `eval`/`exec` on user input (HIGH), any
 `pickle.load` of attacker-influenceable data, and any multiprocessing path that pickles

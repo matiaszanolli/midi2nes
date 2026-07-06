@@ -65,7 +65,7 @@ Match each CONFIRMED finding's keywords against existing **open** issue titles/b
 On a match, skip and record `Existing #NNN` in the summary. If a *closed* issue matches
 and the bug is back, file it and note it as a regression of `#NNN`.
 
-### 6. Reconcile labels against the live repo (do this once, before any create)
+### 6. Apply labels from the live repo set
 
 The set of labels that exist in the repo is authoritative — `gh issue create` rejects an
 unknown label. Pull the live set first:
@@ -75,36 +75,30 @@ gh label list --repo matiaszanolli/midi2nes --limit 200 --json name --jq '.[].na
   > /tmp/audit/labels.txt
 ```
 
-This repo ships only the **default GitHub labels** (`bug`, `enhancement`, `duplicate`,
-`question`, `help wanted`, `invalid`, `wontfix`) — there are **no** severity or domain
-labels yet. Choose one of two modes and state which you used in the summary:
-
-**Mode A — minimal (default, no repo changes).** File every finding with `bug`
-(or `enhancement` for a pure improvement) and encode severity + domain as a **badge line**
-at the top of the issue body:
+The audit label set **already exists** (created once, deliberately): severity
+(`critical`, `high`, `medium`, `low`) and one domain label per subsystem (`pipeline`,
+`nes-hardware`, `mappers`, `exporters`, `patterns`, `dpcm`, `arranger`, `performance`,
+`safety`, `tech-debt`, `regression`, `tempo`, plus `documentation`), alongside the
+default GitHub labels. File each finding with its **severity + domain** labels directly,
+e.g. `--label high --label mappers` (add `bug`/`enhancement` as the kind). Keep the badge
+line at the top of the issue body too — it carries the **Source** report reference the
+labels don't:
 
 ```
 **Severity:** HIGH · **Domain:** patterns · **Source:** AUDIT_PATTERNS_2026-06-28.md
 ```
 
-**Mode B — create the recommended label set once (deliberate, ask the user first).**
-If the user wants real labels, create them a single time, then use them:
+If `/tmp/audit/labels.txt` ever shows one missing (e.g. a newly added domain), recreate
+just that one before filing — never `gh label create` ad hoc per finding:
 
 ```bash
-# severity
-gh label create critical --repo matiaszanolli/midi2nes --color b60205 --description "Audit: critical severity" || true
-gh label create high     --repo matiaszanolli/midi2nes --color d93f0b --description "Audit: high severity" || true
-gh label create medium   --repo matiaszanolli/midi2nes --color fbca04 --description "Audit: medium severity" || true
-gh label create low       --repo matiaszanolli/midi2nes --color 0e8a16 --description "Audit: low severity" || true
-# domain (one per subsystem audit)
-for d in pipeline nes-hardware patterns exporters dpcm arranger mappers tempo performance safety tech-debt regression; do
-  gh label create "$d" --repo matiaszanolli/midi2nes --color 1d76db --description "Audit domain: $d" || true
-done
+# severity colors: critical b60205, high d93f0b, medium fbca04, low 0e8a16
+# domain color:    1d76db  (description "Audit domain: <name>")
+gh label create <name> --repo matiaszanolli/midi2nes --color <hex> --description "<desc>" || true
 ```
 
-Never `gh label create` ad hoc per finding. Every token passed to `--label` MUST appear
-in `/tmp/audit/labels.txt`. If `gh` rejects a label, the reconciliation missed one —
-fix it, do not drop the finding silently.
+Every token passed to `--label` MUST appear in `/tmp/audit/labels.txt`. If `gh` rejects a
+label, the reconciliation missed one — fix it, do not drop the finding silently.
 
 **Report-family → domain default** (a per-finding `Dimension` always overrides it):
 

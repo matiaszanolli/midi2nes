@@ -43,9 +43,13 @@ For each of `mappers/nrom.py`, `mappers/mmc1.py`, `mappers/mmc3.py`, cross-check
 `prg_bank_size` / `prg_bank_count` properties from `mappers/base.py`:
 - PRG-ROM count in the header byte must equal the total PRG region size in the linker
   `MEMORY` block. NROM declares `$02` (2×16KB = 32KB) and a single `PRG` of `$8000`;
-  MMC1 declares `$08` (8×16KB = 128KB) split into `PRGSWAP` `$1C000` + `PRGFIXED` `$4000`
-  (112KB + 16KB); MMC3 declares `32` (×16KB = 512KB) across 60 swap banks (`PRG_BANK_00..59`,
-  `$2000` each) plus `PRG_80`/`PRG_A0`/`PRG_C0`/`PRG_FIX` (the fixed last 4×8KB).
+  MMC1 declares `$08` (8×16KB = 128KB) as 7 switchable 16KB windows (`PRG_BANK_00..06`,
+  `$4000` each) plus a fixed `PRGFIXED` `$4000` (112KB + 16KB) — #255 replaced the old
+  single linear `PRGSWAP` region so ld65 can't alias the fixed bank; MMC3 declares `32`
+  (×16KB = 512KB) across 60 swap banks (`PRG_BANK_00..59`, `$2000` each) plus the fixed
+  last 4×8KB, declared in **physical-bank order** `PRG_A0`/`PRG_C0`/`PRG_80`/`PRG_FIX` so
+  `PRG_80` (the `$8000` window = mode-1 second-to-last, physical bank 62) and `PRG_FIX`
+  (bank 63) land on the right physical banks (#291 — a wrong order silenced every MMC3 ROM).
   Add the `MEMORY` region sizes and confirm they equal `prg_rom_size`.
 - The mapper-number nibble in the header flags byte must equal `mapper_number`
   (NROM `$00`→0, MMC1 `$10`→1, MMC3 `$40`→4; the mapper low nibble lives in the high
@@ -69,16 +73,15 @@ around lines 642–646) and confirm:
   don't land at `$FFFA` is **CRITICAL** (bad vectors). Commit `2d9c8dc` ("make the
   default pipeline assemble, link, and boot", #5/#7/#39) fixed the default (MMC3,
   patterns-on) path specifically — verify it still boots and hasn't regressed.
-- MMC1 only: `generate_post_process_commands()` (`mappers/mmc1.py:116-120`) rewrites 6
-  bytes from `0xFFFA` to file offset `0x2000A` after link. Verify that offset is the
-  fixed-bank tail of the 128KB image and that the copy actually lands the vectors where
-  the CPU reads them — a wrong offset here silently bricks the ROM (CRITICAL). This
-  fixup now runs whenever `nes/project_builder.py`'s `_create_build_script()`
-  (line 648) generates `build.sh`/`build.bat`, because it calls
-  `self.mapper.generate_build_script()` for every mapper (fixed by #18, see Dimension 8).
-  It still does **not** run via the `compiler/` path (`compiler/compiler.py`'s
-  `ROMCompiler.compile()` never calls `generate_post_process_commands()`) — cross-ref
-  Dimension 8 for the surviving gap.
+- MMC1 only: MMC1 has **no** post-link vector fixup anymore. `generate_linker_config()`
+  emits `VECTORS: load = PRGFIXED, start = $FFFA` (`mappers/mmc1.py:103`), telling ld65 to
+  place the vectors at CPU `$FFFA` inside the fixed bank (file offset `0x2000A`) directly.
+  A previous `generate_post_process_commands()` step copied 6 bytes from file offset
+  `0xFFFA` (inside the *switchable* window, not the vectors) over the correctly placed
+  vectors, bricking every MMC1 ROM built via `build.sh` — it was removed (#213), so
+  `MMC1Mapper` now inherits `BaseMapper.generate_post_process_commands()` (a no-op).
+  Verify ld65 still lands the vectors at `0x2000A` unassisted, and that no mapper
+  reintroduces a fixup that overwrites them.
 
 ### Dimension 3: APU initialization in the boot path
 A ROM whose APU is never initialized produces no/garbage sound and can leave channels in
@@ -110,8 +113,9 @@ gaps it doesn't cover (#11, #126, #127, all fixed).
   total-vs-`get_data_capacity()` check — correct for NROM/MMC1, which don't distribute
   data across banks. `MMC3Mapper.validate_segment_sizes()` (`mappers/mmc3.py:171-222`)
   overrides it to size each region separately: `RODATA`+`CODE` against the `PRG_FIX`
-  budget, `CODE_8000` against the 8KB `$8000` window, and each `BANK_NN`/`DPCM_NN`
-  against the 8KB bank size plus a check that no bank index exceeds `SWAP_BANK_COUNT`
+  budget, `CODE_8000` against the 8KB `$8000` window, and each bank index — **summing
+  `BANK_NN` + `DPCM_NN` that share the same physical `PRG_BANK_NN` region** (#212) —
+  against the 8KB bank size, plus a check that no bank index exceeds `SWAP_BANK_COUNT`
   (60) — this closes the "no cap on bank count" gap (#127).
 - Remaining things to verify on each audit:
   - `estimate_segment_sizes()` (`main.py:93-...`) is a **text-scan heuristic** (regex
@@ -148,10 +152,15 @@ Re-derive the bank-switch sequences against the reference docs:
   engine actually reads (`$C000-$DFFF` DPCM, `$A000-$BFFF` sequence — see
   `fetch_sequence_byte` in `nes/project_builder.py` ~lines 199-231), and that
   `sta $E000` disables the MMC3 IRQ. Cross-check against `docs/MAPPER_MMC3_REFERENCE.md`.
-- Verify the `nes.cfg` bank layout matches (`mappers/mmc3.py:50-101`): MMC3 maps banks
-  0–59 all at `start = $C000` (so addresses resolve in the swap window) and the last
-  four at `$8000`/`$A000`/`$C000`/`$E000` — confirm this matches how the engine swaps
-  and reads.
+- Verify the `nes.cfg` bank layout matches (`mappers/mmc3.py:50-109`): MMC3 maps banks
+  0–59 all at `start = $C000` (so addresses resolve in the swap window) and the last four
+  in **physical-bank declaration order** `PRG_A0` (`$A000`), `PRG_C0` (`$C000`), `PRG_80`
+  (`$8000`), `PRG_FIX` (`$E000`). This order is load-bearing: in PRG mode 1 the `$8000`
+  window is hardwired to the second-to-last physical bank, so `PRG_80` (which hosts
+  `CODE_8000`'s period/instrument/macro tables the engine reads with absolute addressing)
+  must be bank 62 and `PRG_FIX` bank 63. A prior order that put `PRG_80` earlier made every
+  note read `$FF` fill — silent ROM, green screen, no crash (#291). Confirm this matches
+  how the engine swaps and reads.
 
 ### Dimension 6: MapperFactory auto-selection
 In `mappers/factory.py`, `auto_select(data_size)` (lines 83-114) walks `_default_mappers`
@@ -162,39 +171,42 @@ commit `573890e`; remaining doc-rot cleaned up by #43/#44, commit `ab6f95d`).
 Check on each audit:
 - The ordering is genuinely smallest-first by capacity; the "nothing fits" branch
   raises with the largest mapper's capacity.
-- **Neither `auto_select()` nor `can_fit_data()` is actually called from any `main.py`
-  pipeline path.** `run_prepare()` and the full pipeline both instantiate
-  `MMC3Mapper()` directly (`main.py:244`, `main.py:685`), bypassing
-  `NESProjectBuilder`'s own `mapper_name="auto"` default entirely. The only place the
-  `get_mapper("auto", 0)` → MMC3 fallback is exercised is if `NESProjectBuilder` is
-  constructed without an explicit mapper and without ever calling
-  `auto_select_mapper(data_size)` — which nothing in `main.py` does. This isn't a
-  correctness bug (the hardcoded default and the auto-fallback happen to agree), but
-  flag it as LOW/tech-debt: the size-based auto-selection machinery is effectively
-  unreachable from the CLI and only exercised by `mappers/` unit tests.
+- `auto_select()` **is** now reached from the CLI (#217/MAP-6). `resolve_mapper()`
+  (`main.py:218`) — called from `run_prepare()`, `run_compile()`, and the full pipeline —
+  maps `--mapper auto` to `MapperFactory.auto_select(estimate_music_data_size(...))`,
+  picking the smallest mapper that fits. The size-based auto-selection machinery is no
+  longer test-only, so verify `auto_select`'s ordering and the forced-mapper overrides
+  below actually agree with what links.
+- Beyond size, `--mapper` resolution enforces engine/mapper compatibility (verify each
+  raises a clean `ValueError`, not a raw `ld65` failure): `resolve_mapper()` forces MMC3
+  for a music.asm built by the MMC3 macro-bytecode (pattern) exporter; a direct
+  (`--no-patterns`) export bin-packed for a banked mapper stamps
+  `; Direct export bank-packed for <name>` and is honored under `auto` / rejected on a
+  mismatch (#283/#285); and `enforce_direct_export_dpcm_mapper()` forces MMC3 (or rejects
+  an explicit `mmc1`/`nrom`) when a `--no-patterns` song has a DPCM channel, because the
+  direct-export DPCM trigger and `DPCM_NN` segments are MMC3-only (#281/#282).
 - A threshold that picks a mapper too small for the data (so it overruns) ties back to
-  Dimension 4 and is CRITICAL — but note this can only happen via direct library use of
-  `auto_select()`/`auto_select_mapper()`, not via any current CLI path.
+  Dimension 4 and is CRITICAL, and is now reachable via `--mapper auto` — confirm the
+  capacity pre-flight (Dimension 4) still catches any such pick before `ld65`.
 
 ### Dimension 7: project builder writes a consistent, buildable project
 `NESProjectBuilder.prepare_project()` (`nes/project_builder.py:75-544`) must emit a set
 of files `ld65` can actually link with the chosen mapper:
 - `nes.cfg` comes from `self.mapper.generate_linker_config()`; `main.asm` interpolates
   `self.mapper.generate_header_asm()` / `generate_init_code()` / `generate_bank_switch_code()`.
-  Confirm every segment the asm uses (`HEADER`, `ZEROPAGE`, `CODE`, `RODATA`, `BSS`, `OAM`,
+  Confirm every segment the asm uses (`HEADER`, `ZEROPAGE`, `CODE`, `RODATA`, `BSS`,
   `VECTORS`, `CODE_8000`, the `DPCM_*`/`BANK_*` segments) exists in that mapper's
-  `nes.cfg`, and vice-versa. The default (MMC3, patterns-on) pipeline now assembles,
+  `nes.cfg`, and vice-versa (#215 removed MMC3's unused `OAM` region/segment — a stray
+  `OAM` on either side is now drift). The default (MMC3, patterns-on) pipeline now assembles,
   links, and boots end-to-end (#5/#7/#39, `2d9c8dc`) — re-verify this holds rather than
   re-deriving it from scratch each time.
-- `mappers/mmc3.py`'s `generate_header_asm()` (lines 38-48) now emits **bare** `.byte`
+- `mappers/mmc3.py`'s `generate_header_asm()` (lines 38-48) emits **bare** `.byte`
   directives only, matching the NROM/MMC1 contract — the previous double
-  `.segment "HEADER"` declaration is fixed (#22, commit `007f5c4`). One loose end: the
-  *standalone*-export path in `exporter/exporter_ca65.py:108-112` still guards with
-  `if '.segment "HEADER"' not in header_asm: lines.append('.segment "HEADER"')`, and the
-  adjacent comment ("MMC3 embeds its own `.segment "HEADER"`; NROM/MMC1 don't.",
-  `exporter/exporter_ca65.py:109`) now describes behavior no longer true for MMC3 — the
-  branch is harmless (it still emits the segment correctly for every mapper) but the
-  comment is stale doc-rot (LOW).
+  `.segment "HEADER"` declaration is fixed (#22, commit `007f5c4`). The *standalone*-export
+  path in `exporter/exporter_ca65.py` (around lines 210-222) is now the sole owner of
+  `.segment "HEADER"` for every mapper, and the stale comment that used to claim MMC3
+  embedded its own segment was corrected (#216). Verify the header segment is still
+  emitted exactly once per build.
 - ZP/BSS variable definitions vs `.importzp`/`.global` declarations must match between
   `main.asm` and `music.asm` (e.g. `sequence_ptr`, `sequence_bank`, `frame_counter`,
   `switch_dpcm_bank`). An undefined symbol surfaces only at link time. A project that
@@ -217,50 +229,45 @@ of files `ld65` can actually link with the chosen mapper:
   `subprocess.run` (fixed by #14, commit `48da1ea`) — verify a vanished/renamed binary
   between the `which()` check and the probe still raises `ToolchainError` cleanly rather
   than an uncaught exception.
-- `compile_rom()`'s broad `except Exception` (`compiler/compiler.py:173-175`) still just
-  prints `f"[ERROR] Compilation failed: {e}"` and returns `False` — no traceback, and
-  this is independent of any `verbose` flag (`run_compile()` at `main.py:230` and the
-  full pipeline at `main.py:704` both call `compile_rom(project_path, output_rom)` with
-  no `verbose` argument at all). This is **still open** (#32): a non-`CompilationError`/
-  `ValidationError` exception (e.g. a bug in the compiler itself) is swallowed to a
-  one-line message with no stack trace, even with `--verbose`. HIGH per
-  `_audit-severity.md` ("CC65 nonzero exit / stderr ignored" is the closest floor; here
-  it's the *wrapper* masking an unexpected exception, not CC65 itself).
-- Build-script routing is fixed (#18, commit `e68866a`): `nes/project_builder.py`'s
-  `_create_build_script()` (line 648) now calls `self.mapper.generate_build_script(is_windows)`
-  for every mapper — the previous hardcoded `_create_build_script_mmc3()` no longer
-  exists, so MMC1's `generate_post_process_commands()` vector fixup (Dimension 2) does
-  run via `build.sh`/`build.bat`. The gap that survives: `compiler/compiler.py`'s
-  `ROMCompiler.compile()` (lines 67-146) never calls `generate_post_process_commands()`
-  at all — it only assembles, links, and size-checks. A project built with a mapper
-  that needs a post-link fixup (currently only MMC1) and compiled via
-  `compiler.compile_rom()`/`main.py compile` instead of running `build.sh` ships without
-  the fixup. This is unreachable from the CLI today (no `--mapper` flag exists;
-  `prepare`/the full pipeline hardcode `MMC3Mapper()`, which needs no fixup — Dimension 2),
-  but is a real latent bug for the public `NESProjectBuilder(mapper_name="mmc1")` +
-  `compiler.compile_rom()` API combination. Flag as HIGH/CRITICAL if exercised (bricks
-  the ROM's vectors), and recommend `ROMCompiler.compile()` call
-  `self.mapper.generate_post_process_commands()` (needs a mapper reference passed in)
-  after linking so both compile paths stay in sync.
-- Cross-reference (not owned by this audit, but undermines confidence in the above):
-  REG-10 (#128, open) — the ROM-compile integration tests in
-  `tests/test_rom_validation_integration.py` (e.g. ~lines 95-100, 150-153, 202-205,
-  257-259, 332-335) `pytest.skip()` whenever `compile_rom()` raises or returns falsy,
-  instead of failing. A regression in any of the fixes above (including the MMC1
-  post-process gap) can land without CI catching it. See `/audit-regression`.
+- `compile_rom()`'s broad `except Exception` (`compiler/compiler.py:252-260`) prints
+  `f"[ERROR] Compilation failed: {e}"`, returns `False`, and now calls
+  `traceback.print_exc()` under `--verbose` (#32, fixed). Both callers thread the flag:
+  `run_compile()` (`main.py:447`) and the full pipeline (`main.py:1024`) pass `verbose=...`
+  to `compile_rom()`. Verify the traceback actually surfaces under `--verbose`, and that
+  the typed `CompilationError`/`ValidationError` paths still print a clean one-liner
+  without a stack dump.
+- Build-script routing is fixed (#18, commit `e68866a`): `_create_build_script()` calls
+  `self.mapper.generate_build_script(is_windows)` for every mapper. The post-link fixup
+  gap is also closed (#214): `ROMCompiler.compile()` (`compiler/compiler.py:113-222`) now
+  calls `mapper.generate_post_process_commands()` after linking (via `_run_post_process`)
+  when a `mapper` is passed, so `compiler.compile_rom()`/`main.py compile` and `build.sh`
+  run the same fixups. MMC1 no longer *has* a fixup at all (#213, Dimension 2), so the
+  remaining things to verify are: any *future* mapper that adds one is exercised on both
+  paths, and `_run_post_process`'s `shell=True` only ever runs the static mapper-constant
+  text it documents, never caller-derived strings.
+- The `--mapper` flag now exists (`export`/`prepare` accept `auto|nrom|mmc1|mmc3`,
+  `compile` accepts `nrom|mmc1|mmc3`; all default `mmc3`), and `compile` re-resolves the
+  mapper from the project's own `music.asm` so its size/post-process steps match what
+  `prepare` built (`run_compile`, `main.py:438`).
+- Cross-reference (not owned by this audit): REG-10 (#128) — the ROM-compile integration
+  tests in `tests/test_rom_validation_integration.py` used to `pytest.skip()` on a real
+  `compile_rom()` failure instead of failing; this is now **closed** (#128). Re-verify the
+  tests fail (not skip) on a compile regression rather than trusting the fix is permanent.
+  See `/audit-regression`.
 
-### Dimension 9: MIN_ROM_SIZE check
-`ROMCompiler.MIN_ROM_SIZE = 32768` (`compiler/compiler.py:27`) and `compile()`
-(lines 133-138) rejects a linked ROM smaller than it. Still open (#28): verify the
-threshold matches the smallest legitimate output (NROM is exactly 32KB PRG + 16-byte
-header = 32784 bytes, so a successfully linked NROM ROM is *larger* than 32768 —
-confirm the check can't false-positive on a valid NROM), and that it can't false-pass a
-truncated MMC1/MMC3 image that is ≥32768 bytes but far smaller than its declared PRG
-size (MMC1 declares 128KB+16, MMC3 declares 512KB+16). A size check that passes a
-truncated 512KB-declared ROM is a MEDIUM gap (it should compare against the selected
-mapper's `prg_rom_size` + 16, not a flat constant — note `ROMCompiler.compile()` doesn't
-currently have a mapper reference to compare against, so fixing this needs threading one
-through).
+### Dimension 9: ROM size check
+`compile()` now takes a `mapper` argument (#28, fixed): when one is passed it checks the
+linked ROM's size against the mapper's **exact** declared size, `mapper.prg_rom_size +
+INES_HEADER_SIZE` (16), raising `CompilationError` on any mismatch
+(`compiler/compiler.py:199-214`). `MIN_ROM_SIZE = 32768` (`compiler/compiler.py:32`) is
+now only the fallback floor used when `mapper is None`. Both CLI callers pass the resolved
+mapper, so the truncated-512KB-image gap is closed on the CLI path. Verify:
+- The exact check uses the right expected size per mapper (NROM 32KB+16, MMC1 128KB+16,
+  MMC3 512KB+16) and that a correctly linked ROM matches it exactly (ld65 fills every
+  declared region, so the file should equal the declared size).
+- The `mapper is None` fallback (library callers of `compile_rom()` that pass no mapper)
+  still only enforces the flat 32768 floor — flag reliance on it as a defense-in-depth
+  gap (MEDIUM), since a truncated large image ≥32768 bytes would slip past it.
 
 ### Dimension 10: default-mapper doc drift
 The codebase's "defaults" agree on MMC3: `main.py:run_prepare` (line 244) and
@@ -286,12 +293,12 @@ rather than trusting this is permanent:
 - [ ] Are `nmi`/`reset`/`irq` all defined, and does `nmi` `jsr update_music`?
 - [ ] Does `reset` enable NMI (`sta $2000`) and init the APU ($4015/$4017) via `init_music`/`audio_init`?
 - [ ] Is `check_mapper_capacity()`/`validate_segment_sizes()` actually reached before `ld65` runs on both the `prepare` and full-pipeline paths? Does it run at all when `NESProjectBuilder` is used directly, bypassing `main.py`?
-- [ ] Are `can_fit_data()`/`auto_select()` reached from any real pipeline path, or only from `mappers/` tests? (Verified answer as of this pass: only tests — see Dimension 6.)
+- [ ] Is `auto_select()` reached via `--mapper auto` (through `resolve_mapper`), and do the forced/rejected `--mapper` guards (bytecode, direct-export bank-pack, direct-export DPCM) raise cleanly? (see Dimension 6)
 - [ ] On a capacity overflow, does the pre-flight message name the right region, and does `ld65` still error if the heuristic under-counts?
 - [ ] Do MMC1's 5-write loads and MMC3's R6/R7 selects match `docs/MAPPER_*.md`?
-- [ ] Do `assemble`/`link` raise on nonzero return code with stderr attached? Does `compile_rom()`'s broad `except Exception` still swallow a traceback?
+- [ ] Do `assemble`/`link` raise on nonzero return code with stderr attached? Does `compile_rom()`'s broad `except Exception` print a traceback under `--verbose` (#32)?
 - [ ] Does every segment used in `main.asm`/`music.asm` exist in the active mapper's `nes.cfg`?
-- [ ] Does `compiler/compiler.py`'s `ROMCompiler.compile()` invoke `generate_post_process_commands()` for mappers that need a post-link fixup (MMC1), or only `build.sh` does?
+- [ ] Does `ROMCompiler.compile()` invoke `generate_post_process_commands()` when passed a mapper (#214), matching `build.sh`? (MMC1 no longer needs a fixup — #213.)
 - [ ] Did I try to disprove the finding by re-reading the code path?
 
 ## Output

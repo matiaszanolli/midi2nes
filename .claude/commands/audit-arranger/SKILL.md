@@ -21,13 +21,18 @@ This audit overlaps two subsystem audits at the seams — cross-reference rather
 duplicate: GM drum routing with `/audit-dpcm`, and hardware-range/triangle limits with
 `/audit-nes-hardware`.
 
-> **Note on prior findings**: A recent sprint closed #84–#87 (ARR-01…ARR-04 below) and added
-> arranger test coverage (`tests/test_arranger.py`, `tests/test_arranger_drum_detection.py`,
-> `tests/test_arranger_frame_contract.py`, `tests/test_voice_allocator.py`) — the "zero test
-> coverage" gap previously tracked as REG-04 is resolved for the paths those tests cover.
-> Treat the corresponding dimensions below as **verify-the-fix / find edge cases**, not as
-> live bugs. #88–#92 (ARR-05…ARR-09) remain open — confirm against current line numbers
-> before filing, since fixes upstream in the same files can drift them.
+> **Note on prior findings**: Successive sprints closed #84–#87 and #89–#90 (ARR-01…ARR-04,
+> ARR-06…ARR-07 below), the arranger drum/regression findings #205–#207 and #230–#232, and
+> three newer allocator bugs — #251 (per-note routing so a drum track keeps both NOISE and
+> DPCM), #252 (per-chord arpeggio phase so the root plays on the attack), #253 (hi-hat
+> `noise_period=0` vs the rest sentinel) and #268/NH-30 (soft-note `max(1, …)` volume floor).
+> They also added arranger test coverage (`tests/test_arranger.py`,
+> `tests/test_arranger_drum_detection.py`, `tests/test_arranger_frame_contract.py`,
+> `tests/test_voice_allocator.py`) — the "zero test coverage" gap previously tracked as REG-04
+> is resolved for the paths those tests cover. Treat the corresponding dimensions below as
+> **verify-the-fix / find edge cases**, not as live bugs. Only #88, #91, #92 (ARR-05, ARR-08,
+> ARR-09) remain open — confirm against current line numbers before filing, since fixes
+> upstream in the same files can drift them.
 
 ## Parameters (from $ARGUMENTS)
 - `--focus <dims>` — comma-separated dimension numbers (e.g. `--focus 1,5`). Default: all.
@@ -53,7 +58,7 @@ produces, because both feed the identical Step-4/5 code in `main.py` (pattern de
 data) per `_audit-severity.md`.
 
 **#84 (ARR-01) is CLOSED** (commit `24dc0cb`) — `arrange_for_nes`
-(`arranger/pipeline_integration.py`, noise/DPCM conversion ~line 261-283) now emits the
+(`arranger/pipeline_integration.py`, noise/DPCM conversion ~line 262-286) now emits the
 canonical keys the exporter actually reads instead of `period`/`sample`: noise frames carry
 `note` (period, floored to 1 so it never collides with the bytecode rest sentinel), `control`
 (mode bit), `volume` (floored to 1); DPCM frames carry `note` (`sample_id + 1`, clamped ≤95)
@@ -80,7 +85,7 @@ DECORATIVE from GM hint + pitch (`BASS_THRESHOLD=48`, `LOW_MID_THRESHOLD=60`,
 
 **#86 (ARR-03) and #85 (ARR-02) are CLOSED** (commits `e1be17d`, `556759a`). Verify-the-fix
 checklist:
-- `analyze_midi_events` (`arranger/pipeline_integration.py:104-125`) now derives
+- `analyze_midi_events` (`arranger/pipeline_integration.py:123-126`) now derives
   `track_program` from `next((e['program'] for e in events if e.get('program') is not None), 0)`
   — the first note's active GM program — and calls `analyzer.set_track_program(track_idx,
   track_program)`, so `get_instrument_mapping(program)` (Dimension 4's GM table) is live again.
@@ -89,7 +94,7 @@ checklist:
   a track that *did* have a program change (e.g. the change arrives after the first note-on,
   or on a different channel), this silently falls back to program 0. Worth a targeted check of
   `parser_fast.py`'s program-change handling.
-- Drum-track detection (`analyze_midi_events:107-116`) now checks
+- Drum-track detection (`analyze_midi_events:108-116`) now checks
   `event.get('channel')` for MIDI channel 9 (GM channel 10, 0-indexed) first, falling back to
   the track-name heuristic (`'drum' in name.lower()` or name `'9'`/`9`) only when no event
   carries channel info. `tests/test_arranger_drum_detection.py` covers channel-9 detection,
@@ -108,14 +113,14 @@ Two allocation layers: `VoiceRoleAnalyzer._assign_channels` (track→channel, bu
 A musically-wrong dropped voice is **MEDIUM** per `_audit-severity.md`.
 
 Checklist:
-- `_assign_channels` (`arranger/role_analyzer.py:306-391`) assigns each NES channel to **at
+- `_assign_channels` (`arranger/role_analyzer.py:295-387`) assigns each NES channel to **at
   most one track** (boolean `*_assigned` flags). With >4 pitched tracks, surplus tracks land
   in `plan.dropped_tracks`. Verify the drop order is priority-sorted
-  (`plan.tracks.sort(key=lambda t: t.priority, reverse=True)` at line 299) and musically
+  (`plan.tracks.sort(key=lambda t: t.priority, reverse=True)` at line 288) and musically
   defensible — e.g. that BASS is not dropped while a DECORATIVE voice survives. Cross-ref
   Dimension 4's note on `get_role_priority()` being unused here (ARR-05, #88) — the sort key
   is `TrackAnalysis.priority`, not that function.
-- Drum tracks claim BOTH `noise` and `dpcm` (`arranger/role_analyzer.py:318-326`,
+- Drum tracks claim BOTH `noise` and `dpcm` (`arranger/role_analyzer.py:312-320`,
   `if track.is_drum_track: ... continue`) — so a second drum track, or a melodic voice that
   wanted noise/dpcm, is starved. Confirm intent.
 - Per-frame overflow: when multiple tracks map to one pulse channel, `_allocate_pulse` merges
@@ -140,11 +145,11 @@ Checklist:
 - `DutyCycle.DUTY_75 = 3` is commented "Same as 25% (inverted)" — confirm no mapping relies on
   75% being audibly distinct from 25% (it is not on real hardware; see
   `docs/APU_PULSE_REFERENCE.md`).
-- **STILL OPEN — #88 (ARR-05)**: `get_role_priority()` (`arranger/gm_instruments.py:1300-1309`)
+- **STILL OPEN — #88 (ARR-05)**: `get_role_priority()` (`arranger/gm_instruments.py:1303-1312`)
   is re-exported via `arranger/__init__.py` but has no call site anywhere in `arranger/` — the
   actual drop-order decision uses `TrackAnalysis.priority` (an int set per-instrument in
   `GM_INSTRUMENT_MAP`/`GM_DRUM_MAP` and adjusted in `_determine_role`,
-  `arranger/role_analyzer.py:215-287`), not the BASS=1…SFX=6 ordering `get_role_priority`
+  `arranger/role_analyzer.py:204-276`), not the BASS=1…SFX=6 ordering `get_role_priority`
   returns. Confirm it is genuinely dead (grep for callers) and, if so, flag it as dead/misleading
   code — a maintainer could reasonably assume it governs drop order and be wrong.
 
@@ -154,26 +159,32 @@ Checklist:
 `verbose` print computes `60 // arp_speed` = 20Hz).
 
 Checklist:
-- On-grid timing: arp index advances only when `self.frame_count % self.arp_speed == 0`
-  (`arranger/voice_allocator.py:201`). `frame_count` is a single global counter incremented
-  once per `allocate_frame` (`:161`) — verify it is not reset between songs and that the
-  modulo keeps note changes on the 60Hz frame grid (no float drift; this is integer, good).
+- On-grid timing: since #252, arp phase is measured **per chord**, not off the global
+  `frame_count`. `_allocate_pulse` resets `state.arp_index`/`state.arp_frame` to 0 when the
+  chord changes and otherwise advances the index only when `state.arp_frame % self.arp_speed
+  == 0` (`arranger/voice_allocator.py:251`), where `state.arp_frame` counts frames since the
+  current chord started (`:250`). `self.frame_count` still increments once per `allocate_frame`
+  (`:171`) but no longer gates the arp step. Verify the per-chord counter keeps note changes on
+  the 60Hz frame grid (no float drift; this is integer, good).
   `tests/test_arranger.py::test_arpeggio_step_is_frame_aligned_at_arp_speed` covers the normal
   case at `arp_speed=3`, but does not cover `arp_speed=0`.
 - **STILL OPEN — #91 (ARR-08)**: `arp_speed` is never validated. `arp_speed=0` makes
-  `self.frame_count % self.arp_speed` raise `ZeroDivisionError` on the very first frame with
-  >1 unique pitch on a pulse channel (`arranger/voice_allocator.py:201`). Nothing in
+  `state.arp_frame % self.arp_speed` raise `ZeroDivisionError` (`arranger/voice_allocator.py:251`).
+  Post-#252 the crash is on the **second** frame a multi-pitch chord persists on a pulse channel
+  (the `else` branch), not the first — the first frame of a chord resets index/frame and never
+  hits the modulo. Nothing in
   `arrange_for_nes` / `allocate_with_arpeggiation` / `VoiceAllocator.__init__` guards against
   0 (or negative) values. Confirm still unguarded and unclamped; a `--arranger` CLI flag or
   config surface that lets a user pass `arp_speed=0` (or a future one) would crash the whole
   pipeline. HIGH-leaning given "fails on common input" once any caller exposes the parameter.
-- In-range cycling: `state.arp_index = (state.arp_index + 1) % len(state.arp_notes)` with the
-  extra `if state.arp_index >= len(state.arp_notes): state.arp_index = 0` guard for changed
-  chords. Confirm the index never indexes out of range when `arp_notes` shrinks.
+- In-range cycling: `state.arp_index = (state.arp_index + 1) % len(state.arp_notes)`
+  (`:252`), and when the chord changes (`arp_notes != state.arp_notes`) the index is reset to 0
+  outright (`:245-248`) rather than left to run off the end of a now-shorter list. Confirm the
+  index never indexes out of range when `arp_notes` shrinks.
 - **STILL OPEN — #92 (ARR-09)**: Pattern parity with `docs/arpeggio.md`: `_order_arp_notes`
-  (`arranger/voice_allocator.py:213-225`) implements `UP`, `DOWN`, `UP_DOWN` but the doc also
+  (`arranger/voice_allocator.py:259-271`) implements `UP`, `DOWN`, `UP_DOWN` but the doc also
   describes `down_up` and `random` patterns — `ArpStyle.RANDOM` exists in the enum
-  (`:48`) but `_order_arp_notes` has no branch for it (falls through `else` → plain
+  (`:49`) but `_order_arp_notes` has no branch for it (falls through `else` → plain
   up-order) and `down_up` has no enum member at all. Flag doc-vs-code drift (LOW/MEDIUM);
   either implement the two patterns or trim the doc to match shipped behavior.
 - The default `arp_style` is `ArpStyle.UP` and `arrange_for_nes` never exposes it — confirm
@@ -190,20 +201,20 @@ subsystem (`dpcm_sampler/`, `dpcm_index.json`).
 **#87 (ARR-04) is CLOSED** (commit `e1be17d`) — `_allocate_dpcm` and `_allocate_noise`
 (`arranger/voice_allocator.py`) no longer hardcode note lists; both now consult
 `get_drum_mapping` (i.e. `GM_DRUM_MAP`) directly. Verify-the-fix / edge-case checklist:
-- `_allocate_dpcm` (`arranger/voice_allocator.py:280-306`) filters candidate notes to those
+- `_allocate_dpcm` (`arranger/voice_allocator.py:330-356`) filters candidate notes to those
   where `get_drum_mapping(note.pitch).use_sample and mapping.channel == NESChannel.DPCM`, then
   picks the highest-`priority` match and maps its `mapping.name` through the local
   `DPCM_SAMPLE_SLOTS = {"Acoustic Bass Drum": 0, "Bass Drum 1": 0, "Acoustic Snare": 1}`
-  (`:247-251`), defaulting to slot `2` for any other `use_sample` drum not in that dict.
+  (`:293-297`), defaulting to slot `2` for any other `use_sample` drum not in that dict.
   Currently `GM_DRUM_MAP` only flags `use_sample=True` for notes 35/36/38, so slot `2` is
   presently unreachable dead code — confirm that stays true if `GM_DRUM_MAP` grows more
   `use_sample` entries, and cross-ref `/audit-dpcm` + `dpcm_index.json` to confirm slots 0/1
   actually have backing samples (an index with no backing sample is a playback bug).
-- `_allocate_noise` (`:253-278`) now reads `get_drum_mapping(note.pitch).noise_period`
+- `_allocate_noise` (`:299-328`) now reads `get_drum_mapping(note.pitch).noise_period`
   (curated per-instrument value from `GM_DRUM_MAP`, e.g. closed hi-hat period 0 vs cowbell
   period 8) instead of a linear pitch formula, falling back to `5` when a routed-to-noise drum
   has no curated `noise_period` (matching `get_drum_mapping`'s own "Unknown Drum" default).
-  Confirm the fallback value stays in sync with `get_drum_mapping`'s default (`:1291-1297`) if
+  Confirm the fallback value stays in sync with `get_drum_mapping`'s default (`:1295-1299`) if
   either changes independently — they are two separate literals (`5`) that must agree.
 - `tests/test_voice_allocator.py` covers electric-snare-not-DPCM, kick→slot 0, acoustic
   snare→slot 1, kick-outranks-snare, no-eligible-notes, curated period usage, and the
@@ -220,25 +231,27 @@ Checklist:
   (no real volume), and `arrange_for_nes` writes triangle `control = 0x81` with **no duty
   bits** — good. Verify nothing downstream re-injects a duty/volume for triangle (triangle has
   no volume control / no duty — `docs/APU_TRIANGLE_REFERENCE.md`).
-- **STILL OPEN — #89 (ARR-06)**: Pitch/timer range: `midi_note_to_nes_pitch`
-  (`arranger/pipeline_integration.py:288-320`) computes a period from `440.0 * 2**((note-69)/12)`
-  and clamps `max(0, min(2047, period))` for pulse/triangle (11-bit). This is a second,
-  hand-rolled pitch source that diverges from the canonical `nes/pitch_table.py` the legacy
-  (`assign_tracks_to_nes_channels` / `NESEmulatorCore`) path uses — confirm the two produce the
-  same timer value for the same note (they use different formulas/rounding: floating-point
-  frequency math here vs. a lookup table there) and that the clamp doesn't silently emit a
-  wildly-off note when hit. Two independently-maintained pitch sources is a standing divergence
-  risk even if today's outputs happen to match.
-- **STILL OPEN — #90 (ARR-07)**: The `else` branch of `midi_note_to_nes_pitch`
-  (`:315-317`, reached when `channel` is not `'pulse1'`/`'pulse2'`/`'triangle'`, i.e. `'noise'`)
-  returns `midi_note` directly — unclamped, and not actually an APU noise period. Confirm this
-  branch is genuinely dead: `arrange_for_nes`'s noise conversion (`:266-274`) never calls
-  `midi_note_to_nes_pitch`; it uses `_allocate_noise`'s already-clamped `period` value from
-  Dimension 6. If dead, this is LOW (misleading dead code); if any caller is ever added that
-  passes `channel='noise'`, it becomes a HIGH out-of-range-timer bug with no warning.
-- Volume scaling: pulse/noise `volume = vel // 8` (MIDI 0–127 → 0–15). Confirm the result is
-  always within the 4-bit APU volume range and that `vel // 8` of 127 = 15 (it is); flag the
-  ad-hoc curve vs `nes/envelope_processor.py` used by the legacy path.
+- **#89 (ARR-06) is CLOSED**: Pitch/timer range: `midi_note_to_nes_pitch`
+  (`arranger/pipeline_integration.py:291-316`) no longer hand-rolls a `440.0 * 2**((note-69)/12)`
+  formula. It clamps `midi_note` to 0–127 and delegates to the canonical `nes/pitch_table.py`
+  tables (`NES_TRIANGLE_TABLE` for triangle, `NES_NOTE_TABLE` otherwise) — a single
+  authoritative pitch source shared with the legacy (`NESEmulatorCore`) path and the exporter,
+  including the floor-8 clamp the old float formula did not enforce. Verify-the-fix: confirm
+  both tables are indexable across the full 0–127 range (no IndexError on extreme notes), that
+  triangle vs pulse pick the right table, and that no other call site reintroduces float pitch
+  math.
+- **#90 (ARR-07) is CLOSED**: `midi_note_to_nes_pitch` no longer has an `else`/`'noise'` branch
+  that returns a raw, unclamped `midi_note`. Non-triangle channels now return
+  `NES_NOTE_TABLE[midi_note]` on the 0–127-clamped index (`:313-316`); noise is documented as
+  never routing through this function — its period comes from `_allocate_noise`'s 0–15 clamp
+  (Dimension 6). Verify-the-fix: confirm `arrange_for_nes`'s noise conversion (`:269-277`) still
+  never calls `midi_note_to_nes_pitch`, so no path can feed a noise value into the pulse table.
+- Volume scaling: pulse `volume = max(1, vel // 8)` and noise final `volume = max(1, min(15,
+  vel // 8))` (MIDI 0–127 → 1–15). The `max(1, …)` floor was added in #268/NH-30 so a soft
+  (`vel` 1–7) note is not silenced to volume 0 despite an active pitch write (triangle stays
+  `15 if vel > 0 else 0`). Confirm the result is always within the 4-bit APU volume range and
+  that `vel // 8` of 127 = 15 (it is); flag the ad-hoc curve vs `nes/envelope_processor.py`
+  used by the legacy path.
 - `control = (duty << 6) | 0x30 | volume` for pulse — verify the byte stays in 0–255 and the
   duty bits land in bits 6–7 per `docs/APU_PULSE_REFERENCE.md`.
 
@@ -272,8 +285,9 @@ Checklist:
   check by diffing the arranger's frame keys against what `CA65Exporter` actually reads for
   each of the 5 channels, per Dimension 1.
 - Re-read each call path before reporting; attempt to disprove (per `_audit-common.md`
-  Methodology). Run the dedup step (`gh issue list` + scan `docs/audits/`) — #84-#87 are
-  CLOSED, #88-#92 are OPEN as of this writing; re-verify current state, don't trust this file.
+  Methodology). Run the dedup step (`gh issue list` + scan `docs/audits/`) — #84-#87 and
+  #89-#90 are CLOSED (as are #205-#207, #230-#232, #251-#253, #268); only #88, #91, #92 remain
+  OPEN as of this writing; re-verify current state, don't trust this file.
 
 ## Output
 Write to: **`docs/audits/AUDIT_ARRANGER_<TODAY>.md`** (YYYY-MM-DD). Structure:

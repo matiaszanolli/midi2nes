@@ -165,46 +165,58 @@ compact JSON is the easy win. MEDIUM at most (correct output, just bloated/slow)
 
 ### Dimension 6: Benchmark-harness validity (does it measure the real path?)
 This is the highest-leverage dimension — a benchmark that measures the *wrong* code is
-worse than none, because it greenlights regressions. PERF-06 (#117) is still **OPEN**;
-all of the following still hold against current code:
-- `benchmarks/performance_suite.py` imports `from tracker.parser import
-  parse_midi_to_frames` — the **slow full parser**, NOT `tracker/parser_fast.py` that
-  the production `run_parse` actually uses (`main.py:69` inside `run_parse`, and again
-  at `main.py:504` inside `run_full_pipeline`). The "parse" stage benchmark therefore
-  does not measure the 120x fast path at all.
-- Same file's `benchmark_pattern_detection` uses `EnhancedPatternDetector` (serial,
-  `tracker/pattern_detector.py`), while the production detect-patterns stage in `main.py`
-  uses `ParallelPatternDetector` (`tracker/pattern_detector_parallel.py`). The benchmark
-  measures the fallback, not the default — and now also does not exercise the #114
-  fix at all (Dimension 2), since that fix lives entirely in the parallel path.
-- `PerformanceProfiler.profile` (`benchmarks/performance_suite.py`) is a context
-  manager that builds a `BenchmarkResult` on exit via `_end_profiling` but **discards
-  it** (the result is a local inside `profile`); every per-stage method
-  (`benchmark_parse_stage`, `benchmark_map_stage`, `benchmark_frames_stage`,
-  `benchmark_pattern_detection`, `benchmark_export_stage`) then calls
-  `self.profiler._end_profiling(stage_name, True)` a *second* time after the `with`
-  block, re-reading memory after the work has already returned and after
-  `tracemalloc.stop()` already ran once. Verify the reported `duration_ms`/
-  `memory_peak_mb` actually correspond to the measured block and are not
-  double-counted or stale (the second call's `tracemalloc.get_traced_memory()` runs
-  against a stopped/restarted tracer, so its "peak" is suspect).
+worse than none, because it greenlights regressions. PERF-06 (#117) is now **CLOSED**:
+the harness was rewired to import the production modules and its double-counting
+profiler was fixed (verify below rather than re-reporting the old shape). The one
+surviving gap — a config-drifted detector param plus no regression gate — is tracked by
+PERF-11 (#262, **OPEN**):
+- **Parse module: now correct.** `benchmarks/performance_suite.py` imports `from
+  tracker.parser_fast import parse_midi_to_frames` — the **same fast parser** the
+  production `run_parse` uses (`main.py:97` inside `run_parse`, and again at
+  `main.py:776` inside `run_full_pipeline`). The "parse" stage benchmark now exercises
+  the 120x fast path, not the old slow `tracker/parser.py`. Confirm the import still
+  points at `parser_fast` if this file is touched again.
+- **Detector module: now correct, but one param drifts.** `benchmark_pattern_detection`
+  now constructs `ParallelPatternDetector` (`tracker/pattern_detector_parallel.py`), the
+  same class the production detect-patterns default path uses, so it *does* now exercise
+  the #114 parallel fix (Dimension 2). It builds it as
+  `ParallelPatternDetector(tempo_map, min_pattern_length=3)` **without passing
+  `max_pattern_length`**, so it inherits the constructor default of **32**, whereas the
+  production pipeline passes `max_pattern_length=PATTERN_MAX_LENGTH` (**12**,
+  `main.py:829`). The benchmark therefore measures 3–32-length detection against
+  production's 3–12 — more work per run and non-comparable timings. This mismatch is
+  PERF-11 (#262, **OPEN**).
+- **Double-count: fixed.** `PerformanceProfiler.profile` (`benchmarks/performance_suite.py`)
+  is now a `@contextmanager` that yields a mutable `ProfileHandle` and runs
+  `_end_profiling` **exactly once**, on exit (`handle.result = self._end_profiling(...)`).
+  Every per-stage method (`benchmark_parse_stage`, `benchmark_map_stage`,
+  `benchmark_frames_stage`, `benchmark_pattern_detection`, `benchmark_export_stage`)
+  reads the measurement via `with self.profiler.profile(...) as handle:` and returns
+  `handle.result` instead of calling `_end_profiling` a *second* time, so the old
+  stale/double-counted reading against a stopped tracer is gone. Verify no new call site
+  re-introduces a second `_end_profiling` call.
 - Baselines: `benchmark_results/benchmark_results.json` is checked into the repo, but
   it is a *run output*, not a versioned baseline the harness compares against — there
   is no regression gate (no "fail if slower than baseline by X%"). Note the absence; a
-  benchmark with no checked-in baseline and no comparison cannot catch a regression.
+  benchmark with no checked-in baseline and no comparison cannot catch a regression —
+  the surviving half of PERF-11 (#262).
 - `run_baseline_benchmark` in `benchmarks/run_benchmarks.py` searches `test_data/`,
   `examples/`, `samples/`, `.` for `*.mid` and silently runs on whatever it finds (or
   nothing) — non-deterministic inputs make results incomparable across machines/runs.
 
 ### Dimension 7: Profiling-utility correctness
 `utils/profiling.py` (`get_memory_usage`, `log_memory_usage`, `MemoryMonitor`,
-`profile_memory_usage`, `PerformanceContext`). PERF-07 (#118) is still **OPEN**; all of
-the following still hold against current code:
-- `tracemalloc` lifecycle: every profiler (`profile_memory_usage`'s wrapper and
-  `PerformanceContext.__enter__`/`__exit__`) starts `tracemalloc.start()` and stops it
-  in a `try/except: pass`. Nested profilers (e.g. a `@profile_memory_usage` function
-  called inside a `PerformanceContext`) share one global tracemalloc; the inner
-  `stop()` blinds the outer one. Flag if profilers can nest on the real pipeline.
+`profile_memory_usage`, `PerformanceContext`). PERF-07 (#118) is now **CLOSED** — the
+tracemalloc-nesting bug below is fixed; the remaining bullets are as-designed behaviors
+worth re-confirming, not open defects:
+- **tracemalloc lifecycle: fixed.** Both `profile_memory_usage`'s wrapper and
+  `PerformanceContext.__enter__`/`__exit__` now go through the module-level
+  reference-counted `_tracemalloc_acquire()`/`_tracemalloc_release()` (guarded by
+  `_tracemalloc_depth` + a lock): only the outermost acquire calls `tracemalloc.start()`
+  and only the outermost release calls `tracemalloc.stop()`. A nested
+  `@profile_memory_usage` function inside a `PerformanceContext` no longer blinds the
+  outer profiler's `get_traced_memory()`. Re-verify this if either profiler stops
+  routing through the shared acquire/release.
 - `process.cpu_percent()` is called once at start and once at end with no interval —
   the first call after process start returns `0.0` and the second measures since the
   first, so `cpu_percent` deltas are unreliable. MEDIUM/LOW (a misleading metric, not a
@@ -218,7 +230,9 @@ the following still hold against current code:
 
 ### Dimension 8: Cross-stage redundant recomputation
 Work done more than once across the pipeline because results are not passed forward.
-PERF-08 (#119) is still **OPEN**:
+PERF-08 (#119) is now **CLOSED** — the discarded per-pattern tempo *analysis* is now
+skipped (`analyze_tempo=False`), so what remains below is cheap redundant *construction*
+and an event round-trip, not the wasteful analysis the issue was about:
 - The tempo map is rebuilt independently in `tracker/parser_fast.py`
   (`parse_midi_to_frames`), again in `parse_midi_to_frames_with_analysis`, and a *fresh*
   `EnhancedTempoMap(initial_tempo=500000)` is constructed **twice more** in `main.py` —
@@ -230,13 +244,20 @@ PERF-08 (#119) is still **OPEN**:
   parse JSON — `parse_midi_to_frames` returns `"metadata": {}`). Both of `main.py`'s
   fresh tempo maps also default to `ticks_per_beat=480` rather than the source file's
   actual resolution, but since the pattern detectors only read `note`/`volume` from
-  events (not tempo), this is a wasted construction rather than an incorrect one today
-  — note the recompute; the fix is to thread tempo through the JSON contract.
+  events (not tempo), this was a wasted construction rather than an incorrect one. #119
+  resolved the expensive half by passing `analyze_tempo=False` to
+  `EnhancedPatternDetector` in `run_detect_patterns` (`main.py:624`), so its per-pattern
+  tempo analysis no longer runs; the bare `EnhancedTempoMap(...)` object is still
+  *constructed* at each site (a cheap, still-redundant allocation) and tempo is still
+  not threaded through the parse JSON — note the remaining recompute, but it is no
+  longer the costly path.
 - Frame data is re-derived from events at frames stage, then events are *re-extracted
   from frames* in the pattern-detection stage — confirmed in both `main.py`'s
-  `run_detect_patterns` and the inline pattern-detection block of `run_full_pipeline`,
-  each of which rebuilds an `events` list out of the `frames` dict. Confirm and flag
-  the round-trip (events → frames → events).
+  `run_detect_patterns` (`main.py:628`) and the inline pattern-detection block of
+  `run_full_pipeline` (`main.py:815`), each of which rebuilds an `events` list out of
+  the `frames` dict via the shared `frames_to_events` helper (`nes/emulator_core.py`,
+  #261). The round-trip (events → frames → events) still stands; the shared extractor
+  only de-duplicated the flattening code, it did not remove the recompute.
 
 ## Cross-Dimension Dedup
 A single root cause can surface in several dimensions. The #114 fix collapsed what used
@@ -272,8 +293,9 @@ Before writing any finding, confirm against the live code:
 Save the report to: **`docs/audits/AUDIT_PERFORMANCE_<TODAY>.md`** (YYYY-MM-DD).
 Structure:
 1. **Summary** — finding counts per severity and per dimension; the 3 highest-leverage
-   fixes (likely: benchmark measures wrong path; `indent=2` on frames intermediate; the
-   new coarse pattern-length-chunk parallelism ceiling from the #114 fix).
+   fixes (likely: `indent=2` on frames intermediate; the coarse pattern-length-chunk
+   parallelism ceiling from the #114 fix; the benchmark's drifted `max_pattern_length=32`
+   + missing regression gate, PERF-11 #262).
 2. **Findings** — base per-finding format from `_audit-common.md` plus the `Dimension`
    field.
 

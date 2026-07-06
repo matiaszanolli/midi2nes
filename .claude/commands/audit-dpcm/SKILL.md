@@ -27,8 +27,10 @@ that the MIDI clearly intended.
 > **Sprint note**: a large bug-fixing pass (commits `be4d2bd`…`8225696`) closed most
 > of the issues this audit used to lead with (#64–#74, #140). The dimensions below
 > describe the **current** (fixed) behavior and ask you to verify the fix holds up
-> under edge cases, rather than re-discovering the original bugs. Two issues remain
-> genuinely open (#75, #76) — see Dimension 4 and Dimension 6.
+> under edge cases, rather than re-discovering the original bugs. #76 remains
+> genuinely open (Dimension 6). #75 is marked CLOSED on GitHub, but its fix (the
+> `length_reg` rounding commit) has **not** merged to `master`, so on this working
+> tree the bug is still live — verify Dimension 4 against the code, not the tracker.
 
 ## Parameters (from $ARGUMENTS)
 - `--focus <dims>` — comma-separated dimension numbers (e.g. `--focus 1,4`). Default: all.
@@ -113,15 +115,17 @@ changed in the recent fix sprint — the following are still open, unverified cl
 
 ### Dimension 4: Sample size / address / DMC range constraints
 `dpcm_sampler/dpcm_packer.py` computes the `$4012`/`$4013` register values:
-- **Still open (#75/D-12)**: `_place_sample` (lines 77-89) computes
+- **Still live on `master` (#75/D-12 is CLOSED on GitHub but its fix is unmerged
+  here)**: `_place_sample` (lines 77-89) computes
   `address_reg = (start_address - 0xC000) // 64` (line 78) and
   `length_reg = (sample['size'] - 1) // 16` (line 79). Verify against
   `docs/APU_DMC_REFERENCE.md`: address = `$C000 + A*64`, length = `(L*16)+1` bytes.
   `length_reg` still **floors** rather than rounding up — a `size` not of the form
   `16k+1` makes the round-trip lossy: the engine reads `(length_reg*16)+1` bytes,
   which under-reads the true tail of the sample (truncated playback) for anything
-  not exactly `16k+1` bytes. No commit in the recent sprint touched this formula;
-  confirm it's still unguarded and file/strengthen #75 if so.
+  not exactly `16k+1` bytes. The rounding+`.res`-padding fix that closed #75 lives
+  on an unmerged branch, so `master` still floors and is unguarded; confirm against
+  the current code and reopen #75 (or land the fix) if so.
 - **Fixed (verify)**: the 4081-byte oversized-sample path no longer aborts the pack.
   `DpcmPacker.add_sample` (lines 13-47) now truncates to 4081 bytes when
   `truncate=True` (lines 31-36) instead of always raising `ValueError` — and the
@@ -273,7 +277,7 @@ changed in the recent fix sprint — the following are still open, unverified cl
       defaults — and does that still matter now that the dead similarity/dedup
       code that depended on `data` has been removed?
 - [ ] Is `length_reg = (size-1)//16` still lossy for a sample not sized `16k+1`
-      (#75, unfixed)?
+      (#75 closed on GitHub, but its fix is unmerged so `master` still floors)?
 - [ ] Does `DrumMapperConfig.from_file` still raise an uncaught `TypeError` on a
       stray config key (#76, unfixed)?
 - [ ] Can an evicted sample id still be reused now that `_next_id` is monotonic —
