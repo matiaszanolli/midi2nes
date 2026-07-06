@@ -29,7 +29,8 @@ from main import (
     run_detect_patterns, run_song_add, run_song_list, run_song_remove,
     load_config, run_config_init, run_config_validate,
     run_benchmark, run_benchmark_memory, run_full_pipeline, main,
-    DETECTOR_MAX_EVENTS, resolve_mapper, get_mapper_choice
+    DETECTOR_MAX_EVENTS, resolve_mapper, get_mapper_choice,
+    enforce_direct_export_dpcm_mapper,
 )
 
 
@@ -640,6 +641,64 @@ class TestResolveMapper:
         music_asm = self.temp_dir / "music.asm"
         music_asm.write_text('; CA65 Assembly Export (Direct Frame Data)\n.segment "CODE"\n.byte 1\n')
         assert isinstance(resolve_mapper('nrom', str(music_asm)), NROMMapper)
+
+
+class TestEnforceDirectExportDpcmMapper:
+    """Regression tests for enforce_direct_export_dpcm_mapper()
+    (#281/MAP-2026-07-05B-1, #282/MAP-2026-07-05B-2).
+
+    Direct-export DPCM emits two hardcoded MMC3-only pieces: play_dpcm writes
+    MMC3's R6 bank-select port ($8000/$8001) -- which is MMC1's serial shift
+    register, corrupting its Control word (#281) -- and DpcmPacker emits
+    DPCM_NN segments only mmc3's nes.cfg defines (#282). The gate must force
+    MMC3 for 'auto' and reject an explicit non-MMC3 mapper, but leave a song
+    with no DPCM channel untouched."""
+
+    def _dpcm_frames(self):
+        return {'dpcm': {'0': {'note': 60, 'volume': 0}}}
+
+    def _no_dpcm_frames(self):
+        return {'pulse1': {'0': {'note': 60, 'volume': 8}}}
+
+    def test_auto_forces_mmc3_when_song_has_dpcm(self):
+        from mappers.nrom import NROMMapper
+        from mappers.mmc3 import MMC3Mapper
+        # auto_select on tiny data would pick NROM; DPCM must override to MMC3.
+        result = enforce_direct_export_dpcm_mapper(
+            NROMMapper(), 'auto', self._dpcm_frames())
+        assert isinstance(result, MMC3Mapper)
+
+    def test_explicit_mmc1_rejected_when_song_has_dpcm(self):
+        from mappers.mmc1 import MMC1Mapper
+        with pytest.raises(ValueError, match="DPCM"):
+            enforce_direct_export_dpcm_mapper(
+                MMC1Mapper(), 'mmc1', self._dpcm_frames())
+
+    def test_explicit_nrom_rejected_when_song_has_dpcm(self):
+        from mappers.nrom import NROMMapper
+        with pytest.raises(ValueError, match="DPCM"):
+            enforce_direct_export_dpcm_mapper(
+                NROMMapper(), 'nrom', self._dpcm_frames())
+
+    def test_explicit_mmc3_accepted_when_song_has_dpcm(self):
+        from mappers.mmc3 import MMC3Mapper
+        result = enforce_direct_export_dpcm_mapper(
+            MMC3Mapper(), 'mmc3', self._dpcm_frames())
+        assert isinstance(result, MMC3Mapper)
+
+    def test_non_mmc3_untouched_without_dpcm_channel(self):
+        from mappers.mmc1 import MMC1Mapper
+        result = enforce_direct_export_dpcm_mapper(
+            MMC1Mapper(), 'mmc1', self._no_dpcm_frames())
+        assert isinstance(result, MMC1Mapper)
+
+    def test_empty_dpcm_channel_is_not_a_trigger(self):
+        """An empty dpcm channel emits no play_dpcm (mirrors the exporter's
+        has_dpcm = non-empty channel), so it must not force/reject a mapper."""
+        from mappers.mmc1 import MMC1Mapper
+        result = enforce_direct_export_dpcm_mapper(
+            MMC1Mapper(), 'mmc1', {'dpcm': {}})
+        assert isinstance(result, MMC1Mapper)
 
 
 class TestRunCompile:
