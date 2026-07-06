@@ -1,208 +1,252 @@
-# Pipeline Integrity Audit — 2026-07-05
+# Pipeline Integrity Audit — 2026-07-05 (re-audit)
 
 Scope: end-to-end conversion chain (parse → map/arrange → frames → detect-patterns →
 export → prepare → compile → validate) audited as a contract-bound system per
-`.claude/commands/audit-pipeline/SKILL.md`, all dimensions. HEAD = `a7de0d4`.
+`.claude/commands/audit-pipeline/SKILL.md`, all 8 dimensions. HEAD = `78cf319`
+(branch `fix/regression-rom-validation-128-129`, test-only commit on top of
+`bcc0395`/master's tip at the time of this pass).
 
-This is a re-audit of `docs/audits/AUDIT_PIPELINE_2026-07-03.md` after a large fix sprint touched
-`main.py`, `compiler/compiler.py`, `nes/song_bank.py`, and the exporter/mapper wiring. Commits
-since 07-03 that touch pipeline code: `c3cc399` (#176/#177/#178 — the four open findings from the
-07-03 report), `69a75b9` (#179/#170/#171), `d8fc083` (#215/#216/#217 — `--mapper` flag),
-`5ff6c4a` (#214 — mapper post-process in compiler), `a420395` (#23/#28/#32), `91bcead`/`e8b39b2`
-(#116-119, #218/#219 — compact JSON + config-driven sampling caps), `69f907f` (#220/#221),
-`b7c99c8` (#80/#83), `84955f3` (#168/#169 — pattern positions / coverage metric).
+**This supersedes the same-day `docs/audits/AUDIT_PIPELINE_2026-07-05.md` written at
+`a7de0d4`.** That pass predates 7 further commits that touched pipeline code, most
+importantly `8c2f8aa` (#254/#255, merged via PR #270/#271): it removed the DPCM
+oversized-id guard and — the change this re-audit focuses on — implemented real
+MMC1 bank-switching for direct (`--no-patterns`) export. That required `main.py` to
+resolve the target `--mapper` **before** calling the exporter for the direct-export
+branch (`resolve_mapper`/`MapperFactory` + the new `CA65Exporter.estimate_direct_export_size`),
+in both `run_export` and `run_full_pipeline`. That reorder is deliberate, already-shipped
+architecture — not re-litigated here — but it opens a new cross-stage artifact contract
+(bank-packed `RODATA_BANK_NN` segments + baked-in mapper-specific bank-switch asm) that this
+pass audits for completeness under Dimensions 1 and 2.
 
-**Dedup**: used the pre-fetched open-issue list at `/tmp/audit/issues.json` (36 open issues) and
-read every prior `docs/audits/AUDIT_PIPELINE_*.md`. Every candidate below was checked against the
-issue list and prior reports before being written up. The four findings open at 07-03
-(#176/#177/#178/#179) are **no longer in the open list** and are confirmed fixed in code (see
-Verified-fixed).
+**Dedup**: `/tmp/audit/issues.json` (33 open issues, `gh issue list ... --limit 200`,
+default state=open) plus every prior `docs/audits/*.md`, including the mapper-domain
+`AUDIT_MAPPERS_2026-07-05.md` (written before `8c2f8aa` landed — it found the CRITICAL
+that `8c2f8aa` fixed; re-confirmed fixed below, not re-reported). One genuinely new finding
+came out of this pass (PL-09); everything else previously open in this dimension
+(PL-07/#267, PL-08/#269) is unchanged, and PL-03..PL-06 remain fixed/closed as previously
+verified.
 
 ## Summary
 
-**Two NEW findings (1 MEDIUM, 1 LOW). Zero CRITICAL/HIGH.** The entire fix sprint's pipeline
-work re-verified clean:
+**One NEW finding this pass: PL-09, HIGH.** Zero CRITICAL. Two prior findings (PL-07
+MEDIUM, PL-08 LOW) remain open, unchanged. PL-03..PL-06 stay fixed.
 
-- **PL-03/#176, PL-04/#177, PL-05/#178, PL-06/#179** — all four fixed and confirmed at HEAD,
-  no regression.
-- **E4/#23** (DPCM append double-write) — closed; the exporter's `'w'`-mode primary write still
-  truncates before the append, so a plain `export` re-run does not double the DPCM block.
-- The new `--mapper`/`--config` global-flag routing, the `resolve_mapper`/`check_mapper_capacity`
-  capacity gate, the shared `_backup_existing_rom`/`_restore_backup` contract, and the
-  `compile`-subcommand backup parity were all read line-for-line and reproduced.
-- **NEW PL-07 (MEDIUM)**: the newly-wired `--config` flag silently reverts to built-in defaults
-  when its path does not exist — `ConfigManager._load_config` treats a missing given path exactly
-  like "no config given". `python main.py config validate <nonexistent>` even reports a
-  nonexistent file as valid (live-reproduced).
-- **NEW PL-08 (LOW)**: `compile --mapper` offers no `auto`, so a project prepared with
-  `prepare --mapper auto` cannot be re-driven through the step-by-step `compile` subcommand with a
-  matching value — a prepare→compile parity gap. It fails loudly (mapper size-check mismatch), so
-  impact is usability, not a silent bad ROM.
-- `tests/test_main.py` + `tests/test_main_pipeline.py` pass (151/151) at HEAD.
+- **PL-09 (NEW, HIGH)** — the pre-export mapper resolution added for MMC1 bank-switching
+  (#255) created a new class of mapper-specific artifact in `music.asm`
+  (`RODATA_BANK_NN` segments + inline bank-switch asm), but `check_mapper_capacity`'s
+  per-mapper `validate_segment_sizes` guard — the exact gate whose job is "fail before
+  linking with a clear message instead of a raw `ld65` error" — silently ignores those
+  segments for MMC3 and NROM. Running `export --mapper mmc1 …` (or `--mapper auto` on a
+  30–112 KB song) followed by `prepare`/`compile` with any **other** mapper (including the
+  default `mmc3`) reports a false "✓ Music data N bytes fits the MMC3 PRG regions" and then
+  fails at `ld65` with `Missing memory area assignment for segment 'RODATA_BANK_00'` —
+  **live-reproduced below**. Not silent-corruption (no ROM is produced), so it does not meet
+  the CRITICAL floor, but it is exactly the class of raw-`ld65`-error the pre-flight gate
+  exists to prevent, and no equivalent to `_requires_mmc3_bytecode_engine`'s forcing check
+  exists for this direction. Both call sites of the reorder (`run_export`,
+  `run_full_pipeline`) were read; **the default full-pipeline path is unaffected** — it
+  resolves one mapper object and threads it unchanged through export → prepare → compile, so
+  this gap is step-by-step-subcommand-only.
+- **PL-07/#267 (MEDIUM, unchanged, still open)** — `--config` with a nonexistent path
+  silently falls back to defaults instead of erroring; re-confirmed live
+  (`config validate` still reports a missing file "valid").
+- **PL-08/#269 (LOW, unchanged, still open)** — `compile --mapper` still has no `auto`
+  choice, so a `prepare --mapper auto` project has no matching `compile` invocation.
+- **PL-03/#176, PL-04/#177, PL-05/#178, PL-06/#179** — all four re-verified fixed at HEAD,
+  no regression (see Verified-fixed).
+- The DPCM-guard fix and MMC1 bank-switching work (#254/#255) itself: read and spot-checked
+  by building and linking a real ROM; no fresh bug found in the mechanism itself beyond PL-09.
+- `#257/#258` (coverage_ratio measured in analyzed-event space; `variations` added to the
+  `--no-patterns` stub) — metrics-only fix, re-confirmed both detectors and the stub now
+  share one 4-key envelope; no pipeline-contract impact.
+- `tests/test_main.py` + `tests/test_main_pipeline.py`: 154/154 pass at HEAD.
 
 ### Single most dangerous open item
-**PL-07 (MEDIUM)** — a mistyped or missing `--config` path is silently ignored rather than
-erroring. Blast radius is bounded: the only thing `--config` currently overrides is the
-pattern-detection event-sampling caps (`max_events`/`max_pattern_events`), which per CLAUDE.md's
-Assembly Export section affect only compression *analysis* — every emitted ROM byte still derives
-from the full `frames` dict — so a silently-ignored config never changes the song. No
-CRITICAL/HIGH contract break is open in this dimension at HEAD.
+**PL-09 (HIGH)** is the most dangerous *pipeline-contract* item open right now: it is the
+one place a stage-boundary guard (`check_mapper_capacity`) gives false "fits" confidence
+for a real, reachable input combination. It stops short of CRITICAL only because the
+failure is loud (a raw `ld65` link error, no ROM emitted, no corruption) rather than a
+silently-shipped broken ROM — the CRITICAL version of this exact bug class
+(`MAP-2026-07-05-1`, MMC1 direct export overflowing its window with **no** link error) was
+already found and is already fixed by the same `8c2f8aa` commit this pass re-audits.
 
 ### Does the step-by-step path produce the same ROM as the default path?
-**Yes, materially.** Both paths parse with `tracker/parser_fast.py`, produce the same `frames`
-shape, export through `CA65Exporter.export_tables_with_patterns(standalone=False)`, pack only
-song-referenced DPCM (#140), resolve the mapper through the same `resolve_mapper` +
-`check_mapper_capacity` gate, and compile + validate through the same `compile_rom`/`validate_rom`
-pair (#15). The one detector asymmetry — the default path runs `ParallelPatternDetector` while
-`detect-patterns` runs the sequential `EnhancedPatternDetector`, which can yield different
-`patterns` dicts — does **not** change the ROM: the exporter uses `patterns` only for its
-truthiness (bytecode serializer vs. direct frames), never its contents (#4, documented). The one
-caveat is PL-08: a `prepare --mapper auto` selection has no exact `compile --mapper` equivalent
-(fails loud, not silent).
-
-### Findings per dimension
-- **Dimension 1 (stage JSON contracts)**: 0 new. Both detectors emit an identical `stats` schema
-  via the shared `calculate_compression_stats` (`original_size`/`compressed_size`/
-  `compression_ratio`/`unique_patterns`/`total_events`/`patterned_events`/`coverage_ratio`), so
-  the success banner's new `coverage_ratio`/`total_events` reads (`main.py:929-932`, inside the
-  `try` before `build_succeeded=True`) cannot `KeyError` and discard a freshly-built valid ROM.
-  Verified. `dpcm_sample_map` side-table (#200) is skipped by every consumer (both event-flatten
-  loops, `export_direct_frames`, and the bytecode channel loop). Verified.
-- **Dimension 2 (full vs step parity)**: 0 new. Shared `PATTERN_MIN/MAX_LENGTH`, shared
-  `get_pattern_detection_caps`, shared `validate_rom`, shared backup helpers. PL-08 (LOW) is the
-  one residual `prepare`→`compile` asymmetry.
-- **Dimension 3 (flag routing)**: PL-06/#179 (`--version`) fixed; **PL-07 (NEW, MEDIUM)** —
-  `--config` missing-file silent default.
-- **Dimension 4 (fail-fast)**: PL-04/#177 fixed — `validate_rom` now `return False`s (not `True`)
-  when the diagnostics engine itself raises, and always prints the warning. 0 new.
-- **Dimension 5 (temp/intermediate handling)**: 0 new; unchanged.
-- **Dimension 6 (backup/overwrite safety)**: PL-05/#178 fixed — `run_compile` now has the same
-  `_backup_existing_rom`/`_restore_backup` contract as the default path; a first-build validation
-  failure moves the unbootable ROM to `<name>.nes.failed` instead of leaving it at the output. 0
-  new.
-- **Dimension 7 (large-file threshold & fallback)**: PL-03/#176 fixed — the fallback message now
-  states sampling is "for compression analysis only — ... ROM content is unaffected" and drops the
-  false `--no-patterns` advice. 0 new.
-- **Dimension 8 (song bank)**: 0 new. Parser drift stays fixed (`nes/song_bank.py` uses
-  `parser_fast`); `song add` JSON-import is now guarded (#220).
-
-**Severity totals (this report): CRITICAL 0 · HIGH 0 · MEDIUM 1 · LOW 1 · Total 2 (both NEW).**
+**Yes, for the shipped/documented workflows.** Both paths parse with `parser_fast`, produce
+identical `frames`, export through `export_tables_with_patterns`, pack only
+song-referenced DPCM, and compile+validate through the same `compile_rom`/`validate_rom`
+pair. The default `run_full_pipeline` path resolves its mapper exactly once (`main.py:806-818`
+for direct export, `main.py:908-913` for the bytecode path) and threads that single object
+through export, `check_mapper_capacity`, `NESProjectBuilder`, and `compile_rom` — no
+divergence found there. The **only** way to get a different result via the step-by-step
+subcommands is to deliberately pass a **different** `--mapper` value to `export` than to
+`prepare`/`compile` for a bank-packing-capable mapper (currently only MMC1) — this is
+PL-09 above, and PL-08 (the `auto` asymmetry) is the milder, already-known sibling of the
+same underlying fact: `export --mapper`, `prepare --mapper`, and `compile --mapper` are
+three independently-parsed flags with no shared source of truth once you leave the default
+pipeline.
 
 ## Contract Map
 
 | Stage boundary | Producer (fn → key(s)) | Consumer (fn) | Verified |
 |---|---|---|:--:|
-| parse → map | `parser_fast.parse_midi_to_frames` → `{"events",...}` (compact JSON, #116) | `run_map` reads `["events"]` via `load_json_stage` guard | ✓ |
-| map → frames | `assign_tracks_to_nes_channels(events, dpcm_index)` → `{pulse1,pulse2,triangle,noise,dpcm}` | `NESEmulatorCore.process_all_tracks` (+`dpcm_sample_map` side table, #200) | ✓ |
-| arrange → frames | `arrange_for_nes(events, arp_speed, verbose)` → `{channel:{frame:{...}}}` | exporter / detector flatten (`int(frame_num)`-tolerant, skips `dpcm_sample_map`) | ✓ |
-| frames → detect | `{channel:{frame:{note,volume,...}}}` | both entry points flatten identically; `dpcm_sample_map` skipped in both | ✓ |
-| detect → export | `{patterns, references, stats}` (`variations` dropped by `run_detect_patterns`) | `run_export` reads `patterns`/`references` via guard; exporter ignores `references` (#4) | ✓ |
-| stats → banner | `compression_ratio`/`unique_patterns`/`total_events`/`coverage_ratio` (identical both detectors) | success banner + subcommand print | ✓ |
-| export → prepare | `export_tables_with_patterns(...)` writes music.asm (+DPCM append) | `resolve_mapper` + `check_mapper_capacity` gate → `NESProjectBuilder.prepare_project` | ✓ |
-| prepare → compile | project dir + selected mapper | `compile_rom(...,mapper=)` → exact PRG-size check (#28) + mapper post-process (#214); CC65 nonzero → `CompilationError` → `False` | ✓ / PL-08 (mapper choice not recoverable from dir) |
-| compile → validate | `.nes` | `validate_rom` — boot-fatal on bad vectors / zero APU init (#6); diagnostics-engine failure now → `False` (#177) | ✓ |
+| parse → map | `parser_fast.parse_midi_to_frames` → `{"events",...}` (compact JSON) | `run_map` reads `["events"]` via `load_json_stage` guard | ✓ |
+| map → frames | `assign_tracks_to_nes_channels(events, dpcm_index)` → `{pulse1,pulse2,triangle,noise,dpcm}` | `NESEmulatorCore.process_all_tracks` (+`dpcm_sample_map` side table) | ✓ |
+| arrange → frames | `arrange_for_nes(events, arp_speed, verbose)` → `{channel:{frame:{...}}}` | exporter / detector flatten via shared `frames_to_events` (#261), skips `dpcm_sample_map` | ✓ |
+| frames → detect | `{channel:{frame:{note,volume,...}}}` | both entry points flatten identically | ✓ |
+| detect → export | `{patterns, references, stats, variations}` (`run_detect_patterns` still saves only 3 keys, drops `variations` — unconsumed, not a bug) | `run_export` reads `patterns`/`references` via guard; exporter ignores `references` (#4, documented) | ✓ |
+| stats → banner | `original_size`/`compressed_size`/`compression_ratio`/`unique_patterns`/`total_events`/`patterned_events`/`coverage_ratio` (identical both detectors + `--no-patterns` stub) | success banner + subcommand print | ✓ |
+| **export → prepare (mapper choice)** | `export --mapper` resolves a mapper *before* writing `music.asm`; a bank-packing mapper (MMC1) bakes `RODATA_BANK_NN` segments + inline bank-switch asm into the file | `prepare`/`compile --mapper` (independently parsed, default `mmc3`) → `check_mapper_capacity` → `NESProjectBuilder`/`compile_rom` | **✗ PL-09** — capacity gate silently ignores segments it doesn't recognize instead of flagging the mismatch |
+| export → prepare (bytecode) | MMC3 macro-bytecode `music.asm` (marker comment) | `resolve_mapper`'s `_requires_mmc3_bytecode_engine` forces MMC3 regardless of `--mapper` | ✓ |
+| prepare → compile | project dir + selected mapper | `compile_rom(...,mapper=)` → exact PRG-size check + mapper post-process; CC65 nonzero → `CompilationError` → `False` | ✓ / PL-08 (mapper choice not recoverable from dir) |
+| compile → validate | `.nes` | `validate_rom` — boot-fatal on bad vectors / zero APU init; diagnostics-engine failure → `False` (#177) | ✓ |
 | `--config` → caps | CLI path → `get_pattern_detection_caps` → `ConfigManager` | sampling caps | ✗ silent default on missing path (PL-07) |
 
 ## Findings
 
-### PL-07: `--config` silently reverts to built-in defaults when the given path does not exist
-- **Severity**: MEDIUM
-- **Dimension**: 3 — Flag Routing
-- **Both paths?**: Both — the default `run_full_pipeline` (`--config` global flag) and the
-  `detect-patterns --config` subcommand both route to `get_pattern_detection_caps`; the `config
-  validate` subcommand is the most user-visible manifestation.
-- **Location**: `config/config_manager.py:110-115` (`_load_config`); wired into the pipeline at
-  `main.py:38-54` (`get_pattern_detection_caps`), `main.py:1170-1175` (default-path `--config`
-  routing), `main.py:502`/`main.py:738` (consumers), and `main.py:1236-1252` (`run_config_validate`).
+### PL-09: `check_mapper_capacity` silently ignores MMC1 bank-packed segments when a different mapper is chosen at `prepare`/`compile` time, turning a preventable pre-flight error into a raw `ld65` link failure
+- **Severity**: HIGH
+- **Dimension**: 1 (Stage JSON/artifact Contract Integrity) and 2 (`run_full_pipeline` vs Step-by-Step Parity)
+- **Both paths?**: Step-by-step only. The default `run_full_pipeline` resolves one mapper
+  object once (`main.py:806-818` direct-export branch) and reuses it for `check_mapper_capacity`,
+  `NESProjectBuilder`, and `compile_rom` (`main.py:908-932`) — no divergence possible there.
+  This is exclusively a gap between the independently-parsed `export --mapper`
+  (`main.py:1053`) and `prepare --mapper` / `compile --mapper` (`main.py:1063`, `main.py:1073`).
+- **Location**: `main.py:444-472` (`run_export`'s pre-export mapper resolution, new in
+  #255/MAP-2026-07-05-1); `exporter/exporter_ca65.py:249-268` (`export_direct_frames`
+  bin-packs into `RODATA_BANK_NN` segments whenever `mapper.direct_export_bank_size()` is
+  not `None` — currently true only for `MMC1Mapper`, `mappers/mmc1.py:163-166`);
+  `mappers/mmc3.py:169-243` (`validate_segment_sizes` only reads `RODATA`/`CODE`/`CODE_8000`
+  and segments prefixed `BANK_`/`DPCM_` — anything else, including `RODATA_BANK_NN`, is
+  silently skipped, `mmc3.py:210-212`); `mappers/nrom.py` (inherits `BaseMapper`'s flat
+  `validate_segment_sizes`, `mappers/base.py:183-200`, which sums *all* segment sizes into
+  one total against `get_data_capacity()` — it doesn't reject `RODATA_BANK_NN` by name, but
+  NROM's `nes.cfg` never declares that segment either, so the same link failure occurs even
+  though the size check would have technically "passed").
 - **Status**: NEW
-- **Description**: `ConfigManager._load_config` does `if self.config_path and self.config_path.exists():
-  _load_from_file(...) else: _load_defaults()`. A path that is passed **but does not exist** falls
-  into the `else` and silently loads the built-in defaults — indistinguishable from passing no
-  config at all. `--config` was only recently wired to actually be consumed (#219, previously it
-  was dropped), so this silent no-op is newly reachable from the pipeline. There is no warning on
-  any path.
-- **Evidence**: Live-reproduced:
+- **Description**: `CA65Exporter.export_direct_frames` now asks the mapper
+  `bank_size = mapper.direct_export_bank_size()` and, when not `None`, bin-packs every
+  direct-export frame table into per-bank segments named `RODATA_BANK_00`, `RODATA_BANK_01`,
+  … and prefixes each table read with `mapper.generate_bank_switch_code(bank)` — mapper-
+  specific inline assembly (MMC1's real 5-write serial `$E000` bank-select protocol).
+  `MMC1Mapper.generate_linker_config()` (and its `validate_segment_sizes` override) knows
+  about `RODATA_BANK_NN`; **no other mapper does**. `run_export`/`run_full_pipeline` resolve
+  this mapper choice from the `export`-time `--mapper` flag alone and never record it
+  anywhere the project directory or `music.asm` can be checked against later. `prepare`
+  and `compile` each parse their *own*, independent `--mapper` flag (default `mmc3`) and
+  hand it to `check_mapper_capacity`, whose entire purpose (per its own docstring) is to
+  "abort before linking... instead of a raw `ld65` region overflow." For MMC3/NROM that
+  function's `validate_segment_sizes` has no branch for `RODATA_BANK_NN`, so those bytes
+  are counted nowhere, the check reports success, and the failure is deferred to `ld65`
+  itself with a much less actionable message.
+- **Evidence**: Live-reproduced end-to-end with the real CC65 toolchain (`ca65`/`ld65`
+  V2.18):
   ```
-  $ python main.py config validate /tmp/does_not_exist_xyz.yaml
-  [OK] Configuration file is valid: /tmp/does_not_exist_xyz.yaml
+  $ python main.py export small_frames.json small_music.asm --mapper mmc1
+    ...
+    Data size: 1,600 bytes (1.6 KB)
+  $ grep '\.segment' small_music.asm | sort -u
+  .segment "RODATA_BANK_00"
+  .segment "CODE"
+  .segment "RODATA"
+  .segment "BSS"
+
+  $ python main.py prepare small_music.asm nes_project     # default --mapper mmc3
+    ✓ Music data 1,604 bytes fits the MMC3 PRG regions      <- FALSE: RODATA_BANK_00 unrecognized
+    Using MMC3 with 512KB PRG-ROM
+   Prepared NES project -> nes_project
+
+  $ python main.py compile nes_project out.nes --verbose
+    Compiling music.asm...
+    Assembled: music.asm -> music.o
+    Linking ROM...
+  [ERROR] Failed to link ROM: ld65: Error: Missing memory area assignment for segment 'RODATA_BANK_00'
+  [ERROR] ROM compilation failed
   ```
-  A nonexistent file is reported valid because `validate()` runs against the silently-loaded
-  defaults. The identical mechanism means `midi2nes --config typo.yaml song.mid` and
-  `detect-patterns --config typo.yaml ...` run with default sampling caps, not the user's.
-- **Impact**: Bounded. `--config` currently overrides only `processing.pattern_detection.max_events`
-  / `max_pattern_events` (the pattern-detection event-sampling caps). Per CLAUDE.md's Assembly
-  Export section, sampling affects only compression *analysis*; every emitted ROM byte still comes
-  from the full `frames` dict, so a silently-ignored `--config` never changes the song — only the
-  compression stats/telemetry. The `config validate` false-positive is the sharper edge: it green-
-  lights a path that isn't there. Recoverable (the user can notice the caps didn't change), so
-  MEDIUM per the "missing error handling on a recoverable path (bad config file)" row of
-  `_audit-severity.md`, not the CRITICAL "ignored flag → silent song change" floor.
-- **Related**: #222 (SAFE-11, ConfigManager save/validate typed-exception gap) is adjacent but
-  distinct; #13/#109 (scoped `--config` wiring philosophy).
-- **Suggested Fix**: In `_load_config`, distinguish "no path given" from "path given but missing":
-  if `self.config_path` is set and does not exist, raise `ConfigurationError` (already imported and
-  used two lines down) instead of falling through to `_load_defaults()`. That makes `config
-  validate` reject a missing file and makes a mistyped pipeline `--config` fail fast rather than
-  silently no-op.
+  No `out.nes` is produced (confirmed via `ls`) — the failure is loud and no ROM ships, so
+  this does not meet the CRITICAL "silently ships a broken ROM" floor, but the pre-flight
+  gate's own stated purpose (avoid exactly this raw `ld65` message) is defeated for this
+  input combination.
+- **Impact**: Reachable any time a user picks `--mapper mmc1` (or `--mapper auto`, which
+  routes 30–112 KB direct-export songs to MMC1 per `MapperFactory.auto_select`) on `export`
+  and does not pass the *identical* `--mapper` to the subsequent `prepare`/`compile` step —
+  including simply omitting `--mapper` on `prepare`/`compile` and getting their `mmc3`
+  default. The documented step-by-step example in `CLAUDE.md` doesn't pass `--mapper` to
+  `export` at all (defaults to `mmc3`, which never bank-packs, so the documented workflow is
+  unaffected) — this is an edge combination within the subcommands, not the default path,
+  but it is one the `--mapper` flag itself (#217/MAP-6) was built to make reachable, and
+  the failure UX (a raw linker error) is strictly worse than what the pre-flight gate was
+  designed to give every other capacity mismatch.
+- **Related**: `MAP-2026-07-05-1` (the CRITICAL this same commit fixed — MMC1 direct export
+  silently overflowing its window with no link error at all; this finding is the "loud
+  failure" cost of that fix landing without a matching cross-stage mapper-identity guard).
+  PL-08/#269 (the milder, already-filed sibling: `prepare --mapper auto` has no `compile`
+  equivalent) — both stem from the same root fact that `export`/`prepare`/`compile` mapper
+  choices have no shared source of truth outside the default pipeline. #217/MAP-6 (added
+  the `--mapper` flag family this depends on).
+- **Suggested Fix**: Either (a) record which mapper `export`/`run_full_pipeline` used to
+  bank-pack `music.asm` — e.g. a marker comment analogous to `_requires_mmc3_bytecode_engine`'s
+  "MMC3 Macro Bytecode" string, such as `; Direct export packed for <mapper.name> bank-switching`
+  — and teach `resolve_mapper` to read it back and force/validate that mapper the same way it
+  already forces MMC3 for the bytecode marker; or (b) make `validate_segment_sizes` on every
+  mapper explicitly reject (not silently ignore) any segment name it doesn't recognize as its
+  own, turning today's false "✓ fits" into a clear "this music.asm was built for a different
+  mapper" pre-flight error instead of deferring to `ld65`.
 
-### PL-08: `compile --mapper` has no `auto`, so a `prepare --mapper auto` project has no matching compile invocation
-- **Severity**: LOW
-- **Dimension**: 2 — `run_full_pipeline` vs Step-by-Step Parity
-- **Both paths?**: Step-by-step only (`prepare` → `compile`).
-- **Location**: `main.py:1034-1036` (`prepare --mapper` choices include `auto`) vs
-  `main.py:1044-1046` (`compile --mapper` choices are `nrom`/`mmc1`/`mmc3` only); mismatch surfaces
-  in `resolve_mapper`/`compile_rom`'s exact-size check (`compiler/compiler.py:192-201`).
-- **Status**: NEW
-- **Description**: `prepare` accepts `--mapper auto`, which resolves at prepare-time to whichever
-  mapper `MapperFactory.auto_select()` picks by data size and bakes that mapper's `nes.cfg`/header
-  into the project directory. The `compile` subcommand cannot recover that choice from the project
-  directory (its docstring at `main.py:344-350` acknowledges this) and offers no `auto` value, so
-  the user must know the resolved mapper and pass it explicitly. If they accept `compile`'s default
-  (`mmc3`) against a project auto-resolved to `nrom`/`mmc1`, `compile_rom`'s exact PRG-size check
-  raises a `CompilationError` (the three mappers have distinct PRG sizes — 32K/128K/512K — so there
-  is no false pass), the build fails, and the backup/`.failed` restore contract (#178) kicks in.
-- **Evidence**: `compile`'s parser: `p_compile.add_argument('--mapper', choices=['nrom','mmc1','mmc3'],
-  default='mmc3', ...)` — no `auto`. `resolve_mapper` for a non-bytecode `music.asm` returns the
-  literal mapper, and `compile_rom(...,mapper=mmc3)` then compares `game.nes` (linked with the
-  project's real `nes.cfg`) against `mmc3.prg_rom_size+16`, mismatching and raising.
-- **Impact**: Usability/parity only — a fully-recoverable loud failure with a clear size-mismatch
-  message and no bad ROM left behind (the size distinctness rules out a silent header/`nes.cfg`
-  mismatch, so this is not the HIGH "mapper header vs nes.cfg mismatch" floor). The default
-  `run_full_pipeline` path is unaffected (it threads one mapper object end-to-end).
-- **Related**: #217/MAP-6 (the `--mapper` flag), #15 (`prepare`→`compile` parity).
-- **Suggested Fix**: Either add `auto` to `compile --mapper` (re-running `auto_select` against the
-  project's own `music.asm`, exactly as `resolve_mapper` already does), or have `prepare` record
-  the resolved mapper into the project dir (e.g. a `mapper.txt` or a comment in `nes.cfg`) so
-  `compile` can default to it instead of a fixed `mmc3`.
+---
 
-## Verified-fixed since 2026-07-03
+## Re-confirmed still open (unchanged since 07-03/07-05 at `a7de0d4`)
 
-- **PL-03 (#176)** — fallback + success-banner warnings reworded: `main.py:760-766` now says the
-  sample feeds "compression analysis only — ... ROM content is unaffected" and drops the
-  `--no-patterns` advice. Confirmed by reading the code (commit `c3cc399`).
-- **PL-04 (#177)** — `validate_rom` (`main.py:294-299`) now `return False` on a diagnostics-engine
-  exception (was `return True`) and always prints "ROM validation could not run: ... — ROM NOT
-  validated" (no longer gated on `--verbose`). Confirmed (commit `c3cc399`).
-- **PL-05 (#178)** — `run_compile` (`main.py:327-376`) now creates a backup via
-  `_backup_existing_rom`, restores it (or moves the unbootable ROM to `<name>.nes.failed`) in a
-  `finally`, and unlinks it on success — parity with the default path's contract. Confirmed
-  (commit `c3cc399`).
-- **PL-06 (#179)** — the manual dispatch loop (`main.py:1157-1163`) now handles `--version` by
-  printing and `sys.exit(0)` immediately, matching argparse's `action='version'`, so
-  `midi2nes --version song.mid` prints the version instead of silently running the pipeline.
-  Confirmed (commit `69a75b9`).
-- **E4 (#23)** — `run_export`'s DPCM append (`main.py:484`) is still `open(args.output, 'a')`, but
-  `export_tables_with_patterns` writes the primary output in `'w'` mode first, so a plain `export`
-  re-run truncates before appending — no duplicate `dpcm_*` symbols. Issue is closed; residual risk
-  is limited to appending after a hand-edited `music.asm` within one run.
-- **#28/#32/#214** — `compile_rom` now takes a `mapper` and does an exact PRG-size check
-  (`compiler/compiler.py:192-201`) instead of the flat 32768 floor, runs the mapper's post-link
-  fixup (`compiler/compiler.py:183-189`), and surfaces a traceback under `--verbose` on an
-  unexpected exception (`compiler/compiler.py:250-251`). Read and confirmed.
+### PL-07/#267: `--config` silently reverts to built-in defaults when the given path does not exist
+- **Severity**: MEDIUM · **Status**: Existing: #267 (OPEN, unchanged)
+- Re-confirmed live: `python main.py config validate /tmp/does_not_exist_xyz.yaml` still
+  prints `[OK] Configuration file is valid: ...`. `config/config_manager.py`'s
+  `_load_config` still treats "path given but missing" the same as "no path given". No
+  change since the 07-05 (`a7de0d4`) report; not re-detailed here.
+
+### PL-08/#269: `compile --mapper` has no `auto`, so a `prepare --mapper auto` project has no matching compile invocation
+- **Severity**: LOW · **Status**: Existing: #269 (OPEN, unchanged)
+- Re-confirmed: `main.py:1073` (`p_compile.add_argument('--mapper', choices=['nrom','mmc1','mmc3'], default='mmc3', ...)`)
+  still has no `auto` choice. No change since the 07-05 (`a7de0d4`) report.
+
+## Verified-fixed since the previous pass (`a7de0d4` → `78cf319`)
+
+- **PL-03 (#176)**: fallback/success-banner warning still reads "for compression analysis
+  only — ... ROM content is unaffected" (`main.py:757-763`), no `--no-patterns` misdirection.
+  Confirmed unchanged/fixed.
+- **PL-04 (#177)**: `validate_rom` (`main.py:294-299`) still `return False`s (not `True`) on
+  a diagnostics-engine exception, always prints the warning. Confirmed unchanged/fixed.
+- **PL-05 (#178)**: `run_compile` (`main.py:327-376`) still creates/restores a backup via
+  `_backup_existing_rom`/`_restore_backup`, moving a first-build failure's unbootable ROM to
+  `<name>.nes.failed`. Confirmed unchanged/fixed.
+- **PL-06 (#179)**: the manual dispatch loop (`main.py:1186-1192`) still handles `--version`
+  with an immediate `print` + `sys.exit(0)`. Confirmed unchanged/fixed.
+- **`MAP-2026-07-05-1`** (from `AUDIT_MAPPERS_2026-07-05.md`, written before `8c2f8aa`
+  landed): MMC1 direct export silently overflowing its 16 KB window with no link error is
+  now **fixed** by `8c2f8aa` (#254/#255) — `MMC1Mapper` now declares 7 separate `$8000`-based
+  `PRG_BANK_NN` regions (`mappers/mmc1.py:61-105`), `direct_export_bank_size()` returns the
+  16 KB window (`mmc1.py:163-166`), `CA65Exporter` bin-packs tables and bank-switches
+  (`exporter_ca65.py:107-268`), and `MMC1Mapper.validate_segment_sizes` now understands its
+  own `RODATA_BANK_NN` segments (`mmc1.py:168-210`). Verified by building and linking a real
+  multi-bank MMC1 ROM (208.8 KB of direct-export data spanning `RODATA_BANK_00..12`) through
+  the actual pipeline — this also incidentally surfaced that `run_export` itself does not
+  pre-check the bank count against `MMC1Mapper.SWAP_BANK_COUNT` (only `prepare`'s
+  `check_mapper_capacity` does, correctly raising when the *matching* mapper is used), which
+  is expected/by-design, not a gap: `export` only ever writes `music.asm`, and the
+  authoritative capacity gate is deliberately deferred to `prepare`/`full-pipeline` per
+  `check_mapper_capacity`'s own docstring.
+- **#257/#258**: `coverage_ratio` now measured in post-sampling analyzed-event space on both
+  detectors (`tracker/pattern_detector.py`), and the `--no-patterns` stub's 4-key envelope now
+  includes `variations: {}` matching both detectors. Metrics-only; no contract-break impact.
+  Confirmed via `git show e2cccc0`.
+- Tech-debt import cleanup (`2823594`, #264/#227/#228) and dead-code pruning (`1bf4a95`,
+  #165/#166) touch `main.py`/`exporter_ca65.py` but not the mapper-resolution or stage-JSON
+  contract logic audited here; `python -m pytest tests/test_main.py tests/test_main_pipeline.py`
+  passes 154/154 at HEAD.
 
 ## Suggested next step
 
-Two new findings to file (PL-07 MEDIUM, PL-08 LOW). No CRITICAL/HIGH open in this dimension.
+One new finding to file (PL-09, HIGH). PL-07 (MEDIUM) and PL-08 (LOW) remain open and
+already filed as #267/#269 — no re-filing needed.
 
 ```
 /audit-publish docs/audits/AUDIT_PIPELINE_2026-07-05.md
