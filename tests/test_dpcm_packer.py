@@ -93,7 +93,8 @@ class TestDpcmPacker:
         # The oversized sample emits a bounded include; the in-range one does not.
         assert '.incbin "big.dmc", 0, 4081' in asm
         assert '.incbin "ok.dmc"\n' in asm
-        # Truncated sample's length register is the hardware max ((4081-1)//16 = 255).
+        # Truncated sample's length register is the hardware max: 4081 is
+        # exactly 255*16+1, so ceil((4081-1)/16) == 255 either way (#295).
         assert packer.sample_metadata['1']['length_reg'] == 255
 
     @patch('os.path.getsize')
@@ -102,7 +103,7 @@ class TestDpcmPacker:
         sample id, so packing a sparse subset must emit a placeholder for every
         unpacked id and keep each real entry at its id's offset. Only the
         referenced sample binaries are included."""
-        mock_getsize.return_value = 1000  # len_reg = (1000-1)//16 = 62 = 0x3E
+        mock_getsize.return_value = 1000  # len_reg = ceil((1000-1)/16) = 63 = 0x3F (#295)
         packer = DpcmPacker()
         packer.add_sample('2', 'a.dmc')
         packer.add_sample('5', 'b.dmc')
@@ -115,7 +116,7 @@ class TestDpcmPacker:
 
         len_row = row('dpcm_len_table:')
         assert len(len_row) == 6                       # ids 0..5
-        assert len_row[2] == '$3E' and len_row[5] == '$3E'
+        assert len_row[2] == '$3F' and len_row[5] == '$3F'
         assert len_row[0] == len_row[1] == len_row[3] == len_row[4] == '$00'
         assert asm.count('.incbin') == 2               # only the two referenced binaries
 
@@ -183,6 +184,31 @@ class TestDpcmPacker:
         assert loaded == 2
         assert skipped == 0
         assert {s['id'] for s in packer.pending_samples} == {'0', '1'}
+
+    @patch('os.path.getsize')
+    def test_length_register_ceils_non_16k_plus_1_sizes(self, mock_getsize):
+        """Regression (#295/DP-01, regression of #75): $4013's length_reg must
+        be a CEILING of (size-1)/16, not a floor, or the DMC engine reads
+        (length_reg*16)+1 bytes -- fewer than `size` for any sample whose
+        length isn't exactly 16k+1 -- silently clipping the sample's tail."""
+        mock_getsize.return_value = 100  # not 16k+1: floor gave 6 (97 bytes read)
+        packer = DpcmPacker()
+        packer.add_sample('0', 'a.dmc')
+        packer._pack_samples()
+        length_reg = packer.sample_metadata['0']['length_reg']
+        # The engine must read at least the full 100-byte sample.
+        assert (length_reg * 16) + 1 >= 100
+        assert length_reg == 7  # ceil((100-1)/16) = 7 -> 113 bytes covers it
+
+    @patch('os.path.getsize')
+    def test_length_register_exact_multiple_unchanged(self, mock_getsize):
+        """A sample whose size is exactly 16k+1 needs no extra rounding --
+        ceiling and floor agree at the boundary."""
+        mock_getsize.return_value = 97  # 6*16 + 1
+        packer = DpcmPacker()
+        packer.add_sample('0', 'a.dmc')
+        packer._pack_samples()
+        assert packer.sample_metadata['0']['length_reg'] == 6
 
     def test_empty_packing_generates_safe_assembly(self):
         """Verify that packing 0 samples doesn't crash the assembly generation."""
