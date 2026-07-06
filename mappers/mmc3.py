@@ -61,11 +61,21 @@ class MMC3Mapper(BaseMapper):
         for i in range(self.SWAP_BANK_COUNT):
             lines.append(f'    PRG_BANK_{i:02d}: start = $C000,  size = {win}, type = ro, file = %O, fill = yes, fillval = $FF;')
 
-        # Last 4 banks mapped into CPU space on boot (Banks 60-63)
+        # Last 4 physical banks (60-63). ld65 writes memory areas to the ROM in
+        # declaration order, so this order IS the physical bank order, and MMC3
+        # PRG mode 1 hardwires the two fixed CPU windows to *physical* bank
+        # numbers: $8000-$9FFF = the second-to-last bank (62), $E000-$FFFF = the
+        # last bank (63). PRG_80/PRG_FIX therefore MUST be banks 62/63.
+        # PRG_A0/PRG_C0 are the swappable $A000 (R7) / $C000 (R6) window homes —
+        # reached only by bank-switching to their DPCM_NN/BANK_NN neighbours, so
+        # their physical position is immaterial and they take banks 60/61. A
+        # prior layout put PRG_80 first (bank 60), so the engine's absolute reads
+        # of CODE_8000 (period/instrument/macro tables) actually hit bank 62's
+        # $FF fill — every note played garbage/silence (green screen, no crash).
         lines.extend([
-            f'    PRG_80:  start = $8000,  size = {win}, type = ro, file = %O, fill = yes, fillval = $FF;',
             f'    PRG_A0:  start = $A000,  size = {win}, type = ro, file = %O, fill = yes, fillval = $FF;',
             f'    PRG_C0:  start = $C000,  size = {win}, type = ro, file = %O, fill = yes, fillval = $FF;',
+            f'    PRG_80:  start = $8000,  size = {win}, type = ro, file = %O, fill = yes, fillval = $FF;',
             f'    PRG_FIX: start = $E000,  size = ${self.PRG_FIX_SIZE:04X}, type = ro, file = %O, fill = yes, fillval = $FF;',
             '    VECTORS: start = $FFFA,  size = $0006, type = ro, file = %O, fill = yes;',
             '}',
