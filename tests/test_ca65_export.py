@@ -226,39 +226,35 @@ class TestCA65Export(unittest.TestCase):
         self.assertEqual(self.exporter._encode_macro_offset(127), 0x7F)
         self.assertEqual(self.exporter._encode_macro_offset(-128), 0x80)
 
-    def test_compress_macro_skips_loop_candidates_past_byte_255(self):
-        """Regression (#80/EXP-04): $FE's loop_start operand is a single byte.
-        A macro whose only compressing candidate loops starting past byte 255
-        used to be emitted anyway, producing an out-of-range `${loop_start:02X}`
-        (e.g. $10C) that ca65 rejects.
+    # NOTE: the former #80/EXP-04 loop-operand tests
+    # (test_compress_macro_skips_loop_candidates_past_byte_255 /
+    # test_compress_macro_still_loops_when_loop_start_fits_one_byte) were
+    # removed with loop compression itself (#163/NH-21) -- the single-byte
+    # loop_start operand can no longer overflow because no $FE is ever emitted.
+    # The instrument-id half of #80 below is unaffected and stays.
 
-        Construct a 260-value prefix (cycling 0-239, so every value is a valid
-        single byte) followed by a 4x-repeating 2-value tail drawn from a
-        disjoint range (240, 241) that cannot accidentally recur inside the
-        prefix. The tail's own loop candidate anchors at loop_start=260 (past
-        the byte ceiling) and must be skipped; whatever candidate the
-        compressor picks instead (from this pattern or an incidental one in
-        the cycling prefix) must still respect the single-byte operand."""
-        prefix = [i % 240 for i in range(260)]
-        tail = [240, 241] * 4
-        data = prefix + tail
+    def test_compress_macro_never_emits_loop_control_byte(self):
+        # Regression (#163/NH-21): the live EVAL_MACRO evaluator
+        # (nes/audio_engine.asm) only implements the $FF end/sustain control
+        # byte -- it has no branch for $FE (loop) at all, so a $FE byte is
+        # read as ordinary data and the following loop_start operand is
+        # consumed as the next frame's value, desyncing the stream. A merged
+        # run of alternating values (e.g. a 60Hz drum-roll/tremolo re-strike
+        # pattern) used to make loop compression win on size and emit $FE.
+        alternating = [15, 12, 10, 8, 10, 12, 10, 8, 10, 12]
+        compressed = self.exporter._compress_macro(alternating)
+        self.assertNotIn(0xFE, compressed)
+        self.assertEqual(compressed[-1], 0xFF)
+        self.assertEqual(compressed[:-1], alternating)
 
-        result = self.exporter._compress_macro(data)
+    def test_compress_macro_sustain_compression_unaffected(self):
+        # Sustain compression ($FF) must still work for a constant tail.
+        data = [15, 14, 13, 10, 10, 10, 10]
+        compressed = self.exporter._compress_macro(data)
+        self.assertEqual(compressed, [15, 14, 13, 10, 0xFF])
 
-        # Every emitted byte must be a valid single byte.
-        for b in result:
-            self.assertTrue(0 <= b <= 0xFF, f"byte {b} exceeds a single byte")
-        # No loop control byte survives with an out-of-range operand.
-        for idx, b in enumerate(result[:-1]):
-            if b == 0xFE:
-                self.assertLessEqual(result[idx + 1], 0xFF,
-                                     "loop_start operand exceeds a single byte")
-
-    def test_compress_macro_still_loops_when_loop_start_fits_one_byte(self):
-        """A loop candidate whose loop_start fits in a byte is unaffected."""
-        data = [1, 2] * 50  # fully periodic, loop_start collapses to 0
-        result = self.exporter._compress_macro(data)
-        self.assertEqual(result, [1, 2, 0xFE, 0])
+    def test_compress_macro_empty_data(self):
+        self.assertEqual(self.exporter._compress_macro([]), [0xFF])
 
     def test_register_instrument_rejects_the_257th_unique_instrument(self):
         """Regression (#80/EXP-04): CMD_INSTRUMENT's operand is a single byte.
