@@ -1324,5 +1324,75 @@ class TestParallelChunkFailureRecovery(unittest.TestCase):
         self.assertEqual(result, {})  # nothing recovered, but no crash
 
 
+class TestVariationSummarySchemaConsistency(unittest.TestCase):
+    """Both detectors must emit ONE `variations` inner shape so a future consumer
+    reading result['variations'][pid] can't break on a path-dependent key (#172).
+
+    Before this fix the sequential summary carried transposition_range/volume_range
+    while the parallel summary carried exact_matches and never the ranges.
+    """
+
+    EXPECTED_KEYS = {'variation_count', 'exact_match_count',
+                     'transposition_range', 'volume_range'}
+
+    def _events(self):
+        return [{'frame': i, 'note': 60 + (i % 6), 'volume': 100}
+                for i in range(200)]
+
+    def test_both_detectors_emit_same_variation_shape(self):
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        tm = EnhancedTempoMap(initial_tempo=500000)
+        seq = EnhancedPatternDetector(tm, min_pattern_length=3, max_pattern_length=12)
+        par = ParallelPatternDetector(tm, min_pattern_length=3, max_pattern_length=12)
+        seq_summaries = seq.detect_patterns(self._events())['variations']
+        par_summaries = par.detect_patterns(self._events())['variations']
+
+        self.assertGreater(len(seq_summaries), 0)
+        self.assertGreater(len(par_summaries), 0)
+        for summary in list(seq_summaries.values()) + list(par_summaries.values()):
+            self.assertEqual(set(summary.keys()), self.EXPECTED_KEYS)
+
+        # Parallel path is exact-repeats-only: zero variations, neutral ranges.
+        for summary in par_summaries.values():
+            self.assertEqual(summary['variation_count'], 0)
+            self.assertEqual(summary['transposition_range'], (0, 0))
+            self.assertEqual(summary['volume_range'], (0, 0))
+
+
+class TestPatternHashExactKeying(unittest.TestCase):
+    """compress_patterns must dedup on the exact event tuple, not a lossy 64-bit
+    hash() whose collision would silently merge unrelated patterns' references
+    into the wrong definition (#173)."""
+
+    @staticmethod
+    def _pat(events, positions):
+        return {'events': events, 'positions': positions,
+                'exact_matches': positions, 'variations': [], 'length': len(events)}
+
+    def test_hash_pattern_returns_exact_tuple(self):
+        pc = PatternCompressor()
+        events = [{'note': 60, 'volume': 10}, {'note': 62, 'volume': 12}]
+        # The dedup key is the exact (note, volume) tuple, not hash() of it.
+        self.assertEqual(pc._hash_pattern(events), ((60, 10), (62, 12)))
+
+    def test_identical_merge_distinct_stay_separate(self):
+        pc = PatternCompressor()
+        ev_a = [{'note': 60, 'volume': 10}, {'note': 62, 'volume': 12}]
+        ev_b = [{'note': 64, 'volume': 8}]
+        patterns = {
+            'p0': self._pat(ev_a, [0]),
+            'p1': self._pat(list(ev_a), [16]),   # identical events -> merge into p0
+            'p2': self._pat(ev_b, [32]),         # different events -> stays separate
+        }
+        compressed, refs = pc.compress_patterns(patterns)
+        # p1 merged into p0 (not kept as its own definition); p2 distinct.
+        self.assertIn('p0', compressed)
+        self.assertNotIn('p1', compressed)
+        self.assertIn('p2', compressed)
+        # p0 now carries both its own and p1's positions; p2 only its own.
+        self.assertEqual(refs['p0'], [0, 16])
+        self.assertEqual(refs['p2'], [32])
+
+
 if __name__ == '__main__':
     unittest.main()
