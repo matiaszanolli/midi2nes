@@ -1,6 +1,19 @@
 import math
 
 class EnvelopeProcessor:
+    """Engine-driven ADSR/effects model for the pulse channels
+    (docs/APU_ENVELOPE_REFERENCE.md §4/§5).
+
+    INERT SCAFFOLDING (#166): no pipeline stage currently sets ``envelope_type``
+    or passes ``effects``, so on the live path ``get_envelope_value`` always uses
+    the ``default`` (flat) envelope and the vibrato/duty-sequence effects are
+    unreachable. The non-default envelopes and ``effect_definitions`` below are
+    kept deliberately — they are the format a future GM-based producer (the
+    arranger's instrument table is the natural home; NH-19 drum decay would be
+    the first real user) will drive without re-plumbing this class. Do not treat
+    their presence as evidence that timbre variety is wired up today.
+    """
+
     def __init__(self):
         self.envelope_definitions = {
             # Original envelopes (keep these as they are in tests)

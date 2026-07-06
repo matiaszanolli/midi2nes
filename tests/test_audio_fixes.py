@@ -769,5 +769,66 @@ class TestSameFrameNoteCollapse(unittest.TestCase):
         self.assertEqual(len(periods), 1)  # one surviving hit (the louder one)
 
 
+class TestDeadHardwareCodeRemoved(unittest.TestCase):
+    """NOISE_PERIODS (an unused NTSC period table that shadowed
+    docs/APU_NOISE_REFERENCE.md) and the never-read is_midi_velocity flag were
+    dead hardware-adjacent code in the exporter (#165 / NH-23)."""
+
+    def test_noise_periods_table_removed(self):
+        import exporter.exporter_ca65 as mod
+        self.assertFalse(hasattr(mod, 'NOISE_PERIODS'),
+                         "unused NOISE_PERIODS table should be gone (#165)")
+
+    def test_is_midi_velocity_flag_removed(self):
+        import inspect
+        import exporter.exporter_ca65 as mod
+        self.assertNotIn('is_midi_velocity', inspect.getsource(mod),
+                         "never-read is_midi_velocity flag should be gone (#165)")
+
+
+class TestInertArpeggioPlumbingPruned(unittest.TestCase):
+    """The frames-level `arpeggio` boolean (written by process_all_tracks, read
+    by nothing) and the exporter's phantom `frame_data.get('arp')` (no stage ever
+    produces an 'arp' key) were inert plumbing pruned in #166 / NH-24 — without
+    changing any emitted byte (the arp macro stays the neutral offset)."""
+
+    def setUp(self):
+        self.core = NESEmulatorCore()
+
+    def test_pulse_frames_carry_no_arpeggio_key(self):
+        frames = self.core.process_all_tracks(
+            {'pulse1': [{'frame': 0, 'note': 60, 'velocity': 100}]})
+        self.assertGreater(len(frames['pulse1']), 0)
+        for fd in frames['pulse1'].values():
+            self.assertNotIn('arpeggio', fd)
+
+    def test_export_output_ignores_an_arp_key(self):
+        """An injected 'arp' value must not change the emitted assembly — the arp
+        macro is always the neutral offset now that no producer sets it."""
+        mapped = {'pulse1': [{'frame': i, 'note': 60, 'velocity': 100}
+                             for i in range(4)]}
+        frames = self.core.process_all_tracks(mapped)
+        patterns = {'p0': {'events': [{'note': 10, 'volume': 8}], 'positions': [0]}}
+        refs = {'0': ('p0', 0)}
+
+        def export(fr):
+            out = tempfile.mktemp(suffix='.asm')
+            try:
+                CA65Exporter().export_tables_with_patterns(
+                    fr, patterns, refs, out, standalone=False)
+                return Path(out).read_text()
+            finally:
+                if os.path.exists(out):
+                    os.remove(out)
+
+        baseline = export(frames)
+        injected = {
+            ch: ({f: {**fd, 'arp': 7} for f, fd in cf.items()}
+                 if ch == 'pulse1' else cf)
+            for ch, cf in frames.items()
+        }
+        self.assertEqual(export(injected), baseline)
+
+
 if __name__ == '__main__':
     unittest.main()

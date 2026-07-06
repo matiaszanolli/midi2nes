@@ -37,9 +37,6 @@ APU_STATUS = 0x4015
 # the frame pitch is produced from NES_NOTE_TABLE too, so any scale mismatch
 # corrupts the played note (#16).
 
-# Noise period table
-NOISE_PERIODS = [4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068]
-
 
 class CA65Exporter(BaseExporter):
     def __init__(self):
@@ -1064,15 +1061,7 @@ class CA65Exporter(BaseExporter):
                 
             channel_frames = frames[channel]
             max_frame = max(int(f) for f in channel_frames.keys()) if channel_frames else -1
-            
-            # Detect if this channel uses raw MIDI velocity (0-127) to apply power curve
-            max_vol = 0
-            for f_data in channel_frames.values():
-                v = f_data.get('volume', 0)
-                if v > max_vol:
-                    max_vol = v
-            is_midi_velocity = max_vol > 15
-            
+
             current_note = 0
             current_event = None
 
@@ -1138,7 +1127,10 @@ class CA65Exporter(BaseExporter):
                         base_timer = self.midi_note_to_timer_value(note, channel)
                         pitch_val = frame_data.get('pitch', base_timer) if frame_data else base_timer
                         pitch_offset = self._encode_macro_offset(pitch_val - base_timer)
-                        arp_val = self._encode_macro_offset(frame_data.get('arp', 0))
+                        # No pipeline stage emits an 'arp' key, so the arp macro is
+                        # always the neutral offset — still emitted so each instrument
+                        # keeps its 4 macro pointers (vol/arp/pitch/duty) (#166).
+                        arp_val = self._encode_macro_offset(0)
                         current_event = {'note': note, 'dur': 1, 'vol_seq': [vol], 'duty_seq': [duty], 'pitch_seq': [pitch_offset], 'arp_seq': [arp_val]}
                     else:
                         current_event = {'note': 0, 'dur': 1}
@@ -1154,7 +1146,7 @@ class CA65Exporter(BaseExporter):
                             base_timer = self.midi_note_to_timer_value(note, channel)
                             pitch_val = frame_data.get('pitch', base_timer) if frame_data else base_timer
                             pitch_offset = self._encode_macro_offset(pitch_val - base_timer)
-                            arp_val = self._encode_macro_offset(frame_data.get('arp', 0))
+                            arp_val = self._encode_macro_offset(0)  # no 'arp' producer (#166)
                             current_event['vol_seq'].append(vol)
                             current_event['duty_seq'].append(duty)
                             current_event['pitch_seq'].append(pitch_offset)
