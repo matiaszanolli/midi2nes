@@ -1042,7 +1042,12 @@ class CA65Exporter(BaseExporter):
         instrument_defs = [(0, 0, 0, 0)]
 
         channel_events = {ch: [] for ch in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']}
-        
+
+        # Count tone-channel notes re-pitched by the range clamp below so the
+        # loss is reported instead of silently altering pitch (#298/EXP-10).
+        notes_clamped_high = 0  # note > 95 (above B6)
+        notes_clamped_low = 0   # 0 < note < 24 (below C1, tone channels)
+
         for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
             if channel not in frames or not frames[channel]:
                 continue
@@ -1052,6 +1057,7 @@ class CA65Exporter(BaseExporter):
 
             current_note = 0
             current_event = None
+            prev_orig_note = None  # last frame's pre-clamp source note (#298)
 
             for frame_idx in range(max_frame + 1):
                 frame_data = channel_frames.get(str(frame_idx), channel_frames.get(frame_idx))
@@ -1069,6 +1075,7 @@ class CA65Exporter(BaseExporter):
                 # drums to one wrong sample (#67). Tone channels keep the note
                 # ceiling. Either way `note` stays a single byte so the `${note:02X}`
                 # operand below can never widen past two hex digits.
+                orig_note = note
                 if channel == 'dpcm':
                     if note > 255:
                         note = 255
@@ -1083,6 +1090,19 @@ class CA65Exporter(BaseExporter):
                     # `noise`'s "note" is a 4-bit period index, not a MIDI note —
                     # clamping it here would corrupt the drum pitch.
                     note = 24
+
+                # Report a tone-channel re-pitch once per distinct source note
+                # (keyed on the pre-clamp value, not the collapsed played note)
+                # so a sustained note counts once but two adjacent out-of-range
+                # notes that clamp to the same boundary each count (#298/EXP-10).
+                # dpcm's "note" is a sample id, not a pitch, so it is excluded.
+                if (channel != 'dpcm' and note != orig_note
+                        and orig_note != prev_orig_note):
+                    if orig_note > 95:
+                        notes_clamped_high += 1
+                    else:
+                        notes_clamped_low += 1
+                prev_orig_note = orig_note
 
                 if note != current_note:
                     if current_event is not None:
@@ -1282,6 +1302,17 @@ class CA65Exporter(BaseExporter):
             
         with open(output_path, 'w') as f:
             f.write('\n'.join(lines))
-            
+
+        # Expose the clamp tally for callers/tests; report it so an out-of-range
+        # song does not get silently re-pitched (#298/EXP-10).
+        self.notes_clamped = {'high': notes_clamped_high, 'low': notes_clamped_low}
+        total_clamped = notes_clamped_high + notes_clamped_low
+        if total_clamped:
+            print(
+                f"⚠ {total_clamped} note(s) clamped to the NES tone range (24-95): "
+                f"{notes_clamped_high} above B6, {notes_clamped_low} below C1. "
+                "Pitch may differ from the MIDI file."
+            )
+
         print(f"✅ Macro Bytecode export complete: {output_path}")
         return output_path
