@@ -214,7 +214,10 @@ class TestROMCompilationErrorHandling:
         assert result == False
 
     def test_compilation_with_invalid_assembly(self, temp_dir):
-        """Test compilation failure with invalid assembly."""
+        """Test compilation failure with invalid assembly. The class is
+        @requires_cc65, so ca65/ld65 are present; compile_rom() catches every
+        failure and returns False (compiler.py:243-260), so it never raises —
+        assert the failure directly and that no partial ROM is left (#299/REG-15)."""
         project_dir = temp_dir / "project"
         project_dir.mkdir()
 
@@ -225,16 +228,10 @@ class TestROMCompilationErrorHandling:
 
         rom_output = temp_dir / "output.nes"
 
-        try:
-            result = compile_rom(project_dir, rom_output)
-            if result:
-                # CC65 might be lenient, but this should fail
-                pass
-            else:
-                assert result == False
-        except Exception:
-            # If CC65 isn't available, that's okay for this test
-            pytest.skip("CC65 not installed")
+        assert compile_rom(project_dir, rom_output) is False, \
+            "invalid assembly must fail to compile"
+        assert not rom_output.exists(), \
+            "a failed compile must not leave a partial ROM"
 
 
 @pytest.mark.slow
@@ -292,12 +289,16 @@ class TestROMValidationMetrics:
 
 
 @pytest.mark.slow
+@pytest.mark.requires_cc65
 @pytest.mark.integration
 class TestPipelineFailureRecovery:
     """Test that pipeline handles failures gracefully."""
 
     def test_compilation_failure_without_rom_output(self, temp_dir):
-        """Test that compilation failure doesn't create broken ROM."""
+        """Test that compilation failure doesn't create broken ROM. Gated on
+        cc65 so the invalid build actually reaches ca65/ld65; compile_rom()
+        returns False on failure without raising, so assert the failure and that
+        no ROM was written (#299/REG-15)."""
         project_dir = temp_dir / "project"
         project_dir.mkdir()
 
@@ -309,14 +310,7 @@ class TestPipelineFailureRecovery:
         rom_output = temp_dir / "output.nes"
         assert not rom_output.exists()
 
-        try:
-            result = compile_rom(project_dir, rom_output)
-            # Either compilation fails or ROM is created but might be invalid
-            if result:
-                # If ROM was created, it should be testable
-                assert rom_output.exists()
-            else:
-                # Compilation failed as expected
-                pass
-        except Exception:
-            pytest.skip("CC65 not installed")
+        assert compile_rom(project_dir, rom_output) is False, \
+            "an invalid project must fail to compile"
+        assert not rom_output.exists(), \
+            "a failed compile must not leave a broken ROM behind"
