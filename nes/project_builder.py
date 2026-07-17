@@ -13,6 +13,13 @@ from mappers import BaseMapper, get_mapper
 from core.exceptions import ExportError
 
 
+# Leading ld65-comment marker written into nes.cfg recording the mapper a
+# project was prepared with, so `compile` can recover it authoritatively
+# (#297/MAP-2026-07-06-1). '#' is an ld65 config line comment, ignored by the
+# linker. The value is the lowercase mapper name ('nrom'/'mmc1'/'mmc3').
+NES_CFG_MAPPER_MARKER = "# midi2nes-mapper: "
+
+
 class NESProjectBuilder:
     """
     Prepares a complete NES project structure for CC65 compilation.
@@ -305,8 +312,14 @@ seq_cmd_instrument:
         if engine_src.exists():
             (self.project_path / "audio_engine.asm").write_text(engine_src.read_text())
             
-        # Linker Configuration
-        (self.project_path / "nes.cfg").write_text(self.mapper.generate_linker_config())
+        # Linker Configuration. Stamp the mapper name as a leading ld65 comment
+        # so `compile` can recover the exact mapper this project was prepared
+        # with -- a NROM/MMC1 direct-export music.asm carries no engine marker,
+        # so without this the compile step defaults to MMC3 and rejects a valid
+        # NROM ROM with a misleading size mismatch (#297/MAP-2026-07-06-1, #269).
+        nes_cfg = (f"{NES_CFG_MAPPER_MARKER}{self.mapper.name.lower()}\n"
+                   + self.mapper.generate_linker_config())
+        (self.project_path / "nes.cfg").write_text(nes_cfg)
             
         # Generate main.asm
         main_content = self._generate_main_asm(is_bytecode)

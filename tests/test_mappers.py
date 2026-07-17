@@ -7,12 +7,16 @@ three things a wrong mapper would ship unguarded:
   3. Capacity-overrun detection (raise / escalate, never silent truncation).
 """
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from mappers.factory import MapperFactory, get_mapper
 from mappers.nrom import NROMMapper
 from mappers.mmc1 import MMC1Mapper
 from mappers.mmc3 import MMC3Mapper
+from nes.project_builder import NESProjectBuilder, NES_CFG_MAPPER_MARKER
+from main import _prepared_mapper_name_from_cfg, resolve_mapper
 
 ALL_MAPPERS = [NROMMapper, MMC1Mapper, MMC3Mapper]
 
@@ -367,6 +371,48 @@ class TestMMC3FixedBankOrdering(unittest.TestCase):
         # windows only land on banks 62/63 if the count is exactly 64.
         regions = self._ordered_prg_regions(MMC3Mapper().generate_linker_config())
         self.assertEqual(len(regions), 64)
+
+
+class TestPreparedMapperRecovery(unittest.TestCase):
+    """#297/MAP-2026-07-06-1: `compile` must recover the mapper `prepare` built
+    from nes.cfg, so a marker-less NROM/MMC1 direct-export project is not
+    mis-resolved to the mmc3 default and rejected with a size mismatch. Also
+    gives `prepare --mapper auto` a working compile (#269)."""
+
+    def _prepare(self, mapper_name):
+        proj = tempfile.mkdtemp()
+        music = Path(proj) / "src.asm"
+        music.write_text('.segment "RODATA"\n .byte 0, 1\n')
+        builder = NESProjectBuilder(proj, mapper=get_mapper(mapper_name))
+        self.assertTrue(builder.prepare_project(str(music)))
+        return Path(proj)
+
+    def test_nes_cfg_carries_mapper_marker(self):
+        for name in ("nrom", "mmc1", "mmc3"):
+            proj = self._prepare(name)
+            first = (proj / "nes.cfg").read_text().splitlines()[0]
+            self.assertEqual(first, f"{NES_CFG_MAPPER_MARKER}{name}")
+
+    def test_recovery_reads_each_mapper(self):
+        for name in ("nrom", "mmc1", "mmc3"):
+            proj = self._prepare(name)
+            self.assertEqual(
+                _prepared_mapper_name_from_cfg(proj / "nes.cfg"), name)
+
+    def test_nrom_project_resolves_to_nrom_not_mmc3(self):
+        # The exact bug: without cfg recovery this marker-less NROM project
+        # resolves to the mmc3 default and mis-sizes at compile time.
+        proj = self._prepare("nrom")
+        recovered = _prepared_mapper_name_from_cfg(proj / "nes.cfg")
+        choice = recovered if recovered else "mmc3"  # mirrors run_compile
+        mapper = resolve_mapper(choice, str(proj / "music.asm"))
+        self.assertEqual(mapper.name, "NROM")
+
+    def test_missing_marker_returns_none(self):
+        # Older projects with no marker fall back to --mapper (no crash).
+        proj = Path(tempfile.mkdtemp())
+        (proj / "nes.cfg").write_text("MEMORY {}\nSEGMENTS {}\n")
+        self.assertIsNone(_prepared_mapper_name_from_cfg(proj / "nes.cfg"))
 
 
 if __name__ == "__main__":

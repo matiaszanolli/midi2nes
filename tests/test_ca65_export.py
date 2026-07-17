@@ -1063,5 +1063,33 @@ class TestMMC1BankSwitchedRealBuild(unittest.TestCase):
                           f"RODATA bank segment did not run at CPU address $8000: {line}")
 
 
+class TestNoteClampReporting(unittest.TestCase):
+    """#298/EXP-10: tone-channel notes clamped to the NES range (24-95) by the
+    macro-bytecode path must be counted so the re-pitch is reported, not silent."""
+
+    def _export(self, notes):
+        frames = {'pulse1': {str(i): {'note': n, 'volume': 8, 'control': 0x80}
+                             for i, n in enumerate(notes)}}
+        exp = CA65Exporter()
+        out = Path(tempfile.mktemp(suffix='.asm'))
+        # Non-empty patterns selects the macro-bytecode path that clamps.
+        exp.export_tables_with_patterns(frames, {'x': 1}, {}, str(out))
+        out.unlink(missing_ok=True)
+        return exp.notes_clamped
+
+    def test_in_range_notes_not_counted(self):
+        self.assertEqual(self._export([60, 67, 72]), {'high': 0, 'low': 0})
+
+    def test_above_b6_counted_high(self):
+        self.assertEqual(self._export([100, 96])['high'], 2)
+
+    def test_below_c1_counted_low(self):
+        self.assertEqual(self._export([10, 23])['low'], 2)
+
+    def test_sustained_out_of_range_note_counted_once(self):
+        # A single note held across many frames is one re-pitch, not one per frame.
+        self.assertEqual(self._export([100, 100, 100, 100]), {'high': 1, 'low': 0})
+
+
 if __name__ == '__main__':
     unittest.main()

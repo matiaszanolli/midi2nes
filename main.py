@@ -16,7 +16,7 @@ except ImportError:
 from tracker.track_mapper import assign_tracks_to_nes_channels
 from nes.emulator_core import NESEmulatorCore, frames_to_events
 from arranger import arrange_for_nes
-from nes.project_builder import NESProjectBuilder
+from nes.project_builder import NESProjectBuilder, NES_CFG_MAPPER_MARKER
 from nes.song_bank import SongBank
 from exporter.exporter_ca65 import CA65Exporter
 from tracker.pattern_detector import (
@@ -212,6 +212,27 @@ def _direct_export_packed_mapper_name(music_asm_path):
         marker = "; Direct export bank-packed for "
         if line.startswith(marker):
             return line[len(marker):].strip()
+    return None
+
+
+def _prepared_mapper_name_from_cfg(nes_cfg_path):
+    """Return the mapper name a project was prepared with, read from the
+    leading marker NESProjectBuilder stamps into nes.cfg, or None.
+
+    nes.cfg is the authoritative record of what `prepare` built. A NROM (or
+    MMC1) direct-export project's music.asm carries no engine/bank marker, so
+    without this `compile` cannot tell it apart from an MMC3 project and its
+    --mapper default (mmc3) mis-sizes it (#297/MAP-2026-07-06-1). Recovering
+    the mapper from nes.cfg makes the split prepare/compile flow round-trip for
+    every mapper, and also gives `prepare --mapper auto` a matching compile
+    invocation (#269/PL-08).
+    """
+    path = Path(nes_cfg_path)
+    if not path.exists():
+        return None
+    for line in path.read_text().splitlines():
+        if line.startswith(NES_CFG_MAPPER_MARKER):
+            return line[len(NES_CFG_MAPPER_MARKER):].strip() or None
     return None
 
 
@@ -427,15 +448,19 @@ def run_compile(args):
         print(f"[ERROR] Prepared project directory not found: {project_path}")
         sys.exit(1)
 
-    # The exact-size check (#28/M-8) and post-process step need the same
-    # mapper the project was actually prepared with (#217/MAP-6) -- `compile`
-    # has no way to recover that choice from the project directory alone, so
-    # --mapper must match whatever `prepare --mapper` used. Defaults to mmc3,
-    # matching prepare's own default. Passing the project's own music.asm lets
-    # resolve_mapper catch a --mapper that can't run this project's bytecode
-    # engine (e.g. --mapper nrom against an MMC3-bytecode-built project).
+    # The exact-size check (#28/M-8) and post-process step need the same mapper
+    # the project was actually prepared with (#217/MAP-6). `prepare` stamps that
+    # mapper into nes.cfg, so recover it from there authoritatively -- a marker-
+    # less NROM/MMC1 music.asm would otherwise fall to the mmc3 default and be
+    # rejected with a misleading size mismatch (#297/MAP-2026-07-06-1). This
+    # also gives a `prepare --mapper auto` project a working compile (#269).
+    # Fall back to --mapper (default mmc3) for older projects with no marker.
+    # music.asm is still passed so resolve_mapper can catch a mapper that can't
+    # run this project's bytecode engine.
+    cfg_mapper = _prepared_mapper_name_from_cfg(project_path / "nes.cfg")
+    mapper_choice = cfg_mapper if cfg_mapper else get_mapper_choice(args)
     try:
-        mapper = resolve_mapper(get_mapper_choice(args), str(project_path / "music.asm"))
+        mapper = resolve_mapper(mapper_choice, str(project_path / "music.asm"))
     except ValueError as e:
         print(f"[ERROR] {e}")
         sys.exit(1)
