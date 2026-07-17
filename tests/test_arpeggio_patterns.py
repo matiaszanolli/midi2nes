@@ -146,3 +146,45 @@ class TestArpeggioPatterns(unittest.TestCase):
             self.assertEqual(len(result), len(self.major_triad))
             # Check all notes are present exactly once
             self.assertEqual(sorted(result), sorted(self.major_triad))
+
+    def test_random_pattern_is_deterministic(self):
+        """#92: 'random' must be reproducible so a MIDI builds the same ROM
+        twice. The same chord always arpeggiates identically."""
+        a = apply_arpeggio_pattern(self.major_triad, "random")
+        b = apply_arpeggio_pattern(self.major_triad, "random")
+        self.assertEqual(a, b)
+        # Different chords generally get different orders (not all identity).
+        other = apply_arpeggio_pattern(self.seventh, "random")
+        self.assertEqual(sorted(other), sorted(self.seventh))
+
+
+class TestArrangerArpStyleParity(unittest.TestCase):
+    """#92/ARR-09: the --arranger front-end's ArpStyle / _order_arp_notes must
+    implement every documented pattern by delegating to the one canonical
+    apply_arpeggio_pattern, instead of silently falling through to up-order for
+    down_up/random."""
+
+    def setUp(self):
+        from arranger.voice_allocator import ArpStyle
+        self.ArpStyle = ArpStyle
+        self.major_triad = [60, 64, 67]
+
+    def _order(self, style):
+        from arranger.voice_allocator import VoiceAllocator
+        return VoiceAllocator(arp_style=style)._order_arp_notes(self.major_triad)
+
+    def test_every_style_matches_canonical(self):
+        for style in self.ArpStyle:
+            with self.subTest(style=style.name):
+                self.assertEqual(
+                    self._order(style),
+                    apply_arpeggio_pattern(list(self.major_triad), style.value))
+
+    def test_down_up_no_longer_falls_through_to_up(self):
+        # The exact regression: DOWN_UP used to return plain up-order.
+        self.assertEqual(self._order(self.ArpStyle.DOWN_UP), [67, 64, 60, 64, 67])
+
+    def test_random_style_shuffles_and_is_deterministic(self):
+        r = self._order(self.ArpStyle.RANDOM)
+        self.assertEqual(sorted(r), sorted(self.major_triad))
+        self.assertEqual(r, self._order(self.ArpStyle.RANDOM))
