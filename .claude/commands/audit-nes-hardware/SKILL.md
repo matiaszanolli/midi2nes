@@ -189,10 +189,18 @@ period the pulse sounds one octave above the triangle (`docs/APU_PITCH_TABLE_REF
   produces `temp_pitch`/`temp_pitch_hi` (sign-extended), which is added via
   `adc temp_pitch` / `adc temp_pitch_hi` directly onto `ntsc_period_low`/`_high` (or
   the triangle table) before `sta $4002/$4003` etc., with **no re-clamp to `$7FF`**
-  afterward. This is currently inert — no pipeline stage ever emits a nonzero pitch
-  macro delta (see NH-24, Dimension 7) — but is a latent 11-bit-overflow trap
-  structurally identical to the one already fixed in the dead duplicate core. Flag as
-  a verify-only item unless you can show a live producer of nonzero `pitch_seq`.
+  afterward. A live nonzero producer of `pitch_seq` now exists: the CA65 macro serializer
+  emits `pitch_offset = _encode_macro_offset(pitch_val - base_timer)`
+  (`exporter/exporter_ca65.py`) for pulse notes near the top of the table (~96–108),
+  where the frame `pitch` (clamped to note 108 by `get_channel_pitch` in
+  `nes/pitch_table.py`) is differenced against a base timer whose note the serializer
+  clamped to 95 — yielding a nonzero (negative) delta. A recent audit verified the
+  runtime reconstruction (`ntsc_period` + `temp_pitch` before `sta $4002/$4003`)
+  stays inside the 11-bit range for the highest producible note, so this is in-range
+  (correct, not a bug) — but the add is still structurally identical to the
+  11-bit-overflow trap already fixed in the dead duplicate core, with no post-add
+  re-clamp to `$7FF`. Re-verify the reconstruction stays ≤ `$7FF`, and flag HIGH if
+  any producer ever widens the pitch delta past the 11-bit ceiling.
 - The `t < 8` silence quirk (`docs/APU_PULSE_REFERENCE.md` §3 / `docs/NES_APU_REFERENCE.md`
   §2.1): timers under 8 silence the channel; confirmed floored at 8 (above). Flag if
   any new code path can still push a nonzero pitch below 8.
@@ -287,15 +295,19 @@ confirm a clamp exists on the path from Python value to emitted byte:
 - timers → `$0–$7FF` floored at `8` (Dim 5), volumes/duty → 4-bit / 2-bit masks
   (Dim 1/6), noise index → `0–15` (Dim 3), dmc level → not applicable post-fix (Dim 4;
   the "level" is a trigger gate now, not a register value).
-- **Live unclamped-add sites to re-verify** (both currently fed only zero deltas per
-  NH-24, but structurally unguarded): `nes/audio_engine.asm`'s pitch macro add
+- **Live unclamped-add sites to re-verify** (`nes/audio_engine.asm`, both structurally
+  unguarded downstream of the table's own clamp): the pitch macro add
   (`adc temp_pitch` / `adc temp_pitch_hi` onto the period tables, no post-add clamp to
-  `$7FF`) and its arpeggio add (`clc; lda current_note, x; adc temp_arp; sta
-  temp_note` — an 8-bit add with no range check before `temp_note` is used to index
-  the 128-entry period tables via `ldy temp_note`). Both are additive steps
-  *downstream* of the table's own clamp, matching the pattern already fixed once in
-  the dead duplicate core (#38/NH-10) — HIGH if either ever receives a live nonzero
-  input without a guard being added first.
+  `$7FF`) **now receives live nonzero deltas** — the CA65 serializer emits nonzero
+  `pitch_seq` offsets for pulse notes ~96–108 (Dim 5), so re-verify the post-add
+  period actually stays ≤ `$7FF` in practice (a recent audit found it in-range) and
+  flag HIGH the moment a producer widens the delta past the 11-bit ceiling. The
+  arpeggio add (`clc; lda current_note, x; adc temp_arp; sta temp_note` — an 8-bit add
+  with no range check before `temp_note` indexes the 128-entry period tables via
+  `ldy temp_note`) is still fed only the neutral zero offset (`_encode_macro_offset(0)`,
+  no `arp` producer, #166) — HIGH if it ever receives a live nonzero input without a
+  guard being added first. Both match the overflow pattern already fixed once in the
+  dead duplicate core (#38/NH-10).
 
 ## Cross-Dimension Dedup
 One root cause (e.g. the shared triangle/pulse pitch table, now fixed) may surface

@@ -28,9 +28,9 @@ that the MIDI clearly intended.
 > of the issues this audit used to lead with (#64–#74, #140). The dimensions below
 > describe the **current** (fixed) behavior and ask you to verify the fix holds up
 > under edge cases, rather than re-discovering the original bugs. #76 remains
-> genuinely open (Dimension 6). #75 is marked CLOSED on GitHub, but its fix (the
-> `length_reg` rounding commit) has **not** merged to `master`, so on this working
-> tree the bug is still live — verify Dimension 4 against the code, not the tracker.
+> genuinely open (Dimension 6). #75 (the `length_reg` rounding) was closed on GitHub,
+> then regressed, and was re-fixed on this tree as #295 (commit `d392ef6`) —
+> `_place_sample` now ceils, so Dimension 4's item is fixed (#295); verify it holds.
 
 ## Parameters (from $ARGUMENTS)
 - `--focus <dims>` — comma-separated dimension numbers (e.g. `--focus 1,4`). Default: all.
@@ -115,17 +115,17 @@ changed in the recent fix sprint — the following are still open, unverified cl
 
 ### Dimension 4: Sample size / address / DMC range constraints
 `dpcm_sampler/dpcm_packer.py` computes the `$4012`/`$4013` register values:
-- **Still live on `master` (#75/D-12 is CLOSED on GitHub but its fix is unmerged
-  here)**: `_place_sample` (lines 77-89) computes
-  `address_reg = (start_address - 0xC000) // 64` (line 78) and
-  `length_reg = (sample['size'] - 1) // 16` (line 79). Verify against
-  `docs/APU_DMC_REFERENCE.md`: address = `$C000 + A*64`, length = `(L*16)+1` bytes.
-  `length_reg` still **floors** rather than rounding up — a `size` not of the form
-  `16k+1` makes the round-trip lossy: the engine reads `(length_reg*16)+1` bytes,
-  which under-reads the true tail of the sample (truncated playback) for anything
-  not exactly `16k+1` bytes. The rounding+`.res`-padding fix that closed #75 lives
-  on an unmerged branch, so `master` still floors and is unguarded; confirm against
-  the current code and reopen #75 (or land the fix) if so.
+- **Fixed (#75 → regressed → #295/DP-01) — verify it holds**: `_place_sample`
+  (lines 77-98) computes `dpcm_address_val = (start_address - 0xC000) // 64`
+  (line 78) and `dpcm_length_val = max(0, (sample['size'] + 14) // 16)` (line 88).
+  Verify against `docs/APU_DMC_REFERENCE.md`: address = `$C000 + A*64`, length =
+  `(L*16)+1` bytes. `length_reg` now uses **ceiling** division (`(size + 14) // 16`
+  = ceil((size-1)/16)) so a `size` not of the form `16k+1` still gets its full tail
+  read: the engine reads `(length_reg*16)+1` bytes and the `.align 64` gap after
+  each sample makes the few extra bytes safe zero-pad, not neighbouring data. This
+  is the flooring bug originally closed as #75 that regressed and was re-fixed here
+  as #295 (commit `d392ef6`); confirm the ceiling still holds and that `size` stays
+  bounded to 4081 so the 8-bit register can't overflow.
 - **Fixed (verify)**: the 4081-byte oversized-sample path no longer aborts the pack.
   `DpcmPacker.add_sample` (lines 13-47) now truncates to 4081 bytes when
   `truncate=True` (lines 31-36) instead of always raising `ValueError` — and the
@@ -246,7 +246,7 @@ changed in the recent fix sprint — the following are still open, unverified cl
 - The hardcoded default `'dpcm_index.json'` path means a missing file still raises
   inside `_load_sample_index` (`enhanced_drum_mapper.py:216-219`,
   `FileNotFoundError`). This is **not caught** in the standalone `map` subcommand
-  (`main.py:run_map`, lines 74-82) — that path still crashes with a raw traceback,
+  (`main.py:run_map`, lines 104-112; the mapper call is line 110) — that path still crashes with a raw traceback (#256),
   unlike every other step-by-step guard in `main.py` (`load_json_stage`, #120).
   `run_full_pipeline` fares better only because its whole body is wrapped in one
   outer `try/except Exception` (`main.py:~992-997`) that turns any such crash into
@@ -255,17 +255,21 @@ changed in the recent fix sprint — the following are still open, unverified cl
   *packer* path (`main.py:run_export`/`run_full_pipeline`), which explicitly
   handles a missing index file gracefully ("No dpcm_index.json found, skipping").
   Assess whether `run_map` should get the same guard as the packer path.
-- **Fixed, verify (#9, #66, #67)**: `dpcm_events` carry `{frame, sample_id,
-  velocity}`; the frame-generation stage
-  (`nes/emulator_core.py:188-212`) now encodes `note = sample_id + 1` (0 stays the
-  rest sentinel) with a byte ceiling `min(255, sample_id + 1)` (line 209) rather
-  than the old 0-95 tone-note clamp that used to collapse every id ≥ 94 to one
-  sample (#67). The exporter (`exporter/exporter_ca65.py:263-273`, `~975-991`)
-  applies the same byte-ceiling logic for the `'dpcm'` channel specifically
-  (clamped to 255, not 95) and the generated trigger routine
-  (`nes/project_builder.py:~692-716`) recovers `sample_id = note - 1`. Confirm this
-  round-trip still holds for `sample_id` values near the 254 ceiling
-  (`sample_id + 1` must stay ≤ 255).
+- **Fixed, verify (#9, #66, #67, #200/D-14, #254)**: `dpcm_events` carry `{frame,
+  sample_id, velocity}`; the frame-generation stage (`nes/emulator_core.py:188-235`)
+  remaps the raw catalog `sample_id`s a song actually references to a dense,
+  song-local `0..N-1` range (`dense_id_of`, line 218) and encodes
+  `note = min(255, dense_id + 1)` (line 227; 0 stays the rest sentinel), emitting a
+  `dpcm_sample_map` (dense_id → catalog_id) side table (lines 232-235) so the pack
+  stage can resolve the real sample files. This replaced both the old 0-95 tone-note
+  clamp (#67) and the raw `min(255, sample_id + 1)` that aliased every catalog id
+  ≥ 255 onto note 255 (#200/D-14); the `MAX_SAFE_SAMPLE_ID = 254` guard that used to
+  pre-empt the remap and route all shipped-catalog drums to noise is also gone (#254).
+  The exporter (`exporter/exporter_ca65.py`) applies the same byte-ceiling for the
+  `'dpcm'` channel and the generated trigger routine (`nes/project_builder.py`)
+  recovers the sample via `note - 1`. Confirm the round-trip holds when a song
+  references near 254 *distinct* drums (`dense_id + 1` must stay ≤ 255), not merely
+  when a raw catalog id is near 254.
 
 ## Skeptical checklist
 - [ ] Does an unmapped/rare GM drum note (e.g. 47, mid tom) still resolve through
@@ -276,8 +280,8 @@ changed in the recent fix sprint — the following are still open, unverified cl
 - [ ] Do `length`/`data`/`frequency` ever come from the real index, or always
       defaults — and does that still matter now that the dead similarity/dedup
       code that depended on `data` has been removed?
-- [ ] Is `length_reg = (size-1)//16` still lossy for a sample not sized `16k+1`
-      (#75 closed on GitHub, but its fix is unmerged so `master` still floors)?
+- [ ] Does `length_reg = max(0, (size+14)//16)` (ceiling) read the full sample tail
+      for a sample not sized `16k+1` (#75 regressed, re-fixed as #295 — verify)?
 - [ ] Does `DrumMapperConfig.from_file` still raise an uncaught `TypeError` on a
       stray config key (#76, unfixed)?
 - [ ] Can an evicted sample id still be reused now that `_next_id` is monotonic —
@@ -286,8 +290,8 @@ changed in the recent fix sprint — the following are still open, unverified cl
       `metadata['size']`, including the up-front `pending_size` check?
 - [ ] When a real noise track exists, are drum noise-fallback hits still discarded
       — and is the new warning message accurate?
-- [ ] Does the `dpcm` channel's `sample_id`/`velocity` still survive correctly into
-      `music.asm` at the top of the id range (near 254)?
+- [ ] Does the `dpcm` channel's dense-remapped id survive correctly into `music.asm`
+      when a song references near 254 *distinct* drums (`dense_id + 1` must stay ≤ 255)?
 - [ ] Does packing only referenced samples (#140) ever leave a frame pointing at an
       id that wasn't packed (a `$00` placeholder misread as a real sample)?
 

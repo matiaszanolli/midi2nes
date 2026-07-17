@@ -172,7 +172,7 @@ Check on each audit:
 - The ordering is genuinely smallest-first by capacity; the "nothing fits" branch
   raises with the largest mapper's capacity.
 - `auto_select()` **is** now reached from the CLI (#217/MAP-6). `resolve_mapper()`
-  (`main.py:218`) — called from `run_prepare()`, `run_compile()`, and the full pipeline —
+  (`main.py:239`) — called from `run_prepare()`, `run_compile()`, and the full pipeline —
   maps `--mapper auto` to `MapperFactory.auto_select(estimate_music_data_size(...))`,
   picking the smallest mapper that fits. The size-based auto-selection machinery is no
   longer test-only, so verify `auto_select`'s ordering and the forced-mapper overrides
@@ -232,7 +232,7 @@ of files `ld65` can actually link with the chosen mapper:
 - `compile_rom()`'s broad `except Exception` (`compiler/compiler.py:252-260`) prints
   `f"[ERROR] Compilation failed: {e}"`, returns `False`, and now calls
   `traceback.print_exc()` under `--verbose` (#32, fixed). Both callers thread the flag:
-  `run_compile()` (`main.py:447`) and the full pipeline (`main.py:1024`) pass `verbose=...`
+  `run_compile()` (`main.py:472`) and the full pipeline (`main.py:1057`) pass `verbose=...`
   to `compile_rom()`. Verify the traceback actually surfaces under `--verbose`, and that
   the typed `CompilationError`/`ValidationError` paths still print a clean one-liner
   without a stack dump.
@@ -246,9 +246,16 @@ of files `ld65` can actually link with the chosen mapper:
   paths, and `_run_post_process`'s `shell=True` only ever runs the static mapper-constant
   text it documents, never caller-derived strings.
 - The `--mapper` flag now exists (`export`/`prepare` accept `auto|nrom|mmc1|mmc3`,
-  `compile` accepts `nrom|mmc1|mmc3`; all default `mmc3`), and `compile` re-resolves the
-  mapper from the project's own `music.asm` so its size/post-process steps match what
-  `prepare` built (`run_compile`, `main.py:438`).
+  `compile` accepts `nrom|mmc1|mmc3`; all default `mmc3`). `prepare` stamps the built
+  mapper into `nes.cfg` as a leading ld65 comment (`NES_CFG_MAPPER_MARKER`,
+  `nes/project_builder.py:20`, written at `nes/project_builder.py:320`), and
+  `compile` recovers it authoritatively via `_prepared_mapper_name_from_cfg()`
+  (`main.py:218-236`), falling back to `--mapper` only for older marker-less projects —
+  so a marker-less NROM/MMC1 project no longer defaults to `mmc3` and gets mis-sized
+  (#297, fixed — verify it holds), and a `prepare --mapper auto` project now compiles
+  (#269, fixed — verify it holds). The recovered name is still threaded through
+  `resolve_mapper()` with the project's own `music.asm` so a mapper that can't run this
+  project's bytecode engine is rejected cleanly (`run_compile`, `main.py:460-463`).
 - Cross-reference (not owned by this audit): REG-10 (#128) — the ROM-compile integration
   tests in `tests/test_rom_validation_integration.py` used to `pytest.skip()` on a real
   `compile_rom()` failure instead of failing; this is now **closed** (#128). Re-verify the
