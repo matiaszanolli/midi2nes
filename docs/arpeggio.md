@@ -28,11 +28,13 @@
 - Good for heroic or triumphant musical moments
 - Longer pattern provides more harmonic richness
 
-#### "random" Pattern: Random order of all notes
-- Creates unpredictable, modern sound
+#### "random" Pattern: Deterministic shuffle of all notes
+- Creates unpredictable-sounding, modern texture
 - Useful for mysterious or atmospheric sections
 - Avoids predictable melodic patterns
 - Each note appears exactly once per cycle
+- The order is **seeded from the chord's notes**, not truly random, so a given
+  chord always arpeggiates the same way and ROM builds stay reproducible (#92)
 
 ### NES-Specific Considerations
 
@@ -60,3 +62,13 @@
 ## Implementation Notes
 
 Each pattern is designed to work within NES hardware constraints while providing maximum musical expressiveness. The pattern system allows for real-time arpeggio generation without requiring pre-computed sequences, saving both ROM space and processing time.
+
+All five patterns are implemented once in `tracker/track_mapper.py`
+(`apply_arpeggio_pattern`); the `--arranger` front-end's `ArpStyle` /
+`VoiceAllocator._order_arp_notes` delegates to that same function so the two
+front-ends never diverge (#92).
+
+**Live-path note:** `arrange_for_nes` does not yet expose `arp_style`, so the
+`--arranger` path currently always uses `up`. The other patterns are reachable
+via the legacy front-end's chord/style selection (`get_arpeggio_pattern`) and by
+constructing a `VoiceAllocator(arp_style=…)` directly.

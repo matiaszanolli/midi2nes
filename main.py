@@ -833,8 +833,16 @@ def run_full_pipeline(args):
             pattern_loss_warning = None
             if use_patterns:
                 print("[4/7] Detecting patterns for compression...")
+                # Analysis-only tempo map (#98/TEMPO-06): the detector requires a
+                # tempo_map constructor arg, but the events below are already
+                # frame-indexed (tempo was applied upstream), so this map carries
+                # no real tempo changes and the default ticks_per_beat is
+                # irrelevant. ParallelPatternDetector never reads it, and the
+                # sequential fallback below sets analyze_tempo=False, so it never
+                # feeds frame timing -- do not derive timing from it. Mirrors the
+                # documented construction in run_detect_patterns (#119).
                 tempo_map = EnhancedTempoMap(initial_tempo=500000)
-                
+
                 # Convert frames to events for pattern detection (shared
                 # extractor skips the dpcm_sample_map side table — #261).
                 events = frames_to_events(frames)

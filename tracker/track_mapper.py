@@ -96,6 +96,21 @@ def apply_arpeggio_fallback(events, max_notes=3, style="default"):
     return sorted(arpeggiated, key=lambda x: x['frame'])
 
 
+def _deterministic_arp_order(notes):
+    """Reproducible 'random' arpeggio order (#92).
+
+    A plain random.sample() would make the same chord arpeggiate differently on
+    every run, so two builds of one MIDI would produce different ROMs. Seed a
+    local RNG from the note values instead: the order is unpredictable across
+    chords but identical for the same chord, and every note still appears
+    exactly once.
+    """
+    seed = 0
+    for n in notes:
+        seed = seed * 131 + int(n)
+    return random.Random(seed).sample(list(notes), len(notes))
+
+
 def apply_arpeggio_pattern(notes, pattern="up"):
     """
     Apply an arpeggio pattern to a list of notes.
@@ -119,9 +134,9 @@ def apply_arpeggio_pattern(notes, pattern="up"):
         "down": lambda notes: list(reversed(notes)),        # [G, E, C]
         "up_down": lambda notes: notes + list(reversed(notes[1:-1])),  # [C, E, G, E]
         "down_up": lambda notes: list(reversed(notes)) + notes[1:],    # [G, E, C, E, G]
-        "random": lambda notes: random.sample(notes, len(notes)),  # Random order, no duplicates
+        "random": _deterministic_arp_order,                 # seeded, no duplicates
     }
-    
+
     return PATTERNS.get(pattern, PATTERNS["up"])(notes)
 
 def detect_chord(notes):

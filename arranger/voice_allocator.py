@@ -42,11 +42,14 @@ class FrameAllocation:
 
 
 class ArpStyle(Enum):
-    """Arpeggiation patterns."""
-    UP = "up"           # Low to high
-    DOWN = "down"       # High to low
-    UP_DOWN = "updown"  # Low-high-low (no repeat at ends)
-    RANDOM = "random"   # Random order (not implemented yet)
+    """Arpeggiation patterns. Ordering for all five is implemented by the shared
+    tracker.track_mapper.apply_arpeggio_pattern (see _order_arp_notes), so the
+    arranger and the legacy front-end stay in lockstep with docs/arpeggio.md."""
+    UP = "up"             # Low to high:        [C, E, G]
+    DOWN = "down"         # High to low:        [G, E, C]
+    UP_DOWN = "up_down"   # Low-high-low:       [C, E, G, E]
+    DOWN_UP = "down_up"   # High-low-high:      [G, E, C, E, G]
+    RANDOM = "random"     # Seeded shuffle, each note once (deterministic)
 
 
 class VoiceAllocator:
@@ -257,18 +260,16 @@ class VoiceAllocator:
         return (current_note, max_velocity, duty)
 
     def _order_arp_notes(self, pitches: List[int]) -> List[int]:
-        """Order notes according to arpeggio style."""
-        if self.arp_style == ArpStyle.UP:
-            return pitches  # Already sorted low-to-high
-        elif self.arp_style == ArpStyle.DOWN:
-            return list(reversed(pitches))
-        elif self.arp_style == ArpStyle.UP_DOWN:
-            if len(pitches) <= 2:
-                return pitches
-            # Up then down, but don't repeat top and bottom
-            return pitches + list(reversed(pitches[1:-1]))
-        else:
-            return pitches
+        """Order notes according to arpeggio style.
+
+        Delegates to the canonical tracker.track_mapper.apply_arpeggio_pattern so
+        the arranger, the legacy front-end, and docs/arpeggio.md share one
+        implementation of all five patterns instead of a divergent partial copy
+        (#92) -- the previous local version implemented only up/down/up_down and
+        silently fell through to plain up-order for down_up/random.
+        """
+        from tracker.track_mapper import apply_arpeggio_pattern
+        return apply_arpeggio_pattern(list(pitches), self.arp_style.value)
 
     def _allocate_triangle(
         self,
