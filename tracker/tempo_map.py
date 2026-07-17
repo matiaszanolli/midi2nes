@@ -593,7 +593,21 @@ class EnhancedTempoMap(TempoMap):
                 i += 1
                 
     def _smooth_tempo_transitions(self):
-        """Add intermediate steps for large tempo changes"""
+        """Add intermediate steps for large tempo changes.
+
+        WARNING (#97/TEMPO-05): this interpolates linearly in *microseconds per
+        quarter* (`_calculate_linear_tempo`), which is NOT linear in elapsed
+        time, so inserting these intermediate points CHANGES the total duration
+        of the segment -- it does not preserve note timing. It is only safe as a
+        cosmetic tempo-curve smoother, never as a timing-preserving transform.
+
+        This routine (and its parent `optimize_tempo_changes`) is NOT wired into
+        the live MIDI->ROM pipeline: the fast front-end builds the tempo map with
+        `optimization_strategy=None` (tracker/parser_fast.py), so nothing here
+        runs on a real build. Do not wire it in without first replacing the
+        µs/quarter interpolation with elapsed-time-preserving math. The existing
+        tests in tests/test_tempo_map.py pin the current behavior.
+        """
         new_changes = []
         
         for i in range(len(self.tempo_changes) - 1):
@@ -666,7 +680,17 @@ class EnhancedTempoMap(TempoMap):
             self.optimization_stats['frame_alignments'] = alignments_made
 
     def optimize_tempo_changes(self):
-        """Optimize tempo changes based on selected strategy"""
+        """Optimize tempo changes based on selected strategy.
+
+        NOTE (#97/TEMPO-05): this has no caller on the live MIDI->ROM path -- the
+        fast front-end builds the map with `optimization_strategy=None`, so this
+        early-returns. It is exercised only by tests. Two of its strategies are
+        timing-lossy and must be treated as such before any future wiring:
+        SMOOTH_TRANSITIONS changes segment duration (see
+        `_smooth_tempo_transitions`), and FRAME_ALIGNED re-snaps change ticks via
+        binary search (`_align_to_frames`), which can reorder near-simultaneous
+        changes.
+        """
         if not self.optimization_strategy:
             return
                 
