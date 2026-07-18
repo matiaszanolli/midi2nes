@@ -8,7 +8,7 @@ from a quick read of the code and that tend to bite. Pairs with
 ## Current status (v0.5.0-dev)
 
 - End-to-end pipeline is operational: `python main.py input.mid output.nes`.
-- **586 tests** across 45 files, all passing (`python -m pytest`).
+- **1024 tests** across 53 files, all passing (`python -m pytest`).
 - Two front-ends produce the same `frames` dict: **legacy** (default) and
   **arranger** (`--arranger`). Everything downstream of frames is shared.
 - Default mapper is **MMC3** (not MMC1 — older docs lie). DPCM lives in
@@ -31,8 +31,6 @@ toolchain** (`ca65`/`ld65`) installed. The step subcommands (`parse`, `map`,
 - **Frame keys are strings, not ints.** A type mismatch on frame keys caused
   silent ROMs historically (fixed 2025-12-26). Watch for it when touching
   frame dicts.
-- **`__version__.py` lags reality.** It still reads `0.4.0-dev` in places even
-  though the project is on v0.5.0-dev — don't treat it as ground truth.
 - **Stale docs under `docs/legacy/`** describe the MMC1 era and say "always use
   MMC1." That is no longer true; MMC3 is the default. CLAUDE.md's "ROM
   Structure" note is similarly stale on the mapper.
