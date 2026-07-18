@@ -679,8 +679,15 @@ def run_detect_patterns(args):
     # fraction of the song that subset actually is.
     print(f" Pattern dedup ratio: {pattern_result['stats']['compression_ratio']:.1f}% "
           f"reduction (patterned subset only)")
+    coverage_note = ""
+    if was_sampled:
+        # Uniform sampling can put retained samples out of phase with the
+        # song's period, collapsing coverage_ratio well below what the full
+        # song would report (#312/PAT-11) -- label it so the number isn't
+        # read as a property of the full song.
+        coverage_note = " (lossy — measured over the sampled subset, detection quality reduced)"
     print(f" Pattern coverage: {pattern_result['stats']['coverage_ratio']:.1f}% of "
-          f"{pattern_result['stats']['total_events']:,} events matched a detected pattern")
+          f"{pattern_result['stats']['total_events']:,} events matched a detected pattern{coverage_note}")
 
 def run_song_add(args):
     """Add a song to the song bank"""
@@ -833,6 +840,7 @@ def run_full_pipeline(args):
             # still derives from the full `frames` dict, so the ROM itself is
             # never incomplete because of this.
             pattern_loss_warning = None
+            coverage_lossy_note = ""
             if use_patterns:
                 print("[4/7] Detecting patterns for compression...")
                 # Analysis-only tempo map (#98/TEMPO-06): the detector requires a
@@ -886,6 +894,17 @@ def run_full_pipeline(args):
                         )
                         print(f"  ⚠️  NOTE: {pattern_loss_warning}")
                     pattern_result = detector.detect_patterns(events)
+
+                if detector.was_sampled:
+                    # Uniform sampling can put retained samples out of phase
+                    # with the song's period, collapsing coverage_ratio well
+                    # below what the full song would report (#312/PAT-11) --
+                    # label it so the number isn't read as a property of the
+                    # full song.
+                    coverage_lossy_note = (
+                        " (lossy — measured over the sampled subset, "
+                        "detection quality reduced)"
+                    )
             else:
                 print("[4/7] Skipping pattern detection (direct export mode)...")
                 print(f"  📊 Processing direct frame export for complete data preservation")
@@ -1081,7 +1100,8 @@ def run_full_pipeline(args):
             print(f"   Pattern dedup ratio: {pattern_result['stats']['compression_ratio']:.1f}% "
                   f"reduction (patterned subset only, pattern-analysis metric)")
             print(f"   Pattern coverage: {pattern_result['stats']['coverage_ratio']:.1f}% of "
-                  f"{pattern_result['stats']['total_events']:,} events matched a detected pattern")
+                  f"{pattern_result['stats']['total_events']:,} events matched a detected pattern"
+                  f"{coverage_lossy_note}")
             print(f"   Total patterns detected: {len(pattern_result['patterns'])}")
             if pattern_loss_warning:
                 print(f"\n   ⚠️  {pattern_loss_warning}")

@@ -1179,6 +1179,54 @@ class TestCoverageRatioEventSpace(unittest.TestCase):
         self._assert_analyzed_space(stats, analyzed=20)
 
 
+class TestWasSampledFlag(unittest.TestCase):
+    """Regression (#312/PAT-11): a caller reporting coverage_ratio has no way
+    to tell whether internal uniform sampling ran (and may have put samples
+    out of phase with the song's period, understating coverage) unless the
+    detector exposes it. Both detectors must set `was_sampled` on `self` so
+    main.py can label the printed coverage line as lossy."""
+
+    def _fully_patterned(self, n=60):
+        return [{'frame': i, 'note': 60, 'volume': 100} for i in range(n)]
+
+    def test_sequential_was_sampled_true_when_capped(self):
+        import io as _io
+        import contextlib as _cl
+        det = EnhancedPatternDetector(
+            EnhancedTempoMap(initial_tempo=500000),
+            min_pattern_length=3, max_pattern_length=8, max_events=20)
+        with _cl.redirect_stdout(_io.StringIO()):
+            det.detect_patterns(self._fully_patterned(60))
+        self.assertTrue(det.was_sampled)
+
+    def test_sequential_was_sampled_false_when_under_cap(self):
+        det = EnhancedPatternDetector(
+            EnhancedTempoMap(initial_tempo=500000),
+            min_pattern_length=3, max_pattern_length=8, max_events=1000)
+        det.detect_patterns(self._fully_patterned(60))
+        self.assertFalse(det.was_sampled)
+
+    def test_parallel_was_sampled_true_when_capped(self):
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        import io as _io
+        import contextlib as _cl
+        det = ParallelPatternDetector(
+            EnhancedTempoMap(initial_tempo=500000),
+            min_pattern_length=3, max_pattern_length=8)
+        det.max_pattern_events = 20
+        with _cl.redirect_stdout(_io.StringIO()):
+            det.detect_patterns(self._fully_patterned(60))
+        self.assertTrue(det.was_sampled)
+
+    def test_parallel_was_sampled_false_when_under_cap(self):
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        det = ParallelPatternDetector(
+            EnhancedTempoMap(initial_tempo=500000),
+            min_pattern_length=3, max_pattern_length=8)
+        det.detect_patterns(self._fully_patterned(60))
+        self.assertFalse(det.was_sampled)
+
+
 class TestEventLimitConsolidation(unittest.TestCase):
     """After #102 there are exactly TWO event caps (one per detector complexity
     class); the dead ThreadedPatternDetector — the stray third 2000-stride limit —

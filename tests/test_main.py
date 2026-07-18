@@ -1121,7 +1121,42 @@ class TestRunDetectPatterns:
         # ratio, not a whole-song metric, with a separate coverage line.
         mock_print.assert_any_call(" Pattern dedup ratio: 2.5% reduction (patterned subset only)")
         mock_print.assert_any_call(" Pattern coverage: 30.0% of 40 events matched a detected pattern")
-    
+
+    @patch('main.EnhancedPatternDetector')
+    @patch('main.EnhancedTempoMap')
+    @patch('builtins.print')
+    def test_run_detect_patterns_labels_coverage_as_lossy_when_sampled(
+            self, mock_print, mock_tempo_class, mock_detector_class):
+        # Regression (#312/PAT-11): uniform sampling for a large input can put
+        # retained samples out of phase with the song's period, collapsing
+        # coverage_ratio well below what the full song would report. The
+        # printed coverage line must say so instead of reading like a
+        # full-song measurement.
+        large_frames = {
+            "channel_0": {
+                str(i): {"note": 60 + (i % 12), "volume": 15}
+                for i in range(DETECTOR_MAX_EVENTS + 500)
+            }
+        }
+        self.test_input.write_text(json.dumps(large_frames))
+
+        mock_tempo_class.return_value = Mock()
+        mock_detector = Mock()
+        mock_detector.detect_patterns.return_value = {
+            'patterns': {},
+            'references': {},
+            'stats': {'compression_ratio': 1.0, 'total_events': DETECTOR_MAX_EVENTS,
+                      'coverage_ratio': 1.0}
+        }
+        mock_detector_class.return_value = mock_detector
+
+        args = Namespace(input=str(self.test_input), output=str(self.test_output))
+        run_detect_patterns(args)
+
+        mock_print.assert_any_call(
+            " Pattern coverage: 1.0% of 1,000 events matched a detected pattern "
+            "(lossy — measured over the sampled subset, detection quality reduced)")
+
     def test_run_detect_patterns_empty_frames(self):
         """Test pattern detection with empty frames."""
         # Create empty frames file

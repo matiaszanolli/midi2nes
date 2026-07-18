@@ -54,6 +54,24 @@ DEFAULT_MIDI_DRUM_MAPPING = {
     81: "triangle_open",
 }
 
+# Role names DEFAULT_MIDI_DRUM_MAPPING produces that have no identically
+# named entry in the shipped dpcm_index.json catalog, but do have a real
+# sample under a different filename (#315/DP-07). Splash, vibraslap, and
+# triangle mute/open have no matching sample anywhere in the catalog and are
+# deliberately left unaliased -- a genuine asset gap, not a naming mismatch.
+DPCM_ROLE_ALIASES = {
+    "tambourine": "tamborin",
+    "whistle_short": "whistle1",
+    "whistle_long": "whistle2",
+    "guiro_short": "guiro1",
+    "guiro_long": "guiro2",
+    "cuica_mute": "cuica1",
+    "cuica_open": "cuica2",
+    "woodblock_hi": "mario_2_woodblock",
+    "woodblock_lo": "mario_2_woodblock",
+    "side_stick": "stickrim",
+}
+
 ADVANCED_MIDI_DRUM_MAPPING = {
     36: {  # Kick
         "primary": "kick",

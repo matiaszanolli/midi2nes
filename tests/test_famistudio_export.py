@@ -85,6 +85,21 @@ class TestFamiStudioExport(unittest.TestCase):
         output = generate_famistudio_txt(frames)
         self.assertIn("C-4 15", output)  # Should clamp to 15
 
+    def test_dpcm_sample_map_side_table_does_not_crash(self):
+        # Regression (#313/EXP-11): nes/emulator_core.py attaches a
+        # dpcm_sample_map side table (dense_id -> catalog_id) to frames for
+        # any DPCM-using song. Iterating it as a playable channel produced a
+        # "dpcm_sample_map_N" pattern key that crashed
+        # channel, index = pattern_key.split('_') with ValueError.
+        frames = {
+            'pulse1': {str(f): {'note': 60, 'volume': 15} for f in range(0, 400, 50)},
+            'dpcm': {'0': {'note': 5, 'volume': 15}},
+            'dpcm_sample_map': {'0': 1318, '1': 1620},
+        }
+        output = generate_famistudio_txt(frames)  # must not raise
+        self.assertIn('PATTERN "pulse1_0"', output)
+        self.assertNotIn("dpcm_sample_map", output)
+
 
 class TestFamiStudioGoldenBytes(unittest.TestCase):
     """Exact-output regression for the FamiStudio pattern rows (#232 / REG-14).
