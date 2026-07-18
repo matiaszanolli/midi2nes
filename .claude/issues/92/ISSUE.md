@@ -1,4 +1,4 @@
-# ARR-09: docs/arpeggio.md documents down_up and random patterns that the code does not implement
+# #92 — ARR-09: docs/arpeggio.md documents down_up and random patterns that the code does not implement
 
 **Severity:** LOW · **Domain:** documentation · **Source:** AUDIT_ARRANGER_2026-06-29.md
 

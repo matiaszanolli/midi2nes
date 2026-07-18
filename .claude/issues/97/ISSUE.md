@@ -1,6 +1,4 @@
-# TEMPO-05: Dead optimization & loop-alignment code on the live path (optimize_tempo_changes, EnhancedLoopManager)
-
-Issue: #97
+# #97 — TEMPO-05: Dead optimization & loop-alignment code on the live path (optimize_tempo_changes, EnhancedLoopManager)
 
 **Severity:** LOW · **Domain:** tempo · **Source:** AUDIT_TEMPO_2026-06-29.md
 

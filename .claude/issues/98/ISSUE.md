@@ -1,6 +1,4 @@
-# TEMPO-06: detect-patterns / pipeline build a default-PPQ tempo map that is inert
-
-Issue: #98
+# #98 — TEMPO-06: detect-patterns / pipeline build a default-PPQ tempo map that is inert
 
 **Severity:** LOW · **Domain:** tempo · **Source:** AUDIT_TEMPO_2026-06-29.md
 
