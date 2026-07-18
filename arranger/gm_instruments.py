@@ -1300,13 +1300,8 @@ def get_drum_mapping(note: int) -> DrumMapping:
     )
 
 
-def get_role_priority() -> Dict[MusicalRole, int]:
-    """Get priority ordering for musical roles."""
-    return {
-        MusicalRole.BASS: 1,        # Foundation first
-        MusicalRole.PERCUSSION: 2,  # Rhythm section
-        MusicalRole.MELODY: 3,      # Lead voice
-        MusicalRole.HARMONY: 4,     # Supporting
-        MusicalRole.DECORATIVE: 5,  # Can drop
-        MusicalRole.SFX: 6,         # Optional
-    }
+# NOTE (#88/ARR-05): a `get_role_priority()` role→rank helper (BASS=1…SFX=6) was
+# removed here — it had no caller and contradicted the live drop order, which
+# sorts tracks by the integer `TrackAnalysis.priority` (higher = keep) set in
+# VoiceRoleAnalyzer._determine_role, not by a role-name ranking. That priority
+# field is the single source of truth for channel-drop order.

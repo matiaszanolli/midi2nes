@@ -284,7 +284,8 @@ class VoiceRoleAnalyzer:
             analysis = self.analyze_track(track_id)
             plan.tracks.append(analysis)
 
-        # Sort by priority (highest first)
+        # Sort by priority (highest first). TrackAnalysis.priority (higher = keep)
+        # is the single live drop key — there is no role-name ranking table (#88).
         plan.tracks.sort(key=lambda t: t.priority, reverse=True)
 
         # Assign channels

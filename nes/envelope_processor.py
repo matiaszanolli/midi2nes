@@ -131,9 +131,17 @@ class EnvelopeProcessor:
         # Duty cycle bits (bits 6-7)
         duty_bits = (duty_cycle & 0x03) << 6
         
-        # Envelope bits (constant volume)
-        envelope_bits = 0x10  # Set bit 4 for constant volume
-        
+        # Envelope bits: constant volume (bit 4) + length-counter halt (bit 5).
+        # The halt bit must always be set so the hardware length counter never
+        # cuts a note the 60Hz engine is still holding: the direct-export path
+        # writes this byte straight to $4000/$4004 and reloads the length counter
+        # on every new note (`ora #$08` on $4003/$4007), so with halt clear a
+        # sustained pulse note goes silent mid-note once that counter expires —
+        # now reachable since NH-20 (#160) lets real note durations flow through
+        # (#167/NH-25). Matches the bytecode engine's `ora #$30` and
+        # docs/APU_LENGTH_COUNTER_REFERENCE.md §5 "Halt Flags Always Set".
+        envelope_bits = 0x30
+
         return duty_bits | envelope_bits | (volume & 0x0F)
     
     def apply_volume_envelope(self, frames, pattern, channel, start_frame):

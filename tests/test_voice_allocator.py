@@ -202,3 +202,36 @@ class TestPulseVolumeFloor(unittest.TestCase):
         processor = FrameByFrameAllocator(total_frames=10)
         frames = processor.process_song(notes_by_track, self._pulse1_plan())
         self.assertEqual(frames['pulse1'][0]['volume'], 15)
+
+
+class TestArpSpeedValidation(unittest.TestCase):
+    """Regression (#91/ARR-08): arp_speed=0 raised ZeroDivisionError in
+    _allocate_pulse (`state.arp_frame % self.arp_speed`). arp_speed is clamped
+    to >= 1 at the VoiceAllocator property boundary so any caller (arrange_for_nes
+    exposes it) is safe."""
+
+    def test_zero_arp_speed_is_clamped(self):
+        self.assertEqual(VoiceAllocator(arp_speed=0).arp_speed, 1)
+        self.assertEqual(VoiceAllocator(arp_speed=-5).arp_speed, 1)
+        self.assertEqual(VoiceAllocator(arp_speed=3).arp_speed, 3)
+
+    def test_reassigning_zero_is_clamped(self):
+        # allocate_with_arpeggiation reassigns processor.allocator.arp_speed
+        # directly, bypassing __init__ — the property setter must guard it too.
+        alloc = VoiceAllocator(arp_speed=3)
+        alloc.arp_speed = 0
+        self.assertEqual(alloc.arp_speed, 1)
+
+    def test_zero_arp_speed_does_not_crash_arrangement(self):
+        from arranger import arrange_for_nes
+        events = {'chord': [
+            {'frame': 0, 'note': 60, 'velocity': 100, 'channel': 0},
+            {'frame': 0, 'note': 64, 'velocity': 100, 'channel': 0},
+            {'frame': 0, 'note': 67, 'velocity': 100, 'channel': 0},
+            {'frame': 30, 'note': 60, 'velocity': 0, 'channel': 0},
+            {'frame': 30, 'note': 64, 'velocity': 0, 'channel': 0},
+            {'frame': 30, 'note': 67, 'velocity': 0, 'channel': 0},
+        ]}
+        # Must not raise ZeroDivisionError.
+        out = arrange_for_nes(events, arp_speed=0)
+        self.assertIn('pulse1', out)

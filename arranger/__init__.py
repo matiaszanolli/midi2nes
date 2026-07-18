@@ -33,7 +33,6 @@ from .gm_instruments import (
     # Functions
     get_instrument_mapping,
     get_drum_mapping,
-    get_role_priority,
     # Maps
     GM_INSTRUMENT_MAP,
     GM_DRUM_MAP,
@@ -79,7 +78,6 @@ __all__ = [
     # Functions
     "get_instrument_mapping",
     "get_drum_mapping",
-    "get_role_priority",
     # Maps
     "GM_INSTRUMENT_MAP",
     "GM_DRUM_MAP",

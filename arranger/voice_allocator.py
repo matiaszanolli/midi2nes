@@ -94,6 +94,19 @@ class VoiceAllocator:
         self.track_assignments: Dict[int, List[NESChannel]] = {}
         self.track_info: Dict[int, TrackAnalysis] = {}
 
+    @property
+    def arp_speed(self) -> int:
+        return self._arp_speed
+
+    @arp_speed.setter
+    def arp_speed(self, value: int):
+        # The arp step advances on `state.arp_frame % self.arp_speed`, so a value
+        # of 0 raises ZeroDivisionError mid-arrangement. The CLI hardcodes 3, but
+        # arrange_for_nes exposes arp_speed to any programmatic caller, and it is
+        # reassigned there directly (allocate_with_arpeggiation), so clamp at the
+        # property boundary to cover every entry point (#91/ARR-08).
+        self._arp_speed = max(1, int(value))
+
     def set_arrangement(self, plan: ArrangementPlan):
         """Configure allocator from an arrangement plan."""
         # Map tracks to channels (append, don't overwrite — a drum track is in

@@ -173,8 +173,8 @@ class DrumMapperConfig:
             )
             
             global_config = config_data.get('global_settings', {})
-            
-            return cls(
+
+            result = cls(
                 pattern_config=pattern_config,
                 sample_config=sample_config,
                 frame_rate=global_config.get('frame_rate', 60),
@@ -184,10 +184,14 @@ class DrumMapperConfig:
                 max_layers=global_config.get('max_layers', 3),
                 layer_velocity_scaling=global_config.get('layer_velocity_scaling', True)
             )
+            result.validate()
+            return result
         except FileNotFoundError:
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in configuration file: {e}")
+        except TypeError as e:
+            raise ValueError(f"Invalid configuration key in {config_path}: {e}")
 
 class EnhancedDrumMapper:
     def __init__(self, dpcm_index_path: str, config: Optional[DrumMapperConfig] = None):
