@@ -68,7 +68,7 @@ def generate_test_summary(rom_path: str) -> str:
         try:
             header = rom_file.read_bytes()[:4]
             header_ok = header == b'NES\x1a'
-        except:
+        except Exception:
             pass
     summary.append(f"📋 Header: {'✅' if header_ok else '❌'} (iNES)")
     
