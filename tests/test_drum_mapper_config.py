@@ -62,9 +62,33 @@ class TestDrumMapperConfig:
     def test_invalid_config_file(self, tmp_path):
         """Test handling of invalid configuration files"""
         config_path = tmp_path / "invalid_config.json"
-        
+
         # Create invalid JSON
         config_path.write_text("invalid json content")
-        
+
         with pytest.raises(ValueError, match="Invalid JSON in configuration file"):
+            DrumMapperConfig.from_file(str(config_path))
+
+    def test_stray_key_raises_clear_error(self, tmp_path):
+        """Regression (#76/D-13): a renamed/extra key in a hand-edited config
+        used to raise an uncaught TypeError from the dataclass constructor.
+        It must now raise a clear ValueError instead."""
+        config_path = tmp_path / "stray_key_config.json"
+        config_path.write_text(json.dumps({
+            'pattern_detection': {'min_pattern_length': 4, 'not_a_real_field': 1}
+        }))
+
+        with pytest.raises(ValueError, match="Invalid configuration key"):
+            DrumMapperConfig.from_file(str(config_path))
+
+    def test_loaded_config_is_validated(self, tmp_path):
+        """Regression (#76/D-13): from_file must validate() the result so an
+        out-of-range value from a hand-edited config is rejected up front
+        rather than surfacing later as a confusing failure."""
+        config_path = tmp_path / "invalid_range_config.json"
+        config_path.write_text(json.dumps({
+            'sample_management': {'max_samples': 0}
+        }))
+
+        with pytest.raises(ValueError, match="max_samples must be between 1 and 64"):
             DrumMapperConfig.from_file(str(config_path))
