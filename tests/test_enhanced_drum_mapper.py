@@ -199,6 +199,75 @@ class TestDpcmSampleNameFallback:
         assert noise_out[0]["note"] == 90
 
 
+class TestNoiseModeForMetallicPercussion:
+    """Regression (#204/NH-29): noise_mode had no producer anywhere in the
+    pipeline, so every noise hit played the default long/hiss Mode 0 even
+    though the engine and both exporters already thread noise_mode -> $400E
+    bit 7 correctly. docs/APU_NOISE_REFERENCE.md section 6 calls out hi-hats
+    and cowbells specifically as good Mode 1 (periodic noise) candidates. The
+    drum mapper's noise fallback must now set noise_mode for those roles."""
+
+    @pytest.fixture
+    def mapper(self):
+        # kick/snare only (tests/fixtures/test_dpcm_index.json) -- hihat/
+        # cowbell/tom/ride all miss and fall back to noise.
+        return EnhancedDrumMapper(dpcm_index_path="tests/fixtures/test_dpcm_index.json")
+
+    def test_hihat_and_cowbell_get_periodic_noise_mode(self, mapper):
+        midi_events = {
+            9: [
+                {"frame": 0, "note": 42, "velocity": 100},   # hihat_closed
+                {"frame": 10, "note": 46, "velocity": 100},  # hihat_open
+                {"frame": 20, "note": 56, "velocity": 100},  # cowbell
+            ]
+        }
+        _, noise_events = mapper.map_drums(midi_events)
+        assert len(noise_events) == 3
+        assert all(e["noise_mode"] == 1 for e in noise_events)
+
+    def test_non_metallic_percussion_stays_default_noise_mode(self, mapper):
+        midi_events = {
+            9: [
+                {"frame": 0, "note": 45, "velocity": 100},   # tom_low
+                {"frame": 10, "note": 51, "velocity": 100},  # ride
+            ]
+        }
+        _, noise_events = mapper.map_drums(midi_events)
+        assert len(noise_events) == 2
+        assert all(e["noise_mode"] == 0 for e in noise_events)
+
+    def test_pattern_path_noise_fallback_also_sets_noise_mode(self, mapper):
+        # SIBLING: _handle_pattern_event has its own noise-fallback branch,
+        # separate from the non-pattern path exercised above.
+        pattern_info = {
+            "id": "p0",
+            "info": {"template": [(42, 100)]},  # hihat_closed, unresolvable in this index
+            "position": 0,
+        }
+        dpcm_out, noise_out = mapper._handle_pattern_event(
+            pattern_info, midi_note=42, velocity=100, frame=5
+        )
+        assert dpcm_out == []
+        assert len(noise_out) == 1
+        assert noise_out[0]["noise_mode"] == 1
+
+    def test_noise_mode_reaches_control_byte_bit_6(self):
+        # End-to-end: the emulator core folds noise_mode into control bit 6
+        # (nes/emulator_core.py:166), which the exporters turn into $400E
+        # bit 7 -- confirms the producer added here actually reaches the
+        # already-correct consumer.
+        from nes.emulator_core import NESEmulatorCore
+
+        core = NESEmulatorCore()
+        nes_tracks = {
+            'pulse1': [], 'pulse2': [], 'triangle': [],
+            'noise': [{'frame': 0, 'note': 42, 'velocity': 100, 'noise_mode': 1}],
+            'dpcm': [],
+        }
+        processed = core.process_all_tracks(nes_tracks)
+        assert processed['noise'][0]['control'] & 0x40 == 0x40
+
+
 class TestNoiseFallbackEndToEnd:
     """Regression (#195/NH-26): a drum-mapper noise fallback with no `note`
     key used to crash NESEmulatorCore.process_all_tracks with a bare

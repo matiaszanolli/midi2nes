@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union
 from dataclasses import dataclass, field
 
-from core.exceptions import ConfigurationError
+from core.exceptions import ConfigurationError, ValidationError
 
 
 @dataclass
@@ -248,7 +248,7 @@ class ConfigManager:
         """
         save_path = Path(path) if path else self.config_path
         if not save_path:
-            raise ValueError("No path specified for saving configuration")
+            raise ConfigurationError("No path specified for saving configuration")
         
         save_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -261,9 +261,9 @@ class ConfigManager:
         
         Returns:
             True if configuration is valid
-            
+
         Raises:
-            ValueError: If configuration is invalid
+            ValidationError: If configuration is invalid
         """
         errors = []
         
@@ -296,8 +296,8 @@ class ConfigManager:
             errors.append("export.nsf.load_address must be between 0x8000 and 0xFFFF")
         
         if errors:
-            raise ValueError("Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors))
-        
+            raise ValidationError("Configuration validation failed", checks_failed=errors)
+
         return True
     
     def get_processing_config(self) -> ProcessingConfig:

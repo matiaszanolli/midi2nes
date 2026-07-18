@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from config.config_manager import ConfigManager, ProcessingConfig, ExportConfig, PerformanceConfig
-from core.exceptions import ConfigurationError
+from core.exceptions import ConfigurationError, ValidationError
 
 
 class TestConfigManager(unittest.TestCase):
@@ -72,19 +72,19 @@ class TestConfigManager(unittest.TestCase):
         
         # Invalid min_length should fail
         config.set("processing.pattern_detection.min_length", -1)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValidationError):
             config.validate()
         
         # Invalid similarity threshold should fail
         config = ConfigManager()
         config.set("processing.pattern_detection.similarity_threshold", 1.5)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValidationError):
             config.validate()
         
         # Invalid memory limit should fail
         config = ConfigManager()
         config.set("performance.max_memory_mb", 10)  # Too low
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValidationError):
             config.validate()
 
     def test_pattern_detection_sampling_caps_default(self):
@@ -99,17 +99,38 @@ class TestConfigManager(unittest.TestCase):
         validation, same treatment as the existing min_length/similarity_threshold checks."""
         config = ConfigManager()
         config.set("processing.pattern_detection.max_events", 0)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValidationError):
             config.validate()
 
         config = ConfigManager()
         config.set("processing.pattern_detection.max_pattern_events", -5)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValidationError):
             config.validate()
 
         config = ConfigManager()
         config.set("processing.pattern_detection.max_events", 2500)
         self.assertTrue(config.validate())
+
+    def test_validate_raises_typed_error_with_checks_failed(self):
+        """Regression (#222/SAFE-11): validate() used to raise a bare
+        ValueError, indistinguishable from an unrelated bug elsewhere. It
+        must raise the typed ValidationError with checks_failed populated,
+        matching the shape already used by compiler/compiler.py."""
+        config = ConfigManager()
+        config.set("processing.pattern_detection.min_length", -1)
+        config.set("performance.max_memory_mb", 10)
+        with self.assertRaises(ValidationError) as ctx:
+            config.validate()
+        self.assertEqual(len(ctx.exception.checks_failed), 2)
+
+    def test_save_with_no_path_raises_configuration_error(self):
+        """Regression (#222/SAFE-11): save() used to raise a bare ValueError
+        when neither an explicit path nor config_path was available. It must
+        raise the typed ConfigurationError, matching _load_from_file's
+        existing typed-error convention (#125/SAFE-08)."""
+        config = ConfigManager()
+        with self.assertRaises(ConfigurationError):
+            config.save()
 
     def test_config_save_load_roundtrip(self):
         """Test saving and loading configuration preserves values."""

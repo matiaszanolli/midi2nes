@@ -193,6 +193,14 @@ class DrumMapperConfig:
         except TypeError as e:
             raise ValueError(f"Invalid configuration key in {config_path}: {e}")
 
+# GM percussion roles (DEFAULT_MIDI_DRUM_MAPPING names) that noise-fallback
+# hits map to periodic noise (Mode 1, $400E bit 7) instead of the default long
+# noise (Mode 0). docs/APU_NOISE_REFERENCE.md section 6 calls out hi-hats and
+# cowbells specifically as good Mode 1 candidates -- "a harsh, metallic
+# buzzing tone with a discernible pitch" (#204/NH-29).
+METALLIC_NOISE_ROLES = {"hihat_closed", "hihat_open", "hihat_pedal", "cowbell"}
+
+
 class EnhancedDrumMapper:
     def __init__(self, dpcm_index_path: str, config: Optional[DrumMapperConfig] = None):
         self.config = config or DrumMapperConfig()
@@ -210,6 +218,11 @@ class EnhancedDrumMapper:
         
         self.dpcm_index_path = dpcm_index_path
         self.sample_index = self._load_sample_index()
+
+    def _noise_mode_for_note(self, midi_note: int) -> int:
+        """Mode bit (0 or 1) for a GM percussion note routed to the noise
+        channel fallback -- see METALLIC_NOISE_ROLES (#204/NH-29)."""
+        return 1 if DEFAULT_MIDI_DRUM_MAPPING.get(midi_note) in METALLIC_NOISE_ROLES else 0
 
     def _load_sample_index(self) -> Dict:
         """Load and validate the DPCM sample index"""
@@ -321,7 +334,8 @@ class EnhancedDrumMapper:
                     noise_events.append({
                         "frame": frame,
                         "note": midi_note,
-                        "velocity": velocity
+                        "velocity": velocity,
+                        "noise_mode": self._noise_mode_for_note(midi_note)
                     })
 
         return dpcm_events, noise_events
@@ -385,7 +399,8 @@ class EnhancedDrumMapper:
             noise_out.append({
                 "frame": frame,
                 "note": midi_note,
-                "velocity": velocity
+                "velocity": velocity,
+                "noise_mode": self._noise_mode_for_note(midi_note)
             })
 
         return dpcm_out, noise_out
