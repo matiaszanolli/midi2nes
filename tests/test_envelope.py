@@ -102,7 +102,13 @@ class TestEnvelopeProcessor(unittest.TestCase):
             
             # Check envelope bits (bit 4 should be 0x10 for constant volume)
             self.assertEqual(control_byte & 0x10, 0x10)
-            
+
+            # Length-counter halt (bit 5) must always be set so the hardware
+            # length counter never cuts a note the 60Hz engine is holding —
+            # the direct-export path writes this byte straight to $4000/$4004
+            # (#167/NH-25, matches the bytecode engine's `ora #$30`).
+            self.assertEqual(control_byte & 0x20, 0x20)
+
             # Check volume bits (bits 0-3)
             volume = control_byte & 0x0F
             self.assertEqual(volume, 15)  # Default envelope has full volume without base_velocity

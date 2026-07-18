@@ -152,10 +152,13 @@ class TestEnvelopeIntegration(unittest.TestCase):
         self.assertIn('control', frames[0])
         control_byte = frames[0]['control']
         
-        # Default envelope with duty cycle 2, velocity 100
+        # Default envelope with duty cycle 2, velocity 100.
+        # Control byte = duty(2)<<6 | length-halt+constant-vol(0x30) | volume.
+        # Bit 5 (halt, 0x20) is always set so the hardware length counter can't
+        # cut a note the 60Hz engine is holding (#167/NH-25).
         import math
         expected_volume = max(1, int(15 * math.pow(100 / 127.0, 1.5)))
-        expected_control = (2 << 6) | 0x10 | expected_volume  # duty(2) << 6 | constant_vol(0x10) | volume(12)
+        expected_control = (2 << 6) | 0x30 | expected_volume
         self.assertEqual(control_byte, expected_control)
 
     def test_envelope_types(self):
