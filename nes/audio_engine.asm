@@ -218,8 +218,6 @@ audio_update:
     beq @cmd_bank_jump
     cmp #$85
     beq @cmd_dpcm_play
-    cmp #$87
-    beq @cmd_dmc_level
     cmp #$80
     bne @unknown_command
 
@@ -254,13 +252,6 @@ audio_update:
     ; Trigger playback
     lda #$1F
     sta $4015
-    jmp @read_next
-
-@cmd_dmc_level:
-    ; CMD_DMC_LEVEL ($87 followed by 1 parameter byte: 7-bit level)
-    jsr fetch_sequence_byte
-    and #$7F                ; Clamp to 7 bits (0-127) for safety
-    sta $4011
     jmp @read_next
 
 @cmd_bank_jump:
