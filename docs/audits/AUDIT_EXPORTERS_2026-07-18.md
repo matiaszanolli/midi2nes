@@ -2,356 +2,244 @@
 
 Scope: `exporter/` output generators — the CA65 macro-bytecode path
 (`export_tables_with_patterns`, the default `python main.py input.mid out.nes`
-run), the direct-frame path (`export_direct_frames`, `--no-patterns`), NSF
-(`exporter_nsf.py`), and FamiStudio (`exporter_famistudio.py`) — per
-`.claude/commands/audit-exporters/SKILL.md`. Cross-checked against
-`docs/AUDIO_BYTECODE_SPEC.md`, `docs/MACRO_USAGE_GUIDE.md`, the shipped engine
-(`nes/audio_engine.asm`), the frame producers (`nes/emulator_core.py`), and the
-consumer `nes/project_builder.py`. Severity floors from
-`.claude/commands/_audit-severity.md`.
+run, weighted first), the direct-frame path (`export_direct_frames`,
+`--no-patterns`), NSF (`exporter_nsf.py`), and FamiStudio
+(`exporter_famistudio.py`) — per `.claude/commands/audit-exporters/SKILL.md`.
+Cross-checked against `docs/AUDIO_BYTECODE_SPEC.md`, `docs/MACRO_USAGE_GUIDE.md`,
+the shipped engine `nes/audio_engine.asm`, the frame producer
+`nes/emulator_core.py`, the MMC3 mapper `mappers/mmc3.py`, and the consumer
+`nes/project_builder.py`. Severity floors from `.claude/commands/_audit-severity.md`.
 
-Dedup sources: `gh issue list --repo matiaszanolli/midi2nes --limit 200
---json number,title,state,labels` (saved to `/tmp/audit/issues.json`, 27 open
-issues) and every prior report in `docs/audits/`, in particular
-`docs/audits/AUDIT_EXPORTERS_2026-07-06.md` (the most recent exporters audit,
-12 days prior). Per the SKILL's framing, this is a delta/re-verify pass, not a
-from-scratch audit.
+Dedup sources: `gh issue list --repo matiaszanolli/midi2nes --limit 300 --json
+number,title,state,labels` (saved to `/tmp/audit/issues.json`, 24 open issues)
+and every prior report in `docs/audits/`. Per the SKILL's framing this is a
+delta / re-verify pass. **This report supersedes an earlier same-day draft of
+`AUDIT_EXPORTERS_2026-07-18.md`: its two findings (EXP-11, EXP-12) were both
+landed as fixes by commit `08e7fb2` between that draft and this pass — see
+"Resolved this cycle" — so both are re-verified fixed here rather than
+re-reported.**
 
-**Baseline re-verification.** One exporter-relevant commit landed since
-2026-07-06, re-read at HEAD rather than trusting the commit message:
+**Baseline re-verification (all prior exporter fixes re-read at HEAD, confirmed
+holding):**
+- EXP-01 / #77 — `_encode_macro_offset` (`exporter_ca65.py:71-86`) clamps to
+  `[-128,127]` and snaps `-1`→`$00`, `-2`→`$FD` off the reserved `$FF`/`$FE`
+  control bytes; routed from all four encode sites (`:1140`, `:1144`, `:1159`,
+  `:1160`). Holds.
+- EXP-02 / #78 — `midi_note_to_timer_value(note, channel)` is called **with**
+  `channel` on both note-start (`:1138`) and continuation (`:1157`) paths, so
+  sustained triangle uses `NES_TRIANGLE_TABLE`. Holds.
+- EXP-03 / #79 (D8) — `main.py:1198` `choices=['ca65']`; `run_export` (`:544`)
+  branches only on `"ca65"`; `--format nsf` fails argparse up front. Holds.
+- EXP-04 / #80 — `_register_instrument` (`:908-927`) raises when `inst_id`
+  would exceed `$FF`. `MAX_SEQUENCE_BANK` guard (`:1252-1260`) still raises on
+  every over-budget bank path. Holds.
+- EXP-05 / #81 — `NSFExporter.export()`/`export_nsf()` (`exporter_nsf.py:73-80`)
+  raise `NotImplementedError`; the deleted JSON/hand-assembled routines are
+  gone; `NSFHeader`/`NSFMacroPacker` have no live caller. Holds.
+- #158 — `midi_note_to_timer_value` clamps `[24,119]` (`:46`); the note baked
+  into the bytecode is clamped on both ends (`:1085-1095`). Holds.
+- #163 / NH-21 — `_compress_macro` (`:929-963`) emits only `$FF`, never `$FE`.
+  Holds. Spec §2.3 marks the in-macro `$FE` reserved/not-implemented; §3
+  documents the sequence-level `$FE CMD_BANK_JUMP` as distinct (EXP-07 / #83).
+- #298 / EXP-10 — tone-note clamp is counted and reported
+  (`:1049-1105`, `:1311-1318`). Fixed and holds.
+- #72 / D-09 — no `$87` / `CMD_DMC_LEVEL` emitter in `exporter_ca65.py`. Holds.
 
-- `c1b52d9` (2026-07-16) "fix: report tone-channel notes clamped to NES range
-  instead of silently re-pitching (#298)" — this is exactly the fix the
-  2026-07-06 report's **EXP-10** finding (open, MEDIUM) asked for.
-  `export_tables_with_patterns` now tracks `notes_clamped_high`/`_low`
-  (`exporter_ca65.py:1048-1049`), counts each distinct clamped source note once
-  (`:1094-1105`), exposes `self.notes_clamped` for callers/tests
-  (`:1308`), and prints a one-line `⚠ N note(s) clamped...` summary when
-  `total_clamped > 0` (`:1310-1315`). Traced the counting logic by hand against
-  several clamp/no-clamp sequences (sustained runs, adjacent distinct
-  out-of-range notes, dpcm exclusion) — it fires exactly once per re-pitched
-  note run and never counts dpcm (whose "note" is a sample id, not a pitch).
-  **EXP-10 is fixed; closed below**, matching the SKILL's Dimension 4
-  pre-verification note.
-
-Every other fix re-verified by the 2026-07-06 report still holds at HEAD:
-EXP-01 (#77, `_encode_macro_offset` `:71-86`), EXP-02 (#78, `channel` passed to
-`midi_note_to_timer_value` on both note-start `:1135` and continuation
-`:1154`), EXP-03/D8 (#79, `main.py:1176` `choices=['ca65']`; `run_export:544`
-branches only on `"ca65"`), EXP-04 (#80, `_register_instrument` `:906-924`),
-EXP-05 (#81, `NSFExporter.export()`/`export_nsf()` `exporter_nsf.py:73-80`
-raise `NotImplementedError`, no live caller), EXP-06 (#82, FamiStudio octave
-clamp `exporter_famistudio.py:168`, dpcm sample_id fallback `:108-110`), EXP-07
-(#83, spec §3 `$FE CMD_BANK_JUMP` row distinct from the in-macro loop byte),
-NH-16 (#158, `midi_note_to_timer_value` clamps `[24,119]`), D-09 (#72, no
-`$87`/`CMD_DMC_LEVEL` emitter), NH-21 (#163, `_compress_macro` emits only
-`$FF`, no loop compression).
-
-Two new findings surfaced this cycle by exercising code paths the prior
-reports' re-verification checklist didn't cover: a **live crash in the
-FamiStudio exporter** on realistic frames data (found by constructing a
-`frames` dict with a populated `dpcm_sample_map` side table — the exact shape
-`nes/emulator_core.py` produces for any DPCM-using song — and calling
-`generate_famistudio_txt` on it directly), and **dead engine code shipped by
-`nes/project_builder.py`** into every bytecode-mode `music.asm` (found while
-checking Dimension 1's "confirm `audio_init`/`audio_update` exist in the
-engine the builder ships" against the full appended runtime text, not just the
-two imported symbols).
+---
 
 ## Summary
 
 ### Counts by severity
-- CRITICAL: 0
-- HIGH: 1 (EXP-11 — NEW)
-- MEDIUM: 0 (EXP-10 fixed this cycle by #298 / `c1b52d9`)
-- LOW: 2 (EXP-12 — NEW; EXP-09 — re-confirmed open, unchanged)
-- **Genuinely new this cycle: 2**
-- Resolved since last cycle: EXP-10 (#298, `c1b52d9`)
+- CRITICAL: 1 (EXP-13 — NEW)
+- HIGH: 0
+- MEDIUM: 0
+- LOW: 1 (EXP-09 — re-confirmed open, #302, unchanged)
+- **Genuinely new this cycle: 1**
+- Resolved since the earlier same-day draft: EXP-11 (#313), EXP-12 (#314/#315)
 
 ### Counts by dimension
-- D1 (CA65 well-formedness / builder compat): 1 new (EXP-12 — dead builder-side
-  macro engine)
+- D1 (CA65 well-formedness / builder compat): **1 new (EXP-13 — multi-bank
+  channel-start bank not communicated to the engine)**
 - D2 (APU register serialization): 0 new (re-verified clean)
-- D3 (pattern-vs-empty paths): 0 new (`references`-unused docstring still
-  accurate)
-- D4 (byte-range safety): 0 new (EXP-04/#80 guard holds; all macro bytes ≤255)
-- D5 (bytecode-spec conformance): 0 new (spec §3 in sync with the exporter and
-  the engine)
-- D6 (macro emission): 0 new (null macros seeded, Vol/Arp/Pitch/Duty order
-  intact, EXP-10 clamp-reporting fix independently re-verified)
-- D7 (cross-exporter consistency): 1 new (EXP-11 — FamiStudio crash),
-  1 re-confirmed (EXP-09 dead code)
+- D3 (pattern-vs-empty paths): 0 new (`references`-unused docstring accurate;
+  grep confirms `references` appears only in the signature/docstring of
+  `export_tables_with_patterns`)
+- D4 (byte-range safety): 0 new (EXP-04/#80 guards hold; every macro/`.byte`
+  operand ≤ 255)
+- D5 (bytecode-spec conformance): 0 new (spec §3 in sync with exporter + engine)
+- D6 (macro emission): 0 new (null macro seeded, Vol/Arp/Pitch/Duty order intact)
+- D7 (cross-exporter consistency): 0 new (EXP-11 FamiStudio crash fixed by #313;
+  NSF raises loudly)
 - D8 (format-string / CLI mismatch): 0 new (re-verified clean)
 
-### Three highest-impact findings
-1. **EXP-11 (HIGH, NEW)** — `exporter/exporter_famistudio.py`'s
-   `generate_famistudio_txt` iterates every top-level key of the `frames` dict,
-   including the `dpcm_sample_map` side table that `nes/emulator_core.py`
-   attaches for any DPCM-using song. For a realistic song (more frames than
-   distinct DPCM samples), this produces a malformed pattern key that crashes
-   the write-patterns loop with `ValueError: too many values to unpack`. The
-   FamiStudio exporter is completely non-functional for any DPCM-bearing song
-   through its only public entry points.
-2. **EXP-12 (LOW, NEW)** — `nes/project_builder.py` appends a second, entirely
-   dead macro-instrument/DPCM-trigger implementation (`seq_cmd_instrument`,
-   `seq_cmd_dpcm_play`, and ~85 bytes of supporting `ch_*` BSS state) into
-   every bytecode-mode `music.asm`. Neither symbol is ever called by
-   `nes/audio_engine.asm` or anywhere else — the shipped engine implements
-   both operations inline. Wastes PRG-ROM/RAM on every MMC3 macro-bytecode
-   build; no playback effect.
-3. **EXP-10 (RESOLVED)** — the silent tone-channel note-clamp diagnostic gap
-   flagged open in the 2026-07-03/05/06 reports is fixed by #298 (`c1b52d9`,
-   2026-07-16): clamped notes are now counted and reported.
+### Three highest-impact findings (default CA65 macro-bytecode path first)
+1. **EXP-13 (CRITICAL, NEW)** — In the default macro-bytecode path, a song whose
+   total sequence bytecode exceeds one 8 KB MMC3 bank makes every channel *after*
+   the first spill start in a PRG bank the engine cannot reach: the exporter
+   never resets its bank counter per channel, so `pulse2/triangle/noise/dpcm`
+   `*_sequence` labels can be emitted into `BANK_01+`, but `audio_init` hardcodes
+   `stream_bank = $00` for all five channels. Those channels are read from the
+   wrong physical bank → wrong notes then silence. Silent, no diagnostic, on the
+   supported multi-bank path MMC3's 512 KB exists to serve.
+2. **EXP-11 (RESOLVED)** — FamiStudio `dpcm_sample_map` crash fixed by #313
+   (commit `08e7fb2`): `generate_famistudio_txt` now skips the side table
+   (`exporter_famistudio.py:88`, `:94`).
+3. **EXP-12 (RESOLVED)** — the dead second macro/DPCM engine block in
+   `nes/project_builder.py` was removed by #314/#315 (commit `08e7fb2`); a
+   regression test (`tests/test_nes_project_builder.py:578-599`) asserts its
+   absence.
 
 ---
 
 ## Findings
 
-### EXP-11: FamiStudio exporter crashes on any `frames` dict carrying the `dpcm_sample_map` side table
-- **Severity**: HIGH
-- **Dimension**: 7 (Cross-Exporter Consistency)
-- **Spec ref**: consumer contract — `nes/emulator_core.py:206-242` documents
-  `dpcm_sample_map` as a `dense_id -> catalog_id` side table attached to the
-  `frames` dict for any song with DPCM samples (`DPCM_SAMPLE_MAP_KEY =
-  'dpcm_sample_map'`), explicitly **not** a per-frame channel. Every other
-  consumer of `frames` skips it: `exporter/exporter_ca65.py:104` (`if name !=
-  'dpcm_sample_map' and data`) and `:252-253`
-  (`if channel_name == 'dpcm_sample_map': continue`),
-  `dpcm_sampler/generate_dpcm_index.py:135-146`
-  (`sample_map = frames.get('dpcm_sample_map', {})`, read explicitly rather
-  than iterated as a channel), and `benchmarks/performance_suite.py:220`.
-- **Location**: `exporter/exporter_famistudio.py:84-123` (`generate_famistudio_txt`'s
-  pattern-generation loop; root cause at `:90` — `for channel, events in
-  frames_data.items():` with no skip for `dpcm_sample_map`); crash surfaces at
-  `:128` (`channel, index = pattern_key.split('_')`).
-- **Status**: NEW (not in `/tmp/audit/issues.json`; not raised by any prior
-  `docs/audits/AUDIT_EXPORTERS_*.md` — the 2026-07-06 report's Dimension 7
-  channel-set check only verified the *separate*, hardcoded five-channel
-  `SEQUENCE` list at `exporter_famistudio.py:150`, which is unaffected; it did
-  not exercise the raw `frames_data.items()` pattern-generation loop with a
-  `dpcm_sample_map` key present).
-- **Description**: Unlike the CA65 exporter (both paths) and the DPCM index
-  generator, `generate_famistudio_txt` treats every top-level key of the
-  `frames` dict as a playable channel, including the `dpcm_sample_map`
-  bookkeeping table `nes/emulator_core.py` attaches whenever DPCM samples are
-  used. For each song frame, the code checks `if str(frame) in events:` —
-  `events` here is the sparse `{dense_id: catalog_id}` map, so frames that
-  happen to coincide with a low dense id are silently swallowed (none of the
-  `if/elif` channel-name branches match `'dpcm_sample_map'`, so nothing is
-  appended), and all other frames fall through to the `else` branch and append
-  the `"... .."` placeholder — exactly like a real channel would. Once
-  `current_pattern` for this pseudo-channel is non-empty, it gets written into
-  `patterns` under the key `f"dpcm_sample_map_{n}"`. The later write-out loop
-  splits every pattern key on `'_'` expecting exactly two parts
-  (`channel, index = pattern_key.split('_')`); `"dpcm_sample_map_0"` splits
-  into four parts (`['dpcm', 'sample', 'map', '0']`), raising
-  `ValueError: too many values to unpack (expected 2)`.
-- **Evidence**:
-  ```
-  $ python3 -c "
-  from exporter.exporter_famistudio import generate_famistudio_txt
-  frames = {
-      'pulse1': {'0': {'note': 60, 'volume': 15}, '200': {'note': 62, 'volume': 10}},
-      'dpcm': {'0': {'note': 5, 'volume': 15}},
-      'dpcm_sample_map': {'0': 1318, '1': 1620},
-  }
-  generate_famistudio_txt(frames)
-  "
-  Traceback (most recent call last):
-    ...
-    channel, index = pattern_key.split('_')
-    ^^^^^^^^^^^^^^
-  ValueError: too many values to unpack (expected 2)
-  ```
-  This `frames` shape (a tone channel spanning many frames, a `dpcm` channel,
-  and a sparse `dpcm_sample_map`) is exactly what `nes/emulator_core.py`
-  produces for any real song using DPCM drums with more than a handful of
-  frames — i.e. essentially any playable song, not an edge case. A shorter
-  song where `dpcm_sample_map` happens to cover every frame index densely
-  (tested separately) does *not* crash, which is why this slipped past manual
-  smoke-testing with tiny fixtures — but no realistic song has that shape.
-  `tests/test_famistudio_export.py`'s fixtures never include
-  `dpcm_sample_map`, so the existing test suite (`22 passed` for
-  `test_famistudio_export.py` + `test_exporter_integration.py`) does not
-  exercise this path.
-- **Impact**: `FamiStudioExporter.export()` / `export_famistudio()` /
-  `generate_famistudio_txt()` — the only public entry points for FamiStudio
-  text export — are completely non-functional for any song that uses DPCM
-  samples, which is the common case for drum-bearing NES music. `main.py`'s
-  CLI does not currently expose a FamiStudio export subcommand (confirmed:
-  `grep -n famistudio main.py` is empty), so no default-pipeline user hits
-  this today, but the module is a documented, tested, directly-importable
-  exporter (`exporter/exporter_famistudio.py` is listed in
-  `.claude/commands/_audit-common.md`'s project layout as a live output
-  format) and any library caller or a future CLI wiring hits this
-  immediately and unconditionally.
-- **Related**: distinct from EXP-06 (#82, the octave-clamp/`sample_id`-KeyError
-  fix already in this same function) — that fix handles the real `dpcm`
-  channel correctly; this bug is about the *other* top-level key,
-  `dpcm_sample_map`, which isn't a channel at all. Same root-cause class as
-  #200/D-14 (the `dpcm_sample_map` skip that `exporter_ca65.py` already
-  implements at `:104`/`:252-253`) — this exporter never got the equivalent
-  fix.
-- **Suggested Fix**: Skip `dpcm_sample_map` at the top of the `for channel,
-  events in frames_data.items():` loop (`:90`), mirroring
-  `exporter_ca65.py:252-253`'s `if channel_name == 'dpcm_sample_map': continue`.
-  Add a regression test with a populated `dpcm_sample_map` alongside a
-  multi-hundred-frame tone channel (reproducing the shape above) to
-  `tests/test_famistudio_export.py`.
+### EXP-13: Multi-bank songs — channel sequence-start bank is never communicated to the engine, which assumes bank 0 for all channels
+- **Severity**: CRITICAL
+- **Dimension**: 1 (CA65 Well-Formedness & Builder Compatibility) — the exporter
+  emits `*_sequence` labels into MMC3 swap banks the consumer engine's
+  initialization cannot locate.
+- **Spec ref**: `docs/AUDIO_BYTECODE_SPEC.md` §2.1 (the song header "Points to
+  the initial bytecode streams for all 5 channels") and §3 `$FE CMD_BANK_JUMP`
+  ("for songs whose bytecode outgrows one 8KB bank"). Consumers:
+  `nes/audio_engine.asm:90-125` (`audio_init`) and `nes/project_builder.py:149`
+  (`fetch_sequence_byte`).
+- **Location**: `exporter/exporter_ca65.py:1210-1211` (`current_bank`/
+  `bytes_in_current_bank` initialized **once**, before the channel loop, and
+  never reset per channel), `:1220-1221` (`{channel}_sequence:` label emitted
+  into whatever segment the previous channel left active), `:1250-1268` (bank
+  rollover advances `current_bank` mid-channel and never returns to bank 0).
+  Consumer mismatch: `nes/audio_engine.asm:96-125` (`sta stream_bank+0..+4`, all
+  loaded from `#$00`).
+- **Status**: NEW (no open issue in `/tmp/audit/issues.json`; not raised by any
+  prior `docs/audits/AUDIT_EXPORTERS_*.md` or `AUDIT_MAPPERS_*.md` — the mapper
+  audits covered `CODE_8000`/`BANK_NN`/`DPCM_NN` capacity and the `MAX_SEQUENCE_BANK`
+  overflow guard, but not the per-channel *starting* bank).
+- **Description**: The macro-bytecode emitter writes the five channel sequences
+  (`pulse1, pulse2, triangle, noise, dpcm`) consecutively into `.segment
+  "BANK_NN"` regions. `current_bank` starts at 0 (`:1210`) and is advanced only
+  when a channel's bytecode overflows the current 8 KB bank (`:1250`,
+  `next_bank = current_bank + 1`, then `.segment "BANK_{next_bank}"`). It is
+  **never reset between channels** (grep of `current_bank`/`bytes_in_current_bank`
+  shows assignments only at `:1210-1211` init, `:1264-1265` on rollover, and
+  the `+= 1/2` accumulators). So once the cumulative bytecode of the earlier
+  channels crosses ~7936 bytes (`BANK_SIZE_LIMIT = 8192 - 256`), the next
+  channel's `{channel}_sequence:` label is defined inside `BANK_01` (or higher)
+  — i.e. physical `PRG_BANK_01`, linked at `$C000` per
+  `mappers/mmc3.py:generate_linker_config` (all `BANK_NN` load at `start=$C000`).
 
-### EXP-12: `nes/project_builder.py` ships a second, fully dead macro-instrument/DPCM-trigger implementation into every bytecode-mode `music.asm`
-- **Severity**: LOW
-- **Dimension**: 1 (CA65 Well-Formedness & Builder Compatibility) — builder-side
-  dead code adjacent to the exporter's bytecode-mode contract.
-- **Spec ref**: consumer — `nes/audio_engine.asm` (the shipped engine
-  `exporter_ca65.py`'s non-standalone bytecode output is built to run
-  against).
-- **Location**: `nes/project_builder.py:136-168` (`seq_cmd_dpcm_play`,
-  `.global`'d, appended whenever `is_bytecode`) and `:171-288` (BSS block
-  `ch_sequence_bank`/`ch_macro_{vol,duty,arp,pitch}_{lo,hi,idx}`/
-  `ch_{vol,duty}_current`/`ch_{arp,pitch}_offset`/`ch_base_note`/
-  `apu_shadow_*` at `:173-202`, plus `seq_cmd_instrument` at `:244-286`).
-  `fetch_sequence_byte` in the same appended block (`:209-238`) is **not**
-  dead — it is `.import`ed and called by `nes/audio_engine.asm:11,198,227` and
-  is the one piece of this appended text that's actually live.
-- **Status**: NEW (no GitHub issue or prior audit report tracks this
-  specific dead block under its own finding. A closely related but distinct
-  observation exists in `docs/audits/AUDIT_NES_HARDWARE_2026-07-01.md`'s NH-21
-  finding, which mentioned in passing that "the `$FE`-capable macro runtime
-  exists only in the *unused* `process_channel_macros` copy
-  (`nes/project_builder.py:274-330`, `.global` with zero callers)" — that was
-  evidence for a since-fixed `$FE`-encoding bug (#163, closed), not a
-  standalone dead-code finding, and the function has since been restructured
-  (renamed/simplified to `seq_cmd_instrument`, no longer `$FE`-capable) without
-  ever being removed. No subsequent report re-verified or tracked the
-  dead-code fact itself.).
-- **Description**: `NESProjectBuilder.prepare_project` appends a complete,
-  independent macro-instrument-pointer loader (`seq_cmd_instrument`, reading
-  `instrument_table` into `ch_macro_{vol,arp,pitch,duty}_{lo,hi}` and resetting
-  `ch_macro_*_idx`) and DPCM sample trigger (`seq_cmd_dpcm_play`, swapping the
-  MMC3 DPCM bank via `switch_dpcm_bank` and writing `$4010`-`$4013`/`$4015`)
-  into every bytecode-mode `music.asm`, plus ~85 bytes of `ch_*`/`apu_shadow_*`
-  BSS state to back them. Neither routine is ever invoked: `grep -rn
-  "seq_cmd_instrument\|seq_cmd_dpcm_play\|ch_macro_vol_lo\|ch_sequence_bank"`
-  across every `.py` and `.asm` file in the repo turns up only their own
-  definitions in `project_builder.py` — no `jsr seq_cmd_instrument`, no `jsr
-  seq_cmd_dpcm_play`, no reference to any `ch_*` variable, anywhere else,
-  including inside the appended block itself (the only `jsr` in that whole
-  text is the legitimately-used `jsr switch_dpcm_bank` inside the dead
-  `seq_cmd_dpcm_play`). `nes/audio_engine.asm` implements both operations
-  itself, inline, with different variable names and a different calling
-  convention: `CMD_INSTRUMENT` is handled directly in `@is_command`
-  (`audio_engine.asm:226-229`, `sta current_inst, x` — no call to
-  `seq_cmd_instrument`), instrument-pointer lookup happens inline via the
-  `EVAL_MACRO` macro at `@process_macros` (`:337-346`), and DPCM triggering
-  for the bytecode path happens via `@write_dpcm` (`:513-541`, reached from
-  `@process_macros` for channel index 4, not via any `$85` command byte) since
-  the exporter never emits `CMD_DPCM_PLAY` ($85) — confirmed separately per
-  Dimension 5/SKILL note. `switch_dpcm_bank` itself (defined by
-  `mappers/mmc3.py`, exported from `main.asm`) has no other caller either, so
-  it is transitively dead along with `seq_cmd_dpcm_play`.
+  At runtime `audio_init` (`nes/audio_engine.asm:90-125`) seeds each channel's
+  stream pointer from its exported label **and hardcodes `stream_bank = $00`**
+  for all five channels. `fetch_sequence_byte`
+  (`nes/project_builder.py:149-177`) swaps `sequence_bank` (← `stream_bank,x`)
+  into the MMC3 R7 window and reads the byte via a `$C000→$A000` address
+  translation. So for a channel whose label physically lives in bank 1+, the
+  engine maps **bank 0** into the window and reads bank 0's bytes at the
+  translated address — arbitrary macro/other-channel data — interpreting it as
+  that channel's sequence stream until it happens to hit a `$FF` and halts. The
+  within-stream `CMD_BANK_JUMP` path is correct (it updates both `sequence_bank`
+  and `stream_bank,x` at `nes/audio_engine.asm:260-261`); only the **initial**
+  bank of each channel is wrong, and only `pulse1` (always the first label,
+  always in `BANK_00`) is guaranteed correct.
 - **Evidence**:
   ```
-  $ grep -rn "seq_cmd_instrument\|seq_cmd_dpcm_play\|ch_macro_vol_lo\|ch_sequence_bank" \
-      --include='*.py' --include='*.asm' .
-  nes/project_builder.py:141:; seq_cmd_dpcm_play ($85)
-  nes/project_builder.py:144:.global seq_cmd_dpcm_play
-  nes/project_builder.py:145:seq_cmd_dpcm_play:
-  nes/project_builder.py:175:ch_sequence_bank:   .res 5
-  nes/project_builder.py:178:ch_macro_vol_lo:    .res 4
-  nes/project_builder.py:241:; seq_cmd_instrument ($80)
-  nes/project_builder.py:244:.global seq_cmd_instrument
-  nes/project_builder.py:245:seq_cmd_instrument:
-  nes/project_builder.py:258:    sta ch_macro_vol_lo, x
+  # exporter/exporter_ca65.py — bank counter set once, never reset per channel
+  1210:        current_bank = 0
+  1211:        bytes_in_current_bank = 0
+  1217:        lines.append(f'.segment "BANK_{current_bank:02d}"')   # BANK_00 once, up front
+  1220:        for channel in ['pulse1','pulse2','triangle','noise','dpcm']:
+  1221:            lines.append(f'{channel}_sequence:')               # emitted in the *current* bank
+  ...  1264:            current_bank = next_bank                       # advances, never resets
   ```
-  Only definitions — zero call sites, zero references outside their own
-  definitions.
-- **Impact**: No functional/playback effect — `nes/audio_engine.asm` never
-  calls into this code, so it cannot desync or corrupt anything at runtime.
-  Purely a PRG-ROM/RAM budget cost paid on every bytecode-mode (default
-  pipeline) build: roughly 90-100 bytes of `CODE` for the two dead routines
-  plus 85 bytes of reserved `BSS` RAM for their supporting state, on a
-  platform where both budgets are scarce. Also a maintenance hazard — a
-  contributor modifying the macro/instrument or DPCM-trigger behavior could
-  edit this copy (it reads as "the" instrument/DPCM logic, complete with its
-  own doc comments) and observe zero effect on actual playback.
-- **Related**: NH-28 (#203, OPEN, `nes/mmc3_init.asm` fully dead) is the same
-  class of issue (a superseded engine-adjacent file/block never wired in)
-  found by a different audit; NH-21 (#163, closed) is where this block was
-  first incidentally noted, under a different (now-fixed) defect.
-- **Suggested Fix**: Delete `seq_cmd_dpcm_play` (`nes/project_builder.py:136-168`)
-  and `seq_cmd_instrument` plus its dedicated `ch_*` BSS block
-  (`:171-202`, `:240-288`), keeping only the live `fetch_sequence_byte`
-  definition and the `.import switch_dpcm_bank` line if nothing else needs it
-  (or drop that too, since its sole caller is being removed). Re-run the
-  `prepare`/`compile` step-by-step pipeline on a sample MIDI to confirm
-  `audio_engine.asm` still assembles and links without these symbols (it
-  should, since it never references them).
+  ```asm
+  ; nes/audio_engine.asm — every channel initialized to bank 0
+  99:     lda #<pulse2_sequence ... 103:  lda #$00 / sta stream_bank+1
+  106:    lda #<triangle_sequence ... 110: lda #$00 / sta stream_bank+2
+  ...  # stream_bank+3 (noise), stream_bank+4 (dpcm) likewise = $00
+  194:    lda stream_bank, x / 195: sta sequence_bank      ; used as-is by fetch_sequence_byte
+  ```
+  The exporter explicitly supports up to `MMC3Mapper.SWAP_BANK_COUNT - 1 = 59`
+  sequence banks (`:1209`, `:1252-1260`) and MMC3 exists to hold 512 KB "for
+  large DPCM drum libraries" (`mappers/mmc3.py:9`), so multi-bank sequence
+  output is a deliberately-supported path, not an out-of-spec input.
+- **Impact**: Any song whose macro bytecode across `pulse1..pulse2/triangle/…`
+  crosses one 8 KB bank boundary before a later channel's start label plays
+  garbage-then-silence on that channel and every channel after it, with no
+  diagnostic. `pulse1` (first label) is always safe; `pulse2/triangle/noise/dpcm`
+  are corrupted whenever they land past bank 0. This is the default
+  `python main.py in.mid out.nes` (pattern/macro) path. Reachability threshold:
+  > ~7936 bytes of cumulative sequence bytecode (a long/dense multi-channel
+  song — precisely the material MMC3 is selected for). Silent contract
+  corruption / garbage playback with no workaround the user can apply → CRITICAL
+  per `_audit-severity.md` ("Pipeline stage emits data a downstream stage parses
+  as valid but means something else", and the multi-bank/garbage-playback rows).
+- **Related**: `MAX_SEQUENCE_BANK` overflow guard (`:1252-1260`, #127) and the
+  within-stream `CMD_BANK_JUMP` (EXP-07 / #83) — both handle *other* facets of
+  multi-bank output correctly; this is the one uncovered facet (channel *entry*
+  bank). Same subsystem as the mapper capacity checks in `mappers/mmc3.py:validate`.
+- **Suggested Fix**: Make the channel start bank explicit and agree on both
+  sides. Simplest: have `export_tables_with_patterns` record the bank each
+  `{channel}_sequence:` label is emitted in, emit it as a 5-byte
+  `channel_start_banks` table (`.export`ed), and have `audio_init` load
+  `stream_bank+0..+4` from that table instead of hardcoding `#$00`. (Resetting
+  `current_bank`/`bytes_in_current_bank` per channel is **not** a fix on its own —
+  it would force overlapping labels into `BANK_00` and overflow it; the engine
+  still needs to be told each channel's bank.) Add a regression test that builds
+  a >8 KB multi-channel song and asserts each `*_sequence` label's bank matches
+  the `stream_bank` the engine initializes.
 
 ---
 
 ## Existing findings re-confirmed, already tracked (not re-counted as new)
 
-- **EXP-09 (#302, OPEN)** — `exporter/compression.py`'s `CompressionEngine`
+- **EXP-09 (#302, OPEN, LOW)** — `exporter/compression.py`'s `CompressionEngine`
   and `BaseExporter.compress_channel_data`/`decompress_channel_data`
-  (`base_exporter.py:12-46`) remain dead code: `grep -rn
-  'compress_channel_data\|decompress_channel_data\|CompressionEngine'
-  --include='*.py' . | grep -v test` still returns only the definitions and
-  the `BaseExporter` wrappers — no exporter or `main.py` call site. Unchanged
-  since 2026-07-03.
-- **NH-25 (#167, OPEN)** — direct-path pulse control bytes omit the
-  length-counter halt flag NH-25 tracks; the `ora #$08` before
-  `$4003`/`$4007`/`$400B` (`exporter_ca65.py:625`/`:679`/`:731`) is a
-  length-counter *reload* bit, a separate concern. Unchanged.
-- **NH-14 (#107, OPEN)** — direct-export tone-channel `@silence` `beq`
-  branches are unreachable dead code (engine-side/direct-path tech debt).
-  Unchanged.
-- **TD-08 (#137, OPEN)** — stale DPCM `.incbin` TODO comment at
-  `exporter_ca65.py:988`; the DPCM packer does the real work elsewhere.
-  Unchanged.
-- **TD-11 (#136, OPEN)** — `export_direct_frames` (now ~717 lines) remains a
-  monolith; tracked as tech debt, not re-counted here.
+  (`base_exporter.py:4,10,12-46`) remain dead: grep across `*.py` (excluding
+  tests/docs) returns only the definitions and the `BaseExporter` wrappers — no
+  exporter or `main.py` call site. Unchanged.
+- **TD-08 (#137, OPEN)** — stale DPCM `.incbin` TODO in the macro path
+  (`exporter_ca65.py:991`); real DPCM work is done by `DpcmPacker` elsewhere.
+  Tracked as tech debt.
+- **TD-11 (#136, OPEN)** — `export_direct_frames` remains a ~700-line monolith;
+  tech debt, not re-counted here.
 
-## Resolved this cycle
+## Resolved this cycle (since the earlier same-day draft)
 
-- **EXP-10 (was MEDIUM, open since 2026-07-03) — NOW FIXED** by `c1b52d9`
-  (#298, 2026-07-16). See baseline re-verification above for the detailed
-  trace of the new counting/reporting logic (`exporter_ca65.py:1048-1049`,
-  `:1094-1105`, `:1306-1315`).
+- **EXP-11 (#313) — FIXED** by commit `08e7fb2`. `generate_famistudio_txt` now
+  skips `dpcm_sample_map` in both the max-frame scan and the pattern loop
+  (`exporter/exporter_famistudio.py:88`, `:94-99`). Re-ran the exact repro from
+  the prior draft (`frames` with a populated `dpcm_sample_map` and a
+  multi-hundred-frame tone channel) → **no crash**.
+- **EXP-12 (#314/#315) — FIXED** by commit `08e7fb2`. The dead
+  `seq_cmd_instrument`/`seq_cmd_dpcm_play` routines and their `ch_*` BSS block
+  are gone from `nes/project_builder.py` (now only a "removed" comment at
+  `:137`); `tests/test_nes_project_builder.py:578-599` asserts these symbols are
+  absent from the generated `music.asm`. `fetch_sequence_byte` (the one live
+  routine that shared that block) is retained.
 
-## Methodology notes (disproved candidates)
+## Methodology notes (disproved / re-disproved candidates)
 
-- **Noise-channel high clamp mislabeling (D4/D6)**: `export_tables_with_patterns`'s
-  `elif note > 95: note = 95` (`:1082-1083`) applies to the `noise` channel too
-  (only the *low* clamp is `channel != 'noise'`-guarded), and the adjacent
-  clamp-counting logic (`:1099-1105`) would mislabel a clamped noise "note" as
-  a tone-range re-pitch in the `⚠ N note(s) clamped to the NES tone range
-  (24-95)` message. Traced the only producer of noise-channel `note`
-  (`nes/emulator_core.py:165`, `period = max(1, self.midi_to_nes_pitch(e['note'],
-  'noise'))`) through `nes/pitch_table.py:get_noise_period`, which always
-  returns a 4-bit index in `0-15` — `note > 95` is unreachable for noise given
-  every current producer. Not filed; would only become live if a future
-  change widened the noise period encoding without updating this guard.
-- **DPCM channel instrument-macro byte waste (D4/D6)**: the macro-bytecode
-  path builds a full vol/arp/pitch/duty instrument tuple for DPCM events too
-  and emits `CMD_INSTRUMENT` ($80) bytes for it, even though
-  `nes/audio_engine.asm:332-335` (`cpx #4 / bne :+ / jmp @write_dpcm`) skips
-  all macro evaluation for the DPCM channel (x=4) — so the `current_inst`
-  value set by that command is read but never used. Harmless (2 wasted bytes
-  per instrument change on the DPCM stream, no playback effect). Already
-  identified and explicitly *not filed* by `docs/audits/AUDIT_EXPORTERS_2026-07-03.md`
-  as below the LOW bar for a new finding; re-confirmed unchanged at HEAD, still
-  not filed.
-- **DPCM `note` byte (0-255) colliding with macro-path command-byte ranges
-  (D4/D5)**: the DPCM channel's `note = sample_id + 1` byte can land anywhere
-  in `$00-$FF`, but it is always emitted as the second byte of a Length
-  command pair (`${length:02X}, ${note:02X}`), never as a dispatched command
-  byte on its own — the engine's `@is_length`/`@read_next` loop only inspects
-  the *first* byte of each pair for range dispatch. Traced several DPCM
-  sample-id values (0, 94, 200, 254) through the emission and confirmed each
-  is always consumed as length-command data, never misread as `$FE`/`$FF`/`$80`
-  control. Disproved as a new bug (matches the 2026-07-06 report's identical
-  conclusion; re-verified independently, not re-counted).
+- **DPCM `note` byte (0-255) colliding with the macro-path command ranges
+  (D4/D5)** — re-verified disproved: the DPCM `note = sample_id + 1` byte is
+  always emitted as the *second* byte of a Length-command pair
+  (`${length:02X}, ${note:02X}`, `:1282`); the engine's dispatch inspects only
+  the *first* byte of each fetch (`@read_next`, `nes/audio_engine.asm:197-213`),
+  so a high DPCM note is consumed as length-command data, never misread as
+  `$FE`/`$FF`/`$80`. (Matches the 2026-07-06 conclusion.)
+- **Direct-path triangle control `0x80 | (volume*7)` (D2)** — re-verified
+  targets `$4008` linear-counter load; `volume*7 ≤ 105` stays in 7 bits and is
+  forced to `$00` when `volume == 0` (`:343-346`). Not a finding.
+- **D1 segment/label cross-check** — the macro path `.export`s
+  `pulse1_sequence…dpcm_sequence`, `ntsc_period_low/high`,
+  `triangle_period_low/high`, `instrument_table` (`:1004-1007`), all `.import`ed
+  by `nes/audio_engine.asm:4-10`; `.importzp ptr1,temp1,temp2,frame_counter`
+  resolve via `audio_engine.asm:16` `.exportzp`; non-standalone
+  `.import audio_init,audio_update` resolve via `audio_engine.asm:53`. Direct
+  path `.importzp frame_counter,temp_ptr` resolve via `project_builder.py:319`
+  (`temp_ptr`) and `:284-286` (`frame_counter`, direct-only). All segments the
+  exporters emit (`CODE_8000`, `BANK_NN`, `DPCM`, `RODATA[_BANK_NN]`, `HEADER`,
+  `ZEROPAGE`, `BSS`, `CODE`, `VECTORS`) are declared by
+  `mappers/mmc3.py:generate_linker_config`. No new D1 finding beyond EXP-13
+  (which is a *bank-assignment* mismatch, not a missing label/segment).
 
 ---
 

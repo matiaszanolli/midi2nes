@@ -5,208 +5,203 @@ Subsystem audited: `mappers/` (base, factory, nrom, mmc1, mmc3), `nes/project_bu
 resolution / capacity-preflight / `resolve_mapper` call sites. All 10 SKILL.md dimensions
 covered, no `--focus` restriction.
 
-This is a re-audit/delta pass following `AUDIT_MAPPERS_2026-07-06.md`. Relevant commits
-since that pass (`git log --oneline` on `mappers/`, `compiler/`, `nes/project_builder.py`,
-`main.py`):
-- `452d5b2` (#297) — recover the prepared mapper from `nes.cfg` in `compile`
-- `757ff86` (#291), `833174b`/`8bbfe9a` (#283/#284/#285), `7af88a4` (#281/#282) — all
-  pre-date and are already covered by the 07-06 report; re-verified unchanged below.
+This is a re-audit/delta pass. It re-verifies every "fixed" dimension the SKILL flags,
+accounts for the current tree state after **#314/EXP-12** (which removed the dead
+`seq_cmd_instrument`/`seq_cmd_dpcm_play` routines and ~85 bytes of BSS from
+`nes/project_builder.py`'s bytecode-mode `music.asm`, keeping `fetch_sequence_byte`), and
+re-confirms the one standing finding — now filed as **OPEN issue #316** — is still live.
 
-**Dedup basis:** `/tmp/audit/issues.json` (27 open issues, prefetched) searched for
-`mapper`, `compile`, `auto`, `nrom`, `mmc1`, `mmc3`, `bank`, `capacity`, `align`, `relative`,
-`cwd`, `path`; all prior `docs/audits/AUDIT_MAPPERS_*.md`, plus a scan of
-`AUDIT_SAFETY_*.md`/`AUDIT_REGRESSION_*.md`/`AUDIT_PIPELINE_*.md` for any prior mention of
-subprocess working-directory or relative-path handling in the compiler. No existing issue
-or report covers this pass's NEW finding.
+**Dedup basis:** `/tmp/audit/issues.json` (24 issues, prefetched via `gh issue list`)
+searched for `mapper`, `compile`, `auto`, `nrom`, `mmc1`, `mmc3`, `bank`, `capacity`,
+`align`, `relative`, `cwd`, `path`, `resolve`; all prior `docs/audits/AUDIT_MAPPERS_*.md`.
+The single finding below maps to open issue **#316** (`MAP-2026-07-18-1`) and its
+regression-test gap **#323** (`REG-17`), so it is **noted, not re-filed**.
 
-Every finding below was verified against live code, not just re-read: the NEW finding
-was reproduced end-to-end with the real CC65 toolchain (`ca65`/`ld65` V2.18, present at
-`/usr/bin`), and the "previously identified, now fixed" items were re-verified with a
-direct `resolve_mapper`/`_prepared_mapper_name_from_cfg` repro.
+Every claim below was verified against live code, and the mapper build paths were
+reproduced end-to-end with the real CC65 toolchain (`ca65`/`ld65` at `/usr/bin`):
+NROM, MMC1, and MMC3 ROMs were built and their iNES headers + `$FFFA–$FFFF` vectors
+inspected this pass.
 
 ## Summary
 
 | Severity | Count |
 |----------|-------|
 | CRITICAL | 0 |
-| HIGH     | 1 |
+| HIGH     | 1 (Existing: #316 — not re-filed) |
 | MEDIUM   | 0 |
 | LOW      | 0 |
-| **Total (NEW)** | **1** |
-
-Plus two previously-open findings confirmed **now fixed** as a side effect of #297 (see
-below), and one pre-existing open issue (**#301**) re-verified unchanged, not re-filed.
+| **NEW this pass** | **0** |
 
 **One-line verdict:** The **default** single-command pipeline (MMC3, patterns-on) still
-produces a bootable 512KB ROM end-to-end (re-verified live: `python main.py input.mid
-out.nes` → 524,304-byte ROM, valid vectors, APU initialized, `ROM Health: FAIR` from
-non-fatal pattern-density warnings only) — no regression. But the **documented
-step-by-step flow** (`prepare` → `compile`) is broken for the exact invocation
-`CLAUDE.md` itself documents (`python main.py compile nes_project/ output.nes`, a
-relative path): `ROMCompiler.compile()` passes a still-relative `project_dir / "main.asm"`
-as the assemble source while also setting that same relative `project_dir` as the
-subprocess `cwd`, so `ca65` resolves the source path against its own new working
-directory and doubles the directory component, failing with `Cannot open input file
-'nes_project/main.asm'`. Confirmed reproducible for every mapper (mapper-agnostic bug in
-shared compiler code), with the only workaround being to pass an absolute project
-directory — never mentioned by the tool's own `prepare` success message or `CLAUDE.md`.
+produces a bootable 512 KB ROM end-to-end (re-verified live: `python main.py
+test_midi/simple_loop.mid out.nes` → **524,304-byte** ROM, header PRG byte `32`, mapper
+nibble `4`, reset/NMI/IRQ at `$E000/$E02F/$E03D` inside the fixed bank, APU initialized,
+`ROM Health: FAIR` from non-fatal pattern-density warnings only). The one open defect is
+the documented **step-by-step** flow (`prepare` → `compile`) with a *relative* project
+directory, tracked as **#316**.
 
-**Highest-leverage fix:** MAP-2026-07-18-1 (HIGH) — resolve `project_dir` (and
-`output_path`) to an absolute path at the top of `ROMCompiler.compile()`, mirroring what
-the full pipeline gets for free from `tempfile.TemporaryDirectory()`.
+**Highest-leverage fix:** #316 (`MAP-2026-07-18-1`, HIGH) — resolve `project_dir`
+(and `output_path`) to an absolute path at the top of `ROMCompiler.compile()`.
 
 ---
 
-## Findings (most severe first)
+## Findings
 
 ### MAP-2026-07-18-1: `compile` subcommand fails on the exact relative-path invocation `CLAUDE.md` documents — `ROMCompiler.compile()` doubles the project directory into the assemble/link source paths
 - **Severity**: HIGH
 - **Dimension**: 8 (compiler validation & CC65 error surfacing)
-- **Location**: `compiler/compiler.py:141-180` (`ROMCompiler.compile`: `project_dir = Path(project_dir)` with no `.resolve()`, then `self.cc65.assemble(project_dir / "main.asm", project_dir / "main.o", project_dir)` and the equivalent `music.asm`/`link` calls, all passing the same possibly-relative `project_dir` as both the path component and the subprocess `cwd`); `compiler/cc65_wrapper.py:141,150` (`assemble`: `cmd = ["ca65", str(source_file), ...]` run with `subprocess.run(cmd, cwd=working_dir, ...)`) and the equivalent in `link()` (`cc65_wrapper.py:199-217`); reached from `main.py:445` (`run_compile`: `project_path = Path(args.input)`, no resolve) and `main.py:472` (`compile_rom(project_path, output_rom, ...)`).
-- **Status**: NEW
-- **Description**: `ROMCompiler.compile()` never converts `project_dir` to an absolute path. When the caller passes a relative directory (e.g. `nes_project/`, which is exactly what `run_prepare`'s own printed guidance says to pass: `main.py:521-522`, "Or compile + validate in one step: python main.py compile {args.output} <output.nes>", and what `CLAUDE.md`'s own documented example shows: `python main.py prepare music.asm nes_project/` then `python main.py compile nes_project/ output.nes`), `assemble()`/`link()` are called with **both** a relative `source_file`/`config_file` argument **and** that same relative path as the subprocess's `cwd=`. `subprocess.run(cmd, cwd=working_dir)` resolves `working_dir` against the *current* process's cwd to find where to run `ca65`, but the `source_file` argument inside `cmd` is passed through unchanged (still `"nes_project/main.asm"`) — so `ca65`, now running with its own working directory already inside `nes_project/`, looks for `nes_project/main.asm` *relative to that*, i.e. `nes_project/nes_project/main.asm`, which does not exist. Only an **absolute** `project_dir` avoids the doubling, because then `source_file` is already absolute and `cwd` is irrelevant to resolving it. This is mapper-agnostic (it lives in the shared `ROMCompiler.compile()`/`CC65Wrapper` code, not any `mappers/*.py`), so it affects NROM, MMC1, and MMC3 identically whenever `compile` (or a library caller of `compile_rom`/`ROMCompiler.compile`) is invoked with a relative project directory.
+- **Location**: `compiler/compiler.py:141-142` (`project_dir = Path(project_dir)` / `output_path = Path(output_path)`, neither `.resolve()`d), then `compiler/compiler.py:156-180` (`assemble`/`link` called with the same possibly-relative `project_dir` as both the source-path prefix **and** the subprocess `cwd`); `compiler/cc65_wrapper.py:141,148-154` (`assemble`: `cmd = ["ca65", str(source_file), ...]` run with `cwd=working_dir`) and `cc65_wrapper.py:199-217` (`link`); reached from `main.py:445` (`run_compile`: `project_path = Path(args.input)`, no resolve) → `main.py:472` (`compile_rom(project_path, ...)`).
+- **Status**: **Existing: #316** (also tracked by #323/REG-17, the missing regression test). Confirmed **still present** this pass — `compiler/compiler.py:141` remains `Path(project_dir)` with no `.resolve()`.
+- **Description**: `ROMCompiler.compile()` never converts `project_dir` to an absolute path. When the caller passes a relative directory — exactly what `run_prepare`'s own printed guidance (`main.py:521-522`) and `CLAUDE.md`'s "Step-by-step pipeline" section show (`python main.py compile nes_project/ output.nes`) — `assemble()`/`link()` receive **both** a relative `source_file`/`config_file` **and** that same relative path as `cwd=`. `subprocess.run(cmd, cwd=working_dir)` resolves `working_dir` against the current process cwd, but the `source_file` argument inside `cmd` is passed through unchanged, so `ca65` — now already running inside `nes_project/` — looks for `nes_project/main.asm` relative to that, i.e. `nes_project/nes_project/main.asm`, which does not exist. Only an absolute `project_dir` avoids the doubling. Mapper-agnostic (shared `ROMCompiler`/`CC65Wrapper` code), so NROM/MMC1/MMC3 are affected identically.
 - **Evidence**:
   ```
-  $ cd /tmp/audit/mapper_test/docflow
-  $ python3 main.py prepare ../music_nrom.asm nes_project --mapper nrom
-    ✓ Music data 4,000 bytes fits the NROM PRG regions
-    Using NROM with 32KB PRG-ROM
-   Prepared NES project -> nes_project
-   Or compile + validate in one step: python main.py compile nes_project <output.nes>
-
-  $ python3 main.py compile nes_project/ output.nes      # exactly the documented form
-  Compiling NES ROM from nes_project ...
-  [ERROR] Failed to assemble main.asm: Fatal error: Cannot open input file 'nes_project/main.asm': No such file or directory
-  : Tool: ca65, Exit code: 1
-  [ERROR] ROM compilation failed
-
-  $ python3 main.py compile "$(pwd)/nes_project" "$(pwd)/output.nes"   # absolute path
-  Compiling NES ROM from /tmp/audit/mapper_test/docflow/nes_project ...
-  Validating ROM...
-    ✓ ROM Health: ... (or FAIR, non-fatal warnings only)
-  [OK] Compiled ROM -> /tmp/audit/mapper_test/docflow/output.nes
+  $ python main.py compile nes_project/ output.nes      # the documented form
+  [ERROR] Failed to assemble main.asm: Fatal error: Cannot open input file
+          'nes_project/main.asm': No such file or directory : Tool: ca65, Exit code: 1
+  # nes_project/main.asm exists on disk; passing an ABSOLUTE dir compiles fine.
   ```
-  `nes_project/main.asm` exists on disk at both points (`ls nes_project/` shows `main.asm`,
-  `music.asm`, `nes.cfg`, `build.sh`, `audio_engine.asm`) — the failure is purely the
-  path-doubling, not a missing file. `./build.sh` inside `nes_project/` is unaffected
-  (it uses bare relative filenames from within the already-`cd`'d directory, matching
-  `generate_build_script`'s `ca65 main.asm -o main.o` form — no `project_dir` prefix to
-  double).
-- **Impact**: `main.py compile <relative-dir> <out>` is unusable as documented for every mapper — this is not a rare edge case, it is the literal command in `CLAUDE.md`'s "Step-by-step pipeline for debugging" section and in `run_prepare`'s own printed next-step instructions. Any user or script that `cd`s into a parent directory and runs `compile` with a project subdirectory name (the natural, common invocation) gets a confusing `ca65` file-not-found instead of a working build; the only workaround (pass an absolute path) is undocumented. The single-command full pipeline (`run_full_pipeline`) is **not** affected — it builds `project_path` from `tempfile.TemporaryDirectory()`, which always yields an absolute path — so the default MIDI→ROM flow (re-verified live this pass, 524,304-byte MMC3 ROM, no regression) is unaffected. Blast radius is therefore the entire step-by-step/debugging CLI flow (`prepare` → `compile`) plus any library caller of `ROMCompiler.compile()`/`compile_rom()` that passes a relative path, across all three mappers equally.
-- **Related**: Not a duplicate of MAP-2026-07-06-1 (that was a mapper-*mis-resolution* bug, fixed by #297) — this is a distinct subprocess-path bug in the same `compile` code path, uncovered because every existing unit test for `run_compile` mocks `main.compile_rom` (`tests/test_main.py:773-799`, `TestRunCompile`) and every real end-to-end CC65 integration test uses pytest's `temp_dir`/`tmp_path` fixtures, which are always absolute (`tests/conftest.py:50-54`, `tempfile.TemporaryDirectory()`) — so no existing test exercises `ROMCompiler.compile()` with a relative `project_dir`.
+  `./build.sh` inside `nes_project/` is unaffected (it uses bare relative filenames from within the already-`cd`'d directory, per `generate_build_script`'s `ca65 main.asm -o main.o`).
+- **Impact**: `main.py compile <relative-dir> <out>` is unusable as documented for every mapper — the literal command in `CLAUDE.md` and in `run_prepare`'s printed next-step. The single-command full pipeline is **not** affected (it builds `project_path` from `tempfile.TemporaryDirectory()`, always absolute). Blast radius: the entire step-by-step/debugging CLI flow plus any library caller of `ROMCompiler.compile()`/`compile_rom()` passing a relative path.
+- **Related**: #323/REG-17 (no test exercises `ROMCompiler.compile()` with a relative `project_dir`). Distinct from #297/MAP-2026-07-06-1 (mapper mis-resolution, fixed) — this is a subprocess-path bug in the same `compile` code path.
 - **Hardware ref**: n/a (subprocess/CLI path handling, not a register or header claim).
-- **Suggested Fix**: In `ROMCompiler.compile()` (`compiler/compiler.py:141-142`), resolve both paths immediately: `project_dir = Path(project_dir).resolve()` and `output_path = Path(output_path).resolve()`, before any `assemble`/`link` call. This makes every downstream `project_dir / "..."` argument absolute regardless of what the caller passed, so `cwd=working_dir` no longer interacts with the source-file argument. (Alternatively/additionally, `cc65_wrapper.py`'s `assemble`/`link` could pass source/config filenames alone — `source_file.name` — when `working_dir` is set, since `cwd` already puts the process there; resolving in `compile()` is the smaller, single-point fix.)
+- **Suggested Fix**: In `ROMCompiler.compile()` resolve both paths immediately —
+  `project_dir = Path(project_dir).resolve()` and `output_path = Path(output_path).resolve()` —
+  before any `assemble`/`link` call, so every downstream `project_dir / "..."` argument is
+  absolute and `cwd=working_dir` no longer interacts with the source-file argument. Add the
+  #323/REG-17 regression test with a relative `project_dir`.
 
 ---
 
-## Previously identified, now fixed (dedup per `_audit-common.md`)
+## Current-tree verification: #314/EXP-12 removal is clean
 
-Both findings from `AUDIT_MAPPERS_2026-07-06.md` are **confirmed fixed** this pass, by the
-same commit:
+The task flagged that #314/EXP-12 recently removed the dead
+`seq_cmd_instrument`/`seq_cmd_dpcm_play` routines and ~85 bytes of BSS from
+`nes/project_builder.py`'s bytecode-mode `music.asm`, keeping `fetch_sequence_byte`.
+Verified this pass:
 
-- **MAP-2026-07-06-1 (was MEDIUM)** — `compile` defaulted to MMC3 and could not recover a
-  NROM-prepared project, rejecting a valid NROM ROM with a misleading MMC3 size-mismatch.
-  Fixed by `452d5b2` (#297): `_prepared_mapper_name_from_cfg()` (`main.py:218-236`) reads
-  the `# midi2nes-mapper: <name>` marker `NESProjectBuilder.prepare_project()` now stamps
-  as the first line of `nes.cfg` (`nes/project_builder.py:320-322`), and `run_compile`
-  (`main.py:460-461`) uses it to resolve the mapper authoritatively before falling back to
-  `--mapper`. Re-verified live this pass:
-  ```
-  >>> _prepared_mapper_name_from_cfg('.../nes.cfg')   # NROM project, no --mapper on compile
-  'nrom'
-  >>> resolve_mapper('nrom', '.../music.asm').name
-  'NROM'
-  ```
-  and the same NROM project compiled and linked correctly (mod the unrelated
-  MAP-2026-07-18-1 relative-path issue above, worked around with an absolute path for
-  this check) with the exact 32,784-byte NROM size, not a spurious MMC3 mismatch.
-- **#269 / PL-08 (was OPEN, "`compile --mapper` has no `auto`")** — resolved as a side
-  effect of the same #297 fix: since `run_compile` now recovers the mapper from `nes.cfg`
-  first and only falls back to `--mapper` for older marker-less projects, a
-  `prepare --mapper auto` project's `compile` invocation no longer needs an `auto` choice
-  on `--mapper` at all — the `nes.cfg` marker already carries the *resolved* concrete
-  mapper name (`prepare` never stamps `"auto"` itself; `self.mapper.name.lower()` is
-  always a concrete mapper by the time `prepare_project()` runs). `main.py:1198`'s
-  `choices=['nrom', 'mmc1', 'mmc3']` (still no `'auto'`) is therefore no longer a live gap
-  for the documented flow. The GitHub issue is still open at the time of this audit;
-  recommend closing it as fixed-by-#297 (or downgrading to a cosmetic "add `auto` to the
-  choices list for symmetry" LOW) rather than re-filing.
+- **No dangling references** to `seq_cmd_instrument`/`seq_cmd_dpcm_play` remain in product
+  code or `.asm`. The only live mentions are: the explanatory comment at
+  `nes/project_builder.py:135-140`, and a **regression test that pins the removal** —
+  `tests/test_nes_project_builder.py:578-598` asserts those symbols and the `ch_*`/
+  `apu_shadow_*` BSS are **absent** from the generated bytecode `music.asm`.
+- **`fetch_sequence_byte` was kept** and is still `.global`-defined in
+  `nes/project_builder.py:148-178` and `.import`ed + called six times by
+  `nes/audio_engine.asm` (lines 11, 198, 225, 231, 259, 263, 266).
+- **The bytecode engine still links and boots**: the live MMC3 pattern-compressed build
+  above produced a valid 524,304-byte ROM with real note data (3 patterns, 100% coverage),
+  proving no symbol was left dangling by the removal.
+- The DPCM-trigger path the SKILL's Dimension 3 attributes to the (now-removed)
+  `seq_cmd_dpcm_play` still exists elsewhere: inline in `audio_engine.asm` for the bytecode
+  path, and via the direct-export `play_dpcm` routine (MMC3-only, guarded by
+  `enforce_direct_export_dpcm_mapper`, `main.py:284-317`). No functional gap from the removal.
 
-Also re-verified unchanged/correct this pass (no regression):
-- **Dimension 1** — NROM MEMORY (`PRG` `$8000`) = 32,768B = header `$02`×16KB; MMC1
-  (7×`PRG_BANK_NN` `$4000` + `PRGFIXED` `$4000`) = 131,072B = header `$08`×16KB; MMC3
-  (60×`PRG_BANK_NN` `$2000` + `PRG_A0`+`PRG_C0`+`PRG_80` `$2000` each + `PRG_FIX`
-  `$1FFA` + `VECTORS` `$0006`) = 524,288B = header `32`×16KB. Mapper nibbles `$00`/`$10`/
-  `$40` = 0/1/4, matching `mapper_number`. Recomputed via `mappers/*.py:prg_rom_size`
-  properties this pass — all three sum exactly, no mismatch.
-- **Dimension 2/3** — `nmi`/`reset`/`irq` all defined in `nes/project_builder.py`'s
-  `_generate_main_asm` template (lines 437-486); `reset` does `sei`/`cld`/stack setup,
-  the mapper's `generate_init_code()`, then `jsr init_music`, then `sta $2000` (`lda
-  #$80`) to enable NMI; `nmi` does `jsr update_music`. `VECTORS` loads at `$FFFA` for
-  every mapper. MMC3's `generate_init_code()` leads with `sta $E000` before any `lda` —
-  re-checked against `docs/MAPPER_MMC3_REFERENCE.md:39` ("`$E000`: IRQ Disable
-  (Acknowledges and disables interrupts)") — this MMC3 register ignores the written
-  value, so an undefined accumulator at that point is harmless, not a bug.
-- **Dimension 4** — capacity pre-flight (`main.py:check_mapper_capacity` →
-  `mapper.validate_segment_sizes`) still wired before `ld65` on both `prepare` and the
-  full pipeline; `MMC3Mapper`/`MMC1Mapper` per-bank sum-and-check logic unchanged and
-  correct. `#301` (LOW, `.align 64` DPCM padding undercount, packer-guarded) re-verified
-  present and unchanged (`main.py:123-167` `estimate_segment_sizes` still has no
-  `.align` branch; `dpcm_sampler/dpcm_packer.py:38,60-64` still caps each bank's
-  *aligned* total at 8192 at pack time, so the gap remains unreachable through the
-  normal packer path) — already tracked as open issue #301, not re-filed.
-- **Dimension 5** — MMC1's 5-write serial control/bank loads and MMC3's R6(`$46`)/
-  R7(`$47`) selects via `$8000`/`$8001` unchanged; #291's physical bank ordering
-  (`PRG_A0`/`PRG_C0`/`PRG_80`/`PRG_FIX` = banks 60/61/62/63) unchanged in
-  `mappers/mmc3.py:75-79`.
-- **Dimension 6** — `MapperFactory.auto_select` ordering (nrom→mmc1→mmc3, smallest
-  fits first) unchanged; `resolve_mapper`'s bytecode-engine force, direct-export
-  bank-pack guard, and `enforce_direct_export_dpcm_mapper` DPCM-forces-MMC3 guard all
-  still raise clean `ValueError`s (re-read `main.py:239-317`, unchanged since 07-06).
-- **Dimension 7** — every mapper's `nes.cfg` segments still match what `main.asm`/
-  `music.asm` reference; the default MMC3 pattern-compressed pipeline still assembles,
-  links, and boots (re-verified live this pass, see verdict above). The new
-  MAP-2026-07-18-1 finding is a *subprocess path-handling* bug, not a segment/symbol
-  mismatch, so it's filed under Dimension 8, not 7.
-- **Dimension 8 (remainder)** — `assemble()`/`link()` still raise `CompilationError` with
-  `stderr` attached on nonzero return code; `check_toolchain()`/`get_version()` still
-  guard `subprocess.run` with `try/except (FileNotFoundError, TimeoutExpired)`;
-  `compile_rom()`'s broad `except Exception` still calls `traceback.print_exc()` under
-  `--verbose`; `ROMCompiler.compile()` still invokes `mapper.generate_post_process_commands()`
-  post-link when a mapper is passed. All unchanged since 07-06 and confirmed by the
-  passing `tests/test_mappers.py` (39/39) and `tests/test_rom_validation_integration.py`
-  (all real-CC65 integration tests, all absolute-path-based, all passing) this pass.
-- **Dimension 9** — exact ROM size check (`mapper.prg_rom_size + 16`) unchanged and
-  correct; `mapper is None` flat-32768 fallback still only used by callers that pass no
-  mapper (defense-in-depth gap, not a new finding).
-- **Dimension 10** — no doc drift found. `CLAUDE.md`/`README.md`/`docs/*.md` consistently
-  describe MMC3 as the pipeline default; all `mmc1` doc hits are legitimate MMC1
-  reference/comparison content, none reassert MMC1 as *the* default.
+## Re-verified unchanged/correct this pass (no regression)
+
+- **Dimension 1 — iNES header ↔ nes.cfg.** Built live and inspected: NROM header PRG byte
+  `2` / flags-6 `$00` (mapper 0), 32,784-byte ROM; MMC1 `8` / `$10` (mapper 1),
+  131,088-byte ROM; MMC3 `32` / `$40` (mapper 4), 524,304-byte ROM. `nes.cfg` `MEMORY`
+  sums recomputed: NROM `PRG` `$8000` = 32 KB = `$02`×16 KB; MMC1 (7×`PRG_BANK_NN` `$4000`
+  + `PRGFIXED` `$4000`) = 128 KB = `$08`×16 KB; MMC3 (60×`PRG_BANK_NN` `$2000` +
+  `PRG_A0`+`PRG_C0`+`PRG_80` `$2000` each + `PRG_FIX` `$1FFA` + `VECTORS` `$0006`) =
+  512 KB = `32`×16 KB. All three sum exactly; mapper nibbles match `mapper_number`.
+  Hardware ref: `docs/MAPPER_MMC3_REFERENCE.md` (flags-6 mapper-low-nibble).
+- **Dimension 2 — vectors + 60 Hz NMI.** `nmi`/`reset`/`irq` all defined in
+  `_generate_main_asm` (`nes/project_builder.py:311-377`); `reset` does the mapper
+  `generate_init_code()`, then `jsr init_music`, then `lda #$80 / sta $2000` to enable NMI;
+  `nmi` does `jsr update_music`. `VECTORS` loads at `$FFFA` for every mapper. Live vector
+  reads land in real code for all three (NROM reset `$8000`, MMC1 reset `$C000` at file
+  offset `0x2000A`, MMC3 reset `$E000`). MMC1's post-link vector fixup is gone (#213):
+  `MMC1Mapper` inherits the no-op `BaseMapper.generate_post_process_commands`, and ld65
+  places the vectors correctly unassisted (verified: MMC1 ROM's last 6 bytes = valid
+  `$C045/$C000/$C053`).
+- **Dimension 3 — APU init in the boot path.** `reset → jsr init_music` reaches
+  `$4015`/`$4017` writes on both paths; the live ROMs pass `rom_diagnostics`' APU-init
+  gate. MMC3's `generate_init_code()` leads with `sta $E000` (IRQ disable, value ignored —
+  harmless undefined A) before configuring PRG mode 1 and R6/R7. Hardware ref:
+  `docs/NES_APU_REFERENCE.md`, `docs/APU_FRAME_COUNTER_REFERENCE.md`,
+  `docs/MAPPER_MMC3_REFERENCE.md`.
+- **Dimension 4 — PRG capacity pre-flight.** `check_mapper_capacity` →
+  `mapper.validate_segment_sizes` still wired before `ld65` on both `run_prepare`
+  (`main.py:497`) and the full pipeline (`main.py:1064`). `estimate_segment_sizes`
+  (`main.py:123-167`) confirmed accurate for the bytecode path — that path emits sequence
+  data as countable `.byte` rows (`exporter/exporter_ca65.py:1202-1286`), not macro
+  invocations, so it does **not** systematically undercount. MMC3's per-region check
+  (`RODATA`+`CODE` vs `PRG_FIX`; `CODE_8000` vs `$8000` window; summed `BANK_NN`+`DPCM_NN`
+  per shared physical bank; `max_bank >= SWAP_BANK_COUNT`) and MMC1's per-bank check both
+  unchanged and correct. Note the standing defense-in-depth gaps (unchanged, not new):
+  `NESProjectBuilder.prepare_project()` itself does not call the capacity gate (library
+  callers bypassing `main.py` rely on `ld65`), and #301 (below).
+- **Dimension 5 — bank switching.** MMC1's 5-write serial control (`$0C` = 16 KB PRG
+  mode, fixed high bank) / bank loads (`mappers/mmc1.py:108-147`) and MMC3's R6(`$46`)/
+  R7(`$47`) selects via `$8000`/`$8001` with `sta $E000` IRQ-disable
+  (`mappers/mmc3.py:111-149`) unchanged. #291's load-bearing physical-bank order
+  (`PRG_A0`/`PRG_C0`/`PRG_80`/`PRG_FIX` = banks 60/61/62/63, so `PRG_80` hosting
+  `CODE_8000` is the fixed second-to-last bank) unchanged at `mappers/mmc3.py:75-79`.
+  Hardware refs: `docs/MAPPER_MMC1_REFERENCE.md`, `docs/MAPPER_MMC3_REFERENCE.md`.
+- **Dimension 6 — MapperFactory auto-select.** `auto_select` ordering (nrom→mmc1→mmc3,
+  smallest-fits-first; "nothing fits" raises with the largest mapper's capacity) and
+  `get_mapper("auto", 0)`'s MMC3 fallback unchanged. `resolve_mapper` (`main.py:239-281`)
+  is the live `--mapper auto` caller; its bytecode-engine force
+  (`_requires_mmc3_bytecode_engine`), direct-export bank-pack guard
+  (`_direct_export_packed_mapper_name`), and `enforce_direct_export_dpcm_mapper` all raise
+  clean `ValueError`s. Any auto pick that overruns is still caught by the Dimension-4
+  pre-flight before `ld65`.
+- **Dimension 7 — buildable project.** Every segment `main.asm`/`music.asm` reference
+  exists in the active mapper's `nes.cfg` (confirmed by the three live builds, all `rc=0`).
+  MMC3's `generate_header_asm()` emits bare `.byte` only; the exporter is the sole owner of
+  `.segment "HEADER"`; no stray `OAM` region (#215). ZP/BSS `.importzp`/`.global` symbols
+  (`sequence_ptr`, `sequence_bank`, `frame_counter`, `switch_dpcm_bank`,
+  `fetch_sequence_byte`) resolve — including the benign case where NROM/MMC1 direct export
+  declares `.global switch_dpcm_bank` with no definition (an unreferenced import ld65 does
+  **not** error on; both direct builds linked cleanly).
+- **Dimension 8 — compiler / CC65 surfacing.** `assemble()`/`link()` raise
+  `CompilationError` with `stderr` on nonzero return code; `check_toolchain()`/
+  `get_version()` probe the `shutil.which()`-resolved path under
+  `try/except (FileNotFoundError, TimeoutExpired)` → `ToolchainError` (#14);
+  `compile_rom()`'s broad `except Exception` calls `traceback.print_exc()` under
+  `--verbose` while the typed `CompilationError`/`ValidationError` paths print a clean
+  one-liner (#32); `ROMCompiler.compile()` invokes `generate_post_process_commands()`
+  post-link when a mapper is passed, and `_run_post_process`'s `shell=True` runs only the
+  static mapper-constant snippet (#214/#263). MMC1 no longer has a fixup (#213). **The one
+  live defect here is #316 above.**
+- **Dimension 9 — ROM size check.** `compile()` checks the exact `mapper.prg_rom_size + 16`
+  when a mapper is passed (both CLI callers do); the three live ROM sizes match exactly
+  (32,784 / 131,088 / 524,304). The `mapper is None` flat-`MIN_ROM_SIZE=32768` fallback
+  remains a defense-in-depth-only path for library callers (unchanged, not a new finding).
+- **Dimension 10 — default-mapper doc drift.** No drift. `CLAUDE.md`/`README.md`/`docs/*.md`
+  consistently describe MMC3 as the pipeline default with MMC1/NROM selectable; all `mmc1`
+  hits are legitimate reference/comparison content.
 
 ## Still-open, not re-filed
 
-- **#301** (OPEN, LOW) — capacity pre-flight undercounts DPCM `.align 64` padding.
-  Confirmed still present, still packer-guarded/unreachable through the normal pipeline
-  (see Dimension 4 above).
-- **#269 / PL-08** (OPEN) — per the analysis above, this is effectively resolved as a
-  side effect of #297. Recommend the maintainer close it (or retarget it to the
-  cosmetic "add `'auto'` to `compile --mapper`'s `choices=` for CLI symmetry" LOW) rather
-  than treat it as a live gap; not re-filed as a new finding here.
+- **#316 / MAP-2026-07-18-1** (OPEN, HIGH) — the relative-path `compile` doubling above.
+  Confirmed still present; owner should apply the `.resolve()` fix and land #323/REG-17.
+- **#323 / REG-17** (OPEN) — no test calls `compile_rom`/`ROMCompiler.compile()` with a
+  relative `project_dir`, which is why #316 slipped past CI (every real integration test
+  uses absolute `tmp_path` fixtures).
+- **#301 / MAP-2026-07-06-2** (OPEN, LOW) — capacity pre-flight undercounts DPCM `.align 64`
+  padding. Re-verified present (`estimate_segment_sizes` still has no `.align` branch) but
+  packer-guarded/unreachable through the normal pipeline (`dpcm_sampler/dpcm_packer.py`
+  caps each bank's aligned total at pack time). Unchanged, not re-filed.
+- **#269 / PL-08** (OPEN) — `compile --mapper` has no `auto`. Effectively resolved as a
+  side effect of #297 (compile recovers the concrete mapper from the `nes.cfg` marker, so
+  `auto` is never needed there); recommend closing or downgrading to a cosmetic LOW rather
+  than treating as a live gap.
 
 ## Dimension coverage map
 
 | Dim | Area | Result |
 |-----|------|--------|
-| 1 | iNES header ↔ nes.cfg | Verified, all three mappers sum exactly to `prg_rom_size`; mapper nibbles correct. No mismatch. |
-| 2 | Vectors + 60Hz NMI | `nmi`/`reset`/`irq` defined; `reset` enables NMI + `jsr init_music`; `nmi` `jsr update_music`; `VECTORS` at `$FFFA`. No finding. |
-| 3 | APU init | MMC3's undefined-A `sta $E000` re-checked against `docs/MAPPER_MMC3_REFERENCE.md` — harmless (any value disables IRQ). No finding. |
-| 4 | PRG capacity/overrun | Pre-flight wired and correct. #301 (LOW, DPCM align undercount) still open, unchanged, not re-filed. |
-| 5 | Bank switching | MMC1 5-write load / MMC3 R6/R7 selects and #291 physical-bank order unchanged and correct. No finding. |
-| 6 | MapperFactory auto-select | `auto_select` ordering and all `resolve_mapper` guards unchanged and correct. No finding. |
-| 7 | Project builder buildability | Segments consistent for all mappers; default pipeline still boots (re-verified live). No finding. |
-| 8 | Compiler / CC65 surfacing | **MAP-2026-07-18-1 (HIGH, NEW)**: relative `project_dir` doubles into the assemble/link source path and breaks the documented `compile` invocation for every mapper. Everything else (nonzero-exit handling, toolchain probing, `--verbose` traceback, post-process wiring) unchanged and correct. |
-| 9 | ROM size check | Exact-size check unchanged and correct. No finding. |
-| 10 | Default-mapper doc drift | No drift found. |
+| 1 | iNES header ↔ nes.cfg | Verified live (headers + sums) for all 3 mappers. No finding. |
+| 2 | Vectors + 60 Hz NMI | `nmi`/`reset`/`irq` defined; NMI enabled + `jsr update_music`; vectors at `$FFFA` land in code (live). No finding. |
+| 3 | APU init | `$4015`/`$4017` reached on both paths; MMC3 undefined-A `sta $E000` harmless. No finding. |
+| 4 | PRG capacity / overrun | Pre-flight wired + correct; heuristic accurate for bytecode `.byte` path. #301 (LOW) still open, packer-guarded. Standing lib-bypass gap unchanged. |
+| 5 | Bank switching | MMC1 5-write / MMC3 R6/R7 + #291 physical-bank order unchanged + correct. No finding. |
+| 6 | MapperFactory auto-select | `auto_select` ordering + all `resolve_mapper` guards raise cleanly. No finding. |
+| 7 | Project builder buildability | Segments consistent; #314/EXP-12 removal clean (no dangling symbols); all 3 mappers link live. No finding. |
+| 8 | Compiler / CC65 surfacing | **#316 (HIGH, Existing)**: relative `project_dir` doubles into assemble/link source path. Everything else unchanged + correct. |
+| 9 | ROM size check | Exact-size check matches live ROM sizes for all 3 mappers. No finding. |
+| 10 | Default-mapper doc drift | No drift. |
 
 ---
 

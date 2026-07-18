@@ -314,3 +314,37 @@ class TestPipelineFailureRecovery:
             "an invalid project must fail to compile"
         assert not rom_output.exists(), \
             "a failed compile must not leave a broken ROM behind"
+
+
+@pytest.mark.slow
+@pytest.mark.requires_cc65
+@pytest.mark.integration
+class TestRelativeProjectDirCompilation:
+    """Regression (#316/MAP-2026-07-18-1, coverage gap #323/REG-17): the
+    documented `main.py compile <relative-dir> <out>` flow failed because
+    ROMCompiler.compile() passed the same relative project_dir as both the
+    ca65/ld65 source-path prefix AND the subprocess cwd, doubling it into
+    `<dir>/<dir>/main.asm`. Every other compile test uses an absolute tmp_path
+    fixture, so the relative-path failure had zero coverage. compile() now
+    .resolve()s project_dir up front; this pins that a relative directory
+    (the natural post-cd invocation) compiles identically to an absolute one."""
+
+    def test_relative_project_dir_compiles(self, temp_dir, minimal_music_asm, monkeypatch):
+        import os
+
+        project_dir = temp_dir / "nes_project"
+        builder = NESProjectBuilder(str(project_dir))
+        assert builder.prepare_project(str(minimal_music_asm))
+
+        # cd into the parent and pass the *bare relative* directory name — the
+        # exact form CLAUDE.md documents and the shape that used to double.
+        monkeypatch.chdir(temp_dir)
+        rom_output = temp_dir / "output.nes"
+        assert compile_rom(Path("nes_project"), rom_output), \
+            "compile_rom failed for a relative project_dir — the #316 path doubling regressed"
+        assert rom_output.exists(), "ROM must exist after a relative-path compile"
+
+        diagnostics = ROMDiagnostics(verbose=False)
+        rom_result = diagnostics.diagnose_rom(str(rom_output))
+        assert rom_result.is_valid_nes is True
+        assert rom_result.reset_vectors_valid is True

@@ -1,171 +1,135 @@
 # Tempo & Frame-Timing Audit — 2026-07-18
 
-## Summary
+## 1. Summary
 
-**Invariant verdict: frame timing stays on the 60Hz grid.** Re-verified empirically
-against the current tree (HEAD `b562e1d`). `tracker/tempo_map.py`, `tracker/parser_fast.py`,
-`nes/emulator_core.py`, `tracker/loop_manager.py`, and the two `main.py` tempo-map
-construction sites are **byte-for-byte unchanged** since the 2026-07-17 audit
-(`git diff d5564b8..HEAD -- tracker/tempo_map.py tracker/parser_fast.py
-tracker/loop_manager.py nes/emulator_core.py main.py constants.py` is empty), so this is a
-delta/re-verify pass per the audit protocol.
+**Invariant verdict: PASS.** Frame timing stays on the 60Hz grid. The keystone
+conversion `get_frame_for_tick(tick) = round(calculate_time_ms(0, tick) / FRAME_MS)`
+measures time **absolutely from tick 0** on every call, so rounding error is bounded
+(±0.5 frame per note) and **does not accumulate**. Since #113 the lookup is a
+bisect-based cumulative-ms index built in `np.float64`; the identity
+`calculate_time_ms(0, t) == _cumulative_ms(t)` is exact (`_cumulative_ms(0) == 0.0`),
+and segment boundaries are consistent (`bisect_right(ticks, t) - 1` makes a tempo change
+effective *at* its tick, no off-by-one). A 5-minute song lands its final note within
+±1 frame of `total_ms / FRAME_MS`. No cumulative-drift bug (D1), no mid-song multi-tempo
+boundary bug (D2), PPQ guards agree at `< 1` in both places (D5), `_frame_times`/`_frame_cache`
+dead state confirmed removed and the three alignment verdict predicates all reference the
+single `FRAME_ALIGNMENT_TOLERANCE_MS` constant (D8).
 
-Empirical re-check: a synthetic 5-minute, 120 BPM song plus two mid-song tempo changes
-(288,000 ticks, `ticks_per_beat=480`) lands the final tick at frame **18000** with **0**
-frames of drift versus `total_ms / FRAME_MS`. Sampling `calculate_time_ms(0, tick)` every
-137 ticks across the song, the max absolute error between the rounded frame and the exact
-`time_ms / FRAME_MS` value is 0.5 — i.e. exactly the quantization bound of `round()`, with
-no growth over song length (no accumulating drift). `calculate_time_ms(0, tick)` still
-computes via `_cumulative_ms(end) - _cumulative_ms(start)` (`tracker/tempo_map.py:158-190`)
-with no running counter.
+All prior TEMPO-0x/1x findings referenced in the skill are confirmed fixed and in place
+(#93, #94, #95, #96, #97, #98, #99, #113, #160, #208, #209, #210, #211, #259, #260). The
+dead optimization/loop-alignment code (D7, #97) remains unreachable and is documented in
+code with WARNING docstrings — not re-filed.
 
-One **new LOW finding** surfaced this pass, distinct from the previously-closed tick-0/tick>0
-`ZeroDivisionError` issues (#208/#209): `EnhancedTempoMap.__init__` itself (as opposed to
-`add_tempo_change`) computes `60_000_000 / initial_tempo` before any guard, so
-`EnhancedTempoMap(initial_tempo=0)` raises a raw `ZeroDivisionError` instead of the intended
-`TempoValidationError`. Confirmed **unreachable on the live MIDI→ROM pipeline** — every
-construction site in the repo (`main.py:646`, `main.py:844`, `tracker/parser_fast.py:38`,
-`tracker/parser.py:30`, `tracker/pattern_detector_parallel.py:396`) passes a hardcoded
-`initial_tempo=500000`, and `initial_tempo` is not exposed through any config file or CLI
-flag — so this is a defensive-coding gap in a public constructor, not a live crash.
+**Counts:** CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 3 (2 NEW + 1 confirmed-existing).
 
-| Severity | Count | of which NEW |
-|----------|-------|--------------|
-| CRITICAL | 0     | 0 |
-| HIGH     | 0     | 0 |
-| MEDIUM   | 0     | 0 |
-| LOW      | 1     | 1 |
-| **Total**| **1** | **1** |
+**Highest-leverage fix:** none is a live-path timing-correctness bug. The most worthwhile
+cleanup is TEMPO-15 — align the same-frame-collapse tie-break code with its own docstring
+(one operator), since it is the only discrepancy that touches the live default pipeline.
 
-**Highest-leverage fix:** guard `initial_tempo <= 0` at the top of
-`EnhancedTempoMap.__init__` (`tracker/tempo_map.py:228-245`) and raise
-`TempoValidationError` before the `60_000_000 / initial_tempo` division, mirroring the
-`change.tempo <= 0` guard already in `_validate_basic_tempo` (`:396-399`). Low urgency since
-no current call site is affected.
+## 2. Findings
 
----
+### TEMPO-15: `_collapse_same_frame_events` keeps the *earlier* note on a velocity tie, contradicting its docstring
+- **Severity**: LOW
+- **Dimension**: 4 (Extreme Tempo Bounds — same-frame collapse)
+- **Location**: `nes/emulator_core.py:24-45` (docstring line 24, comment line 38, logic line 37)
+- **Status**: NEW
+- **Description**: Both the method docstring ("ties keep the later event", line 24) and the
+  inline comment ("equal velocity keeps the later one", line 38) claim that when two note-ons
+  quantize to the same 60Hz frame and have equal velocity, the *later* event is retained. The
+  code does the opposite. Events are stably sorted by frame only (`key=lambda e: e['frame']`),
+  so among same-frame events original input order is preserved and the first-encountered is
+  appended to `kept` first. The tie-break is `if vel > prev_vel: kept[-1] = e` — a *strict*
+  greater-than, so on equal velocity the already-kept (earlier) event is retained and the
+  later one is dropped.
+- **Evidence**:
+  ```python
+  for e in note_ons:                       # note_ons sorted by frame (stable)
+      vel = e.get('velocity', e.get('volume', 0))
+      if kept and kept[-1]['frame'] == e['frame']:
+          dropped += 1
+          prev_vel = kept[-1].get('velocity', kept[-1].get('volume', 0))
+          if vel > prev_vel:               # strict '>' → tie keeps kept[-1] (earlier)
+              kept[-1] = e
+      else:
+          kept.append(e)
+  ```
+- **Impact**: Deterministic but incorrect per the documented contract. Blast radius is a single
+  note on a monophonic channel when two equal-velocity note-ons collapse to one frame
+  (legacy/default non-arranger path; the arranger arpeggiates polyphony and does not hit this).
+  Musically the choice between two equal-velocity simultaneous notes is arbitrary, so audible
+  impact is minimal — this is a doc/code contradiction, not timing drift. Keeping the *later*
+  note (most recently struck) is arguably the more musical choice, which is presumably why the
+  docs say so.
+- **Related**: Fix of #96/TEMPO-04 (the collapse itself, correct otherwise).
+- **Suggested Fix**: Change `if vel > prev_vel` to `if vel >= prev_vel` so a tie keeps the later
+  event as documented; or, if the earlier note is intentional, correct the docstring/comment
+  instead. Add a test asserting the tie outcome.
 
-## Findings
+### TEMPO-16: `EnhancedLoopManager` passes pattern event-indices to `get_tempo_at_tick` as ticks (unit mismatch)
+- **Severity**: LOW
+- **Dimension**: 6 (Loop-Point Frame Alignment)
+- **Location**: `tracker/loop_manager.py:127-128` (and `156`); positions originate in
+  `tracker/pattern_detector.py:324` (`_find_pattern_matches` → `exact_matches` → `positions`)
+- **Status**: NEW
+- **Description**: `LoopManager.detect_loops` builds each loop's `start`/`end` from pattern
+  `positions` + `length`. Those `positions` are **indices into the note-on event list**
+  (returned by `_find_pattern_matches`, which enumerates the event sequence), not MIDI ticks
+  and not frame numbers. `EnhancedLoopManager.detect_loops` then calls
+  `self.tempo_map.get_tempo_at_tick(loop_info['start'])` and `...['end'])` — feeding an event
+  index into a function whose parameter is a MIDI tick. For a single-tempo song this is harmless
+  (the lookup returns the one constant tempo regardless of the argument), but for a multi-tempo
+  song the tempo stamped onto a loop boundary is read at the wrong position and can be wrong.
+- **Evidence**:
+  ```python
+  # loop_manager.py — loop_info['start']/['end'] are event indices…
+  start_tempo = self.tempo_map.get_tempo_at_tick(loop_info['start'])   # …used as a tick
+  end_tempo   = self.tempo_map.get_tempo_at_tick(loop_info['end'])
+  ```
+  ```python
+  # pattern_detector.py:324 — positions are sequence indices, not ticks/frames
+  def _find_pattern_matches(self, sequence, pattern, start_pos) -> List[int]:
+  ```
+- **Impact**: Latent only. `EnhancedLoopManager` is **not on the default pipeline**; it is reached
+  solely via `parse_midi_to_frames_with_analysis` (opt-in `--with-analysis`) and the older
+  `tracker/parser.py`. The resulting `loop_points`/`jump_table` `tempo_state` is analysis metadata
+  that no exporter consumes to build a ROM today, so no shipped ROM loops at the wrong tempo. It
+  becomes a real bug the moment loop metadata is wired into ROM generation.
+- **Related**: Sibling to the D3 default-PPQ "analysis-only tempo map" inertness (#98).
+- **Suggested Fix**: Convert `positions` to ticks/frames before the tempo lookup (the note-on
+  events carry a `frame` field; map index → `events[idx]['frame']` and query by the time domain
+  the tempo map actually indexes), or document the boundary values as event indices and drop the
+  tempo-at-tick lookup until loops feed real timing.
 
-### TEMPO-14: `EnhancedTempoMap.__init__` divides by `initial_tempo` before any zero/negative guard — raises `ZeroDivisionError` instead of `TempoValidationError`
+### TEMPO-14: `EnhancedTempoMap.__init__` divides by `initial_tempo` before any zero/negative guard
 - **Severity**: LOW
 - **Dimension**: 3 (Default / Missing Tempo Fallback)
-- **Location**: `tracker/tempo_map.py:228-245` (`EnhancedTempoMap.__init__`), specifically
-  `initial_bpm = 60_000_000 / initial_tempo` at `:235`, which runs before
-  `super().__init__(initial_tempo, ticks_per_beat)` (`:244`) and before any tempo-specific
-  guard.
-- **Status**: NEW
-- **Description**: The constructor validates `initial_tempo` by computing
-  `initial_bpm = 60_000_000 / initial_tempo` and checking it against
-  `[min_tempo_bpm, max_tempo_bpm]`. For `initial_tempo == 0` this division raises a raw
-  `ZeroDivisionError` before the BPM-range check ever runs, so the intended
-  `TempoValidationError` (with its actionable message) never fires. This is the same failure
-  shape as the already-fixed #209 (`_validate_basic_tempo` dividing by `change.tempo` before
-  guarding it), but it is a *different, still-unguarded* code path: #208/#209 fixed
-  `EnhancedTempoMap.add_tempo_change` (both the `tick == 0` branch and the `tick > 0` branch
-  via `_validate_basic_tempo`'s `change.tempo <= 0` guard at `:396-399`); neither fix touched
-  the constructor's own `initial_bpm` computation, which has no equivalent guard.
+- **Location**: `tracker/tempo_map.py:235`
+- **Status**: Existing: #317 (OPEN) — confirmed still present, not re-filed
+- **Description**: `initial_bpm = 60_000_000 / initial_tempo` runs before `super().__init__` (and
+  before any tempo-value guard). For `initial_tempo == 0` this raises a bare `ZeroDivisionError`
+  instead of the intended `TempoValidationError`. Negative `initial_tempo` is handled correctly
+  (negative BPM fails the range check → `TempoValidationError`); only the zero case escapes as the
+  wrong exception type.
 - **Evidence**:
+  ```python
+  self.validation_config = validation_config or TempoValidationConfig()
+  initial_bpm = 60_000_000 / initial_tempo   # ZeroDivisionError when initial_tempo == 0
+  if not (min_bpm <= initial_bpm <= max_bpm):
+      raise TempoValidationError(...)
+  super().__init__(initial_tempo, ticks_per_beat)
   ```
-  >>> from tracker.tempo_map import EnhancedTempoMap
-  >>> EnhancedTempoMap(initial_tempo=0, ticks_per_beat=480)
-  Traceback (most recent call last):
-    ...
-    File "tracker/tempo_map.py", line 235, in __init__
-      initial_bpm = 60_000_000 / initial_tempo
-                    ~~~~~~~~~~~~^~~~~~~~~~~~~~~
-  ZeroDivisionError: division by zero
-  ```
-  A negative `initial_tempo` (e.g. `-500000`) similarly divides cleanly to a negative BPM,
-  which *does* correctly fail the `min_tempo_bpm <= initial_bpm` range check and raise
-  `TempoValidationError` — only the exact `initial_tempo == 0` case hits the unguarded
-  division, mirroring #209's exact failure mode one level up the call stack.
-- **Impact**: None on the current live pipeline — grepped every `EnhancedTempoMap(...)`
-  construction site in the repo (`main.py:646`, `main.py:844`, `tracker/parser_fast.py:38`,
-  `tracker/parser.py:30`, `tracker/pattern_detector_parallel.py:396`, plus test fixtures) and
-  all pass a hardcoded `initial_tempo=500000` or rely on the `500000` default; `initial_tempo`
-  is not read from `config/default_config.yaml` or any CLI flag (`grep -rn "initial_tempo"
-  config/ main.py` returns only the two hardcoded `main.py` sites). If a future call site ever
-  derives `initial_tempo` from user/file input (e.g. a config option to set the starting
-  tempo, or a library caller embedding `EnhancedTempoMap`), a `0` value would surface as an
-  unhandled `ZeroDivisionError` traceback instead of the actionable
-  `TempoValidationError` message, and — unlike `parser_fast.py`'s
-  `except TempoValidationError: continue` around `add_tempo_change` — there is no
-  corresponding guard around any `EnhancedTempoMap(...)` construction call, so it would abort
-  the whole run.
-- **Related**: Same root-cause class as the closed #209 (`_validate_basic_tempo` dividing by
-  `change.tempo` before guarding — fixed at `tracker/tempo_map.py:396-399`) and closed #208
-  (tick-0 validation bypass in `add_tempo_change`) — this finding is the *constructor's own*
-  analogous gap, untouched by either fix.
-- **Suggested Fix**: Add `if initial_tempo <= 0: raise TempoValidationError(...)` at the top
-  of `EnhancedTempoMap.__init__`, before computing `initial_bpm`, using the same message
-  pattern as `_validate_basic_tempo`'s `change.tempo <= 0` guard.
-
----
-
-## Confirmed-fixed / verified-in-place (re-verified, not re-reported)
-
-- **#97** — `optimize_tempo_changes`/`_smooth_tempo_transitions`/`_align_to_frames`/
-  `_minimize_tempo_changes` remain dead on the live path; WARNING docstrings in place
-  (`tracker/tempo_map.py:595-609`, `:682-693`); fast front-end still builds with
-  `optimization_strategy=None` (`tracker/parser_fast.py:41`). Inert, documented.
-- **#98** — `main.py:646` (`run_detect_patterns`) and `main.py:844` (`run_full_pipeline`)
-  still construct default-PPQ `EnhancedTempoMap(initial_tempo=500000)` maps that never
-  receive an `add_tempo_change`; analysis-only comments present at both sites. Inert,
-  documented.
-- **#259 / #260** — unified through `_build_tempo_map` (`tracker/parser_fast.py:26-69`);
-  passes real `mid.ticks_per_beat` (`:38`) and counts + warns on dropped tempo changes
-  (`:62-64`); both `parse_midi_to_frames` and `parse_midi_to_frames_with_analysis` share it.
-- **#113** — bisect-based `_build_tempo_index`/`_cumulative_ms` (`:129-166`);
-  `calculate_time_ms(0, tick)` remains an exact from-zero computation. Re-verified 0-frame
-  drift on a synthetic 5-minute song with mid-song tempo changes (final frame 18000; max
-  quantization error 0.5, no growth with song length).
-- **#93 / #95** — SMPTE/zero/negative `ticks_per_beat`: `TempoMap.__init__` raises
-  `ValueError` for `ticks_per_beat is None or < 1` (`:101-107`); `parse_midi_to_frames`
-  rejects it earlier. Both agree on the `< 1` boundary.
-- **#94** — widened 1–2000 BPM band with `max_tempo_change_ratio=float('inf')` and
-  count-and-warn (`parser_fast.py:100-107`, `_build_tempo_map:62-64`). In place.
-- **#96** — same-frame note collapse in `nes/emulator_core.py:16-46` (louder wins, later
-  wins on tie at `:39`, warns with count). In place.
-- **#99** — single `FRAME_ALIGNMENT_TOLERANCE_MS = 0.5` (`:23`) referenced by
-  `is_frame_aligned` (`:259`), `_validate_frame_boundaries` (`:472`), `_check_frame_alignment`
-  (`:863`). In place.
-- **#160** — note-off pairing: `compile_channel_to_frames` derives `end_frame` from the
-  matching note-off event, falling back to `sustain_frames` only when unpaired
-  (`nes/emulator_core.py:54-93`); `range(start_frame, end_frame)` emits up to but not
-  including the note-off frame. In place.
-- **#208 / #209 / #210 / #211** — tick-0 tempo validation in `add_tempo_change`
-  (`tempo_map.py:266-282`), zero/negative tempo guard in `_validate_basic_tempo`/
-  `_validate_tempo_change` (`:396-399`/`:426-429`), duplicate-tick stable tie-break (`:125`,
-  `:679`), and removal of the dead `_frame_times`/`_frame_cache` arrays — all re-verified in
-  place. TEMPO-14 above is a distinct, unguarded sibling of #209 one level up the call stack
-  (the constructor rather than `add_tempo_change`).
-
----
-
-## Dedup notes
-
-- Fetched `/tmp/audit/issues.json` (27 open issues) — no open issue matches
-  `zerodivision`/`initial_tempo`/`tempo`/`frame`/`timing`/`drift`/`bpm`/`loop` keywords other
-  than #91 (`ARR-08`, an unrelated arpeggiator-speed `ZeroDivisionError` in
-  `arranger/voice_allocator.py`) and #300/#136/#112 (DPCM/tech-debt/dead-import, unrelated to
-  tempo). No open tempo/frame-timing issue remains.
-- `docs/audits/AUDIT_TEMPO_2026-07-17.md` (immediately prior pass) reported 0 findings; this
-  pass's code is identical (`git diff` empty for all in-scope files), so all of its
-  confirmed-fixed items were re-verified rather than re-derived from scratch.
-- `docs/audits/AUDIT_TEMPO_2026-07-03.md` filed TEMPO-08 (`add_tempo_change`'s `tick == 0`
-  early return skipping validation) and TEMPO-09 (`_validate_basic_tempo` dividing by
-  `change.tempo` before guarding it) — both fixed by #208/#209 and re-verified above.
-  TEMPO-14 in this report is a related-but-distinct third gap (the constructor's own
-  `initial_bpm` computation) that neither of those fixes touched — reported separately per
-  the dedup protocol rather than folded into #209, since it is a different code location with
-  independent reachability (constructor arg vs. per-event tempo value).
-- No other domain audit (`AUDIT_PIPELINE_*`, `AUDIT_SAFETY_*`, `AUDIT_PERFORMANCE_*`)
-  references `EnhancedTempoMap.__init__`'s `initial_tempo` guard specifically.
+- **Impact**: Robustness only. No live caller passes `initial_tempo=0` — `parser_fast` and both
+  `main.py` sites hardcode `500000`, and per-tick `set_tempo` zeros are already rejected by
+  `_validate_basic_tempo` (#209). Affects only a programmatic caller constructing the map with a
+  zero initial tempo, which gets an unhelpful exception type.
+- **Related**: #209 (TEMPO-09, per-tick zero tempo), #208 (TEMPO-08, tick-0 validation).
+- **Suggested Fix** (already tracked in #317): guard `initial_tempo <= 0` and raise
+  `TempoValidationError` before the division.
 
 ---
 
 Suggested next step:
+
 ```
 /audit-publish docs/audits/AUDIT_TEMPO_2026-07-18.md
 ```

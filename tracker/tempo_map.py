@@ -230,7 +230,16 @@ class EnhancedTempoMap(TempoMap):
                  validation_config: Optional[TempoValidationConfig] = None,
                  optimization_strategy: TempoOptimizationStrategy = TempoOptimizationStrategy.FRAME_ALIGNED):
         self.validation_config = validation_config or TempoValidationConfig()
-        
+
+        # Guard a non-positive tempo before the division below (#317/TEMPO-14):
+        # initial_tempo == 0 would raise a bare ZeroDivisionError instead of the
+        # actionable TempoValidationError, mirroring the _validate_basic_tempo
+        # `change.tempo <= 0` guard fixed for add_tempo_change in #209.
+        if initial_tempo <= 0:
+            raise TempoValidationError(
+                f"Initial tempo must be a positive microseconds-per-beat value, "
+                f"got {initial_tempo}")
+
         # Validate initial tempo before calling parent
         initial_bpm = 60_000_000 / initial_tempo
         if not (self.validation_config.min_tempo_bpm <= initial_bpm <= 

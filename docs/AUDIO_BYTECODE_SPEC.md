@@ -23,6 +23,18 @@ song_00_header:
     .byte INITIAL_TEMPO
 ```
 
+**Per-channel starting bank.** When a song's total sequence bytecode outgrows one 8&nbsp;KB
+MMC3 swap bank, later channels' `*_sequence` labels are emitted into `BANK_01`+. A channel's
+stream pointer alone is therefore not enough — the engine must also know which bank each
+channel *starts* in (the within-stream `$FE CMD_BANK_JUMP` only updates the bank mid-stream).
+The exporter emits a 5-byte `channel_start_banks` table (indices `0..4` =
+pulse1/pulse2/triangle/noise/dpcm) into the fixed `CODE_8000` bank and `.export`s it;
+`audio_init` seeds `stream_bank+0..+4` from it instead of assuming bank 0 (#328/EXP-13).
+```ca65
+channel_start_banks:
+    .byte $00, $02, $02, $02, $02 ; pulse1, pulse2, triangle, noise, dpcm
+```
+
 ### 2.2 Instruments
 An instrument is simply a table of pointers to specific Macro streams.
 ```ca65

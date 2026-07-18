@@ -1005,6 +1005,7 @@ class CA65Exporter(BaseExporter):
         lines.append('.export ntsc_period_low, ntsc_period_high')
         lines.append('.export triangle_period_low, triangle_period_high')
         lines.append('.export instrument_table')
+        lines.append('.export channel_start_banks')
         lines.append('')
 
         # Write Pitch Lookup Tables. Generated from the single authoritative
@@ -1217,7 +1218,15 @@ class CA65Exporter(BaseExporter):
         lines.append(f'.segment "BANK_{current_bank:02d}"')
         lines.append('')
 
-        for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
+        # The bank each channel's sequence label physically lands in. Only
+        # pulse1 is guaranteed to be BANK_00; once earlier channels fill a bank,
+        # a later channel's label spills into BANK_01+. audio_init must seed each
+        # channel's stream_bank from this instead of assuming 0 (#328/EXP-13).
+        SEQUENCE_CHANNELS = ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']
+        channel_start_banks = {}
+
+        for channel in SEQUENCE_CHANNELS:
+            channel_start_banks[channel] = current_bank
             lines.append(f'{channel}_sequence:')
             events = channel_events[channel]
             if not events:
@@ -1286,6 +1295,17 @@ class CA65Exporter(BaseExporter):
             lines.append('    .byte $FF')
             lines.append('')
             bytes_in_current_bank += 1
+
+        # Per-channel starting-bank table (#328/EXP-13). Emitted into the fixed
+        # CODE_8000 bank (always mapped) so audio_init can read it via absolute
+        # addressing at startup, exactly like instrument_table / the period
+        # tables above. Order matches the engine's channel indices 0..4.
+        lines.append('.segment "CODE_8000"')
+        bank_bytes = ', '.join(
+            f'${channel_start_banks[ch]:02X}' for ch in SEQUENCE_CHANNELS)
+        lines.append('channel_start_banks:')
+        lines.append(f'    .byte {bank_bytes} ; pulse1, pulse2, triangle, noise, dpcm')
+        lines.append('')
 
         if not standalone:
             lines.extend([

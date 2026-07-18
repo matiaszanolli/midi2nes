@@ -313,6 +313,64 @@ class TestCA65Export(unittest.TestCase):
             if out.exists():
                 out.unlink()
 
+    def test_channel_start_banks_matches_actual_label_placement(self):
+        # Regression (#328/EXP-13): the exporter emits each channel's *_sequence
+        # label into whatever BANK_NN the running byte counter left active, so a
+        # later channel can start in BANK_01+ once pulse1 fills BANK_00. audio_init
+        # seeds stream_bank from the exported channel_start_banks table instead of
+        # hardcoding 0, so that table MUST match where each label physically lands
+        # — otherwise the engine reads the channel's stream from the wrong bank.
+        # A big pulse1 forces the spill; give the other channels a couple of hits
+        # each so their start labels land past bank 0.
+        frames = {
+            'pulse1': {str(i): {'note': 60 + (i % 24), 'volume': 8 + (i % 7)}
+                       for i in range(5000)},
+            'pulse2': {'0': {'note': 60, 'volume': 10}, '8': {'note': 62, 'volume': 10}},
+            'triangle': {'0': {'note': 48, 'volume': 15}},
+            'noise': {'0': {'note': 12, 'volume': 8}},
+            'dpcm': {'0': {'note': 1, 'volume': 15}},
+        }
+        patterns = {'p0': {'events': [{'note': 60, 'volume': 15}]}}  # non-empty -> bytecode path
+        out = Path("test_startbanks.asm")
+        try:
+            self.exporter.export_tables_with_patterns(frames, patterns, {}, str(out))
+            asm = out.read_text()
+        finally:
+            if out.exists():
+                out.unlink()
+
+        # Parse the emitted channel_start_banks table.
+        m = re.search(r'channel_start_banks:\s*\n\s*\.byte\s+([^\n;]+)', asm)
+        self.assertIsNotNone(m, "channel_start_banks table must be emitted")
+        table = [int(tok.strip().lstrip('$'), 16) for tok in m.group(1).split(',')]
+        self.assertEqual(len(table), 5, "table must have one byte per channel")
+
+        # Walk the ASM tracking the active BANK_NN segment, and record the bank
+        # each {channel}_sequence: label is actually defined in.
+        channels = ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']
+        actual_bank = {}
+        cur_bank = None
+        for line in asm.splitlines():
+            seg = re.match(r'\.segment\s+"BANK_(\d+)"', line.strip())
+            if seg:
+                cur_bank = int(seg.group(1))
+                continue
+            lbl = re.match(r'(pulse1|pulse2|triangle|noise|dpcm)_sequence:', line.strip())
+            if lbl:
+                actual_bank[lbl.group(1)] = cur_bank
+
+        for idx, ch in enumerate(channels):
+            self.assertIn(ch, actual_bank, f"{ch}_sequence label not found")
+            self.assertEqual(
+                table[idx], actual_bank[ch],
+                f"channel_start_banks[{idx}] ({table[idx]}) != {ch}_sequence's actual "
+                f"bank ({actual_bank[ch]}) — the engine would read {ch} from the wrong bank")
+
+        # The test only exercises the bug if at least one channel really spilled
+        # past bank 0; pulse1's 5000 events must push a later channel into BANK_01+.
+        self.assertGreater(max(table), 0,
+                           "expected a later channel to start past BANK_00 (test not exercising the spill)")
+
     def test_bytecode_export_caps_sequence_bank_count(self):
         # Regression (MAP-2 / #127): the macro-bytecode serializer must refuse to
         # roll past the last MMC3 swap bank (BANK_00..59) instead of emitting a
