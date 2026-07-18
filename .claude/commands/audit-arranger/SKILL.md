@@ -30,8 +30,9 @@ duplicate: GM drum routing with `/audit-dpcm`, and hardware-range/triangle limit
 > `tests/test_arranger_drum_detection.py`, `tests/test_arranger_frame_contract.py`,
 > `tests/test_voice_allocator.py`) — the "zero test coverage" gap previously tracked as REG-04
 > is resolved for the paths those tests cover. Treat the corresponding dimensions below as
-> **verify-the-fix / find edge cases**, not as live bugs. Only #88, #91, #92 (ARR-05, ARR-08,
-> ARR-09) remain open — confirm against current line numbers before filing, since fixes
+> **verify-the-fix / find edge cases**, not as live bugs. Only #88 and #91 (ARR-05, ARR-08)
+> remain open; #92 (ARR-09) was fixed — verify it still holds. Confirm against current line
+> numbers before filing, since fixes
 > upstream in the same files can drift them.
 
 ## Parameters (from $ARGUMENTS)
@@ -162,14 +163,14 @@ Checklist:
 - On-grid timing: since #252, arp phase is measured **per chord**, not off the global
   `frame_count`. `_allocate_pulse` resets `state.arp_index`/`state.arp_frame` to 0 when the
   chord changes and otherwise advances the index only when `state.arp_frame % self.arp_speed
-  == 0` (`arranger/voice_allocator.py:251`), where `state.arp_frame` counts frames since the
-  current chord started (`:250`). `self.frame_count` still increments once per `allocate_frame`
-  (`:171`) but no longer gates the arp step. Verify the per-chord counter keeps note changes on
+  == 0` (`arranger/voice_allocator.py:254`), where `state.arp_frame` counts frames since the
+  current chord started (`:253`). `self.frame_count` still increments once per `allocate_frame`
+  (`:174`) but no longer gates the arp step. Verify the per-chord counter keeps note changes on
   the 60Hz frame grid (no float drift; this is integer, good).
   `tests/test_arranger.py::test_arpeggio_step_is_frame_aligned_at_arp_speed` covers the normal
   case at `arp_speed=3`, but does not cover `arp_speed=0`.
 - **STILL OPEN — #91 (ARR-08)**: `arp_speed` is never validated. `arp_speed=0` makes
-  `state.arp_frame % self.arp_speed` raise `ZeroDivisionError` (`arranger/voice_allocator.py:251`).
+  `state.arp_frame % self.arp_speed` raise `ZeroDivisionError` (`arranger/voice_allocator.py:254`).
   Post-#252 the crash is on the **second** frame a multi-pitch chord persists on a pulse channel
   (the `else` branch), not the first — the first frame of a chord resets index/frame and never
   hits the modulo. Nothing in
@@ -178,19 +179,23 @@ Checklist:
   config surface that lets a user pass `arp_speed=0` (or a future one) would crash the whole
   pipeline. HIGH-leaning given "fails on common input" once any caller exposes the parameter.
 - In-range cycling: `state.arp_index = (state.arp_index + 1) % len(state.arp_notes)`
-  (`:252`), and when the chord changes (`arp_notes != state.arp_notes`) the index is reset to 0
-  outright (`:245-248`) rather than left to run off the end of a now-shorter list. Confirm the
+  (`:255`), and when the chord changes (`arp_notes != state.arp_notes`) the index is reset to 0
+  outright (`:248-251`) rather than left to run off the end of a now-shorter list. Confirm the
   index never indexes out of range when `arp_notes` shrinks.
-- **STILL OPEN — #92 (ARR-09)**: Pattern parity with `docs/arpeggio.md`: `_order_arp_notes`
-  (`arranger/voice_allocator.py:259-271`) implements `UP`, `DOWN`, `UP_DOWN` but the doc also
-  describes `down_up` and `random` patterns — `ArpStyle.RANDOM` exists in the enum
-  (`:49`) but `_order_arp_notes` has no branch for it (falls through `else` → plain
-  up-order) and `down_up` has no enum member at all. Flag doc-vs-code drift (LOW/MEDIUM);
-  either implement the two patterns or trim the doc to match shipped behavior.
+- **#92 (ARR-09) was fixed — verify it still holds**: Pattern parity with `docs/arpeggio.md`:
+  `_order_arp_notes` (`arranger/voice_allocator.py:262`) no longer keeps a divergent partial
+  copy — it now delegates to the canonical `tracker/track_mapper.py` `apply_arpeggio_pattern`,
+  which implements all five patterns. `ArpStyle` gained a `DOWN_UP` member and its `UP_DOWN`
+  value is now `"up_down"` (`:44-52`); `ArpStyle.RANDOM` is implemented deterministically via
+  `_deterministic_arp_order` (seeded `random.Random(seed).sample`, `tracker/track_mapper.py`).
+  Verify-the-fix: confirm `self.arp_style.value` still matches the pattern keys
+  `apply_arpeggio_pattern` accepts (so no style silently falls through to plain up-order), and that
+  the RANDOM seed keeps identical chords arpeggiating identically (determinism, Dimension 8).
 - The default `arp_style` is `ArpStyle.UP` and `arrange_for_nes` never exposes it — confirm
-  whether non-UP styles are reachable on the live path at all (they are not called from
-  `pipeline_integration.py`, so ARR-09's dead `RANDOM` branch is currently unreachable in
-  practice, not just unimplemented — note this in severity reasoning).
+  whether non-UP styles are reachable on the live path at all (they are not selected from
+  `pipeline_integration.py`, so the live path only ever uses `UP`-order; the other four patterns
+  are now implemented but exercised only by direct `VoiceAllocator`/`track_mapper` use and tests —
+  note this reachability in severity reasoning).
 - Arpeggiation only triggers when `len(unique_pitches) > 1` on a pulse channel; a chord routed
   to triangle is collapsed to its lowest note (not arpeggiated). Confirm that matches intent.
 
@@ -267,9 +272,12 @@ Checklist:
 - `_assign_channels` sorts `plan.tracks` by `priority` only (`reverse=True`); equal-priority
   tracks keep their pre-sort order (Python `sort` is stable) — confirm the pre-sort order
   (analysis append order = `self.tracks` dict order) is itself deterministic.
-- No RNG on the live path: `ArpStyle.RANDOM` is unimplemented (good — no `random` import to
-  introduce non-determinism), but verify nothing else seeds randomness. (See ARR-09, #92 —
-  if `RANDOM` is ever implemented, it must seed deterministically or pattern detection breaks.)
+- No live-path RNG divergence: `ArpStyle.RANDOM` is now implemented (#92), and
+  `tracker/track_mapper.py`'s `import random` is used only via `_deterministic_arp_order`, which
+  seeds `random.Random(seed)` from the note set so identical chords arpeggiate identically. The live
+  `arrange_for_nes` path never selects `RANDOM` (default `ArpStyle.UP`), so no non-determinism
+  reaches pattern detection — verify the seed derivation stays note-derived (not wall-clock/global
+  `random`) and that nothing else seeds randomness.
 - Frame-grid: integer modulo only (no float frame math in the arranger) — confirm no
   accumulation that could drift off 60Hz (contrast tempo path in `/audit-tempo`).
 
@@ -286,8 +294,8 @@ Checklist:
   each of the 5 channels, per Dimension 1.
 - Re-read each call path before reporting; attempt to disprove (per `_audit-common.md`
   Methodology). Run the dedup step (`gh issue list` + scan `docs/audits/`) — #84-#87 and
-  #89-#90 are CLOSED (as are #205-#207, #230-#232, #251-#253, #268); only #88, #91, #92 remain
-  OPEN as of this writing; re-verify current state, don't trust this file.
+  #89-#90 are CLOSED (as are #205-#207, #230-#232, #251-#253, #268, and now #92); only #88 and #91
+  remain OPEN as of this writing; re-verify current state, don't trust this file.
 
 ## Output
 Write to: **`docs/audits/AUDIT_ARRANGER_<TODAY>.md`** (YYYY-MM-DD). Structure:

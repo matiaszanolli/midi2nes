@@ -146,13 +146,19 @@ labels. Hunt for values that can exceed a byte without clamping in
   to the 7-bit $4011 domain (`docs/APU_DMC_REFERENCE.md`, 0–127).
 - **Verify fix (nes-hardware #158, closed, touches this file)**: `note` is now clamped on
   *both* ends before it's baked into the bytecode stream and fed back into
-  `midi_note_to_timer_value`: `elif note > 95: note = 95` (`:1075-1076`) and, for tone
+  `midi_note_to_timer_value`: `elif note > 95: note = 95` (`:1082-1083`) and, for tone
   channels other than noise, `elif channel != 'noise' and 0 < note < 24: note = 24`
-  (`:1077-1085`, added so the runtime base-period lookup and the pitch offset agree on the same note — a
+  (`:1084-1092`, added so the runtime base-period lookup and the pitch offset agree on the same note — a
   sub-C1 note previously produced `base_timer = 0` and a pitch offset that overflowed the
-  11-bit timer). Confirm both clamps still hold and that a clamped note is at least
-  logged/counted somewhere upstream — a silent clamp on common input is the boundary
-  between MEDIUM and CRITICAL per the severity rubric.
+  11-bit timer). Confirm both clamps still hold.
+- **Verify fix (#298, closed) — EXP-10**: the clamp is no longer silent. Tone-channel
+  notes re-pitched by either clamp are counted (`:1099-1105`, keyed on the pre-clamp
+  source note so a sustained note counts once and dpcm — whose "note" is a sample id — is
+  excluded), tallied onto `self.notes_clamped = {'high':.., 'low':..}` (`:1308`), and
+  reported with a one-line `⚠ N note(s) clamped to the NES tone range (24-95)…` summary at
+  end of export (`:1310-1315`). Confirm the count still fires on both boundaries so an
+  out-of-range song is surfaced rather than silently re-pitched — that counter is what
+  moves this off the silent-clamp MEDIUM/CRITICAL boundary in the severity rubric.
 
 Any out-of-range `.byte` = HIGH (won't assemble or wraps to a wrong value).
 

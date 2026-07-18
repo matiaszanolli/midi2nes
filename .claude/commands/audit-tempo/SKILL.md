@@ -72,7 +72,9 @@ defaults to 480** even though the MIDI file may declare a different PPQ. `tracke
   tempo map with a single flat entry). This is dead/misleading configuration (LOW: doesn't affect
   ROM output today) rather than a live timing bug — but it is fragile: if either call site is ever
   changed to feed real ticks or add tempo changes, the hardcoded 480 would silently diverge from the
-  file's actual PPQ. Flag as tech debt / latent trap, not as an active HIGH drift bug (#98).
+  file's actual PPQ. Flag as tech debt / latent trap, not as an active HIGH drift bug (#98 — CLOSED:
+both construction sites now carry an "analysis-only" comment documenting the inertness, so do NOT
+re-file; re-flag only if a call site starts deriving timing from these maps).
 - A MIDI file with **no** `set_tempo` event: does the initial `(0, 500000)` correctly stand in (120 BPM), and is that documented behavior?
 - `initial_tempo=0` or negative: `EnhancedTempoMap.__init__` (line ~229) computes
   `60_000_000 / initial_tempo` for BPM validation *before* calling `super().__init__` — confirm this
@@ -140,11 +142,14 @@ is reachable and its correctness matters whenever either path is used:
 ### Dimension 7: Validation / Optimization Fidelity
 `optimize_tempo_changes` (`tracker/tempo_map.py`, lines ~668-688) and `_align_to_frames`
 (~622-666), `_minimize_tempo_changes` (~581-593), `_smooth_tempo_transitions` (~595-620) can
-*rewrite* the tempo list. **Confirmed still dead on the live path (TEMPO-05, #97)**: both
-`tracker/parser_fast.py`'s `parse_midi_to_frames` (line ~53) and `main.py`'s
-`EnhancedTempoMap` construction sites (lines ~621, ~811) pass or default to
+*rewrite* the tempo list. **Confirmed still dead on the live path (TEMPO-05, #97 — CLOSED,
+documented in code)**: both `tracker/parser_fast.py`'s `parse_midi_to_frames` (line ~53) and
+`main.py`'s `EnhancedTempoMap` construction sites (lines ~621, ~811) pass or default to
 `optimization_strategy=None` / never call `optimize_tempo_changes()` — grep confirms no call site
-outside `tracker/tempo_map.py` itself and its tests. The invariant if it's ever wired up: optimization
+outside `tracker/tempo_map.py` itself and its tests. #97 was closed by adding WARNING docstrings to
+`optimize_tempo_changes` and `_smooth_tempo_transitions` (the µs/quarter-interpolation timing hazard
+below is now documented in code), so do NOT re-file it — re-flag only if a real call site appears.
+The invariant if it's ever wired up: optimization
 may change *representation* but must not change *musical timing* of notes. Audit:
 - `_align_to_frames` binary-searches a new tick for each tempo change (±`ticks_per_beat`) — confirm it only snaps to the *nearest* frame boundary and cannot move a change far enough to alter which frame following notes land on.
 - `_minimize_tempo_changes` drops changes within 5% — confirm dropped changes truly don't shift downstream frames (5% tempo over a long segment is real drift).

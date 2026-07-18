@@ -124,6 +124,13 @@ compression is MEDIUM (it guards a CRITICAL failure mode).
   unconditionally, and `test_shared_music_asm_fixture_is_linkable` pins the `.export`.
   Re-verify these PASS (not skip) with the toolchain present — a re-introduced
   `except → skip` here is exactly what this dimension catches.
+- **Fixed (REG-15/#299)**: the two compile-*failure* (negative-path) tests in the same file
+  (`test_compilation_with_invalid_assembly`, `test_compilation_failure_without_rom_output`) kept
+  the `except → pytest.skip("CC65 not installed")` masking after REG-10 removed it from the
+  compile-*success* tests, compounded by pass-either-way bodies. Now both are `@requires_cc65`
+  and assert `compile_rom(...) is False` plus no partial ROM. `compile_rom()` catches all failures
+  and returns False (never raises), so any surviving `except → skip` in this file is dead masking —
+  re-flag it.
 - **Fixed (REG-11/#129)**: the anchor `test_full_pipeline_midi_to_validated_rom`
   (`tests/test_e2e_pipeline.py`) can now fail on a broken pipeline. The old
   `try/except → pytest.skip`, `args.skip_validation = True`, and `if rom_path.exists():`
