@@ -74,16 +74,22 @@ class MemoryMonitor:
         self._monitor_thread = None
         self._peak_memory = 0
         self._memory_samples = []
-        
+        self._sampling_errors = 0
+
     def start_monitoring(self):
         """Start continuous memory monitoring."""
         if self._monitoring:
             return
-            
+
         self._monitoring = True
         self._peak_memory = 0
-        self._memory_samples = []
-        
+        self._sampling_errors = 0
+        # Seed with an immediate RSS read (#336/PERF-16): the monitor thread's
+        # first sample can arrive after stop_monitoring() already ran for
+        # sub-interval work, leaving _memory_samples empty and stop_monitoring
+        # reporting a misleading peak_mb=0 instead of the RSS at start.
+        self._memory_samples = [self.process.memory_info().rss / 1024 / 1024]
+
         self._monitor_thread = threading.Thread(target=self._monitor_loop)
         self._monitor_thread.daemon = True
         self._monitor_thread.start()
@@ -98,17 +104,20 @@ class MemoryMonitor:
         self._monitoring = False
         if self._monitor_thread:
             self._monitor_thread.join(timeout=1.0)
-        
+
+        # _memory_samples always has at least the start_monitoring() seed
+        # sample, so this is now defense-in-depth, not the common case.
         if not self._memory_samples:
             return {"peak_mb": 0, "average_mb": 0, "samples": 0}
-        
+
         return {
             "peak_mb": max(self._memory_samples),
             "average_mb": sum(self._memory_samples) / len(self._memory_samples),
             "samples": len(self._memory_samples),
-            "min_mb": min(self._memory_samples)
+            "min_mb": min(self._memory_samples),
+            "sampling_errors": self._sampling_errors
         }
-    
+
     def _monitor_loop(self):
         """Memory monitoring loop."""
         while self._monitoring:
@@ -118,6 +127,13 @@ class MemoryMonitor:
                 self._peak_memory = max(self._peak_memory, memory_mb)
                 time.sleep(self.interval_ms / 1000.0)
             except Exception:
+                # Count instead of silently discarding (#336/PERF-16) --
+                # KeyboardInterrupt/SystemExit still propagate since this
+                # only catches Exception. A sampling error ends the loop
+                # (self.process may no longer be readable), but the caller
+                # can now tell a stat-collection failure happened instead of
+                # reading a clean-looking (and possibly short) sample set.
+                self._sampling_errors += 1
                 break
 
 

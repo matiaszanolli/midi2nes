@@ -36,17 +36,25 @@ from compiler import compile_rom
 PATTERN_MIN_LENGTH = 3
 PATTERN_MAX_LENGTH = 12
 
-def get_pattern_detection_caps(config_path: Optional[str] = None):
-    """Resolve the sequential/parallel pattern-detection event-sampling caps.
+# Advisory large-file heads-up threshold, aligned with the parallel detector's
+# sampling cap by default (#334/PERF-14) -- overridable in lockstep with the
+# other two caps via processing.pattern_detection.large_file_threshold.
+LARGE_FILE_THRESHOLD_DEFAULT = MAX_PATTERN_EVENTS
 
-    Defaults to the hardcoded DETECTOR_MAX_EVENTS/MAX_PATTERN_EVENTS constants;
-    when `config_path` is given, `processing.pattern_detection.max_events` /
-    `max_pattern_events` override them (#219) — this is the single place both
-    the `detect-patterns` subcommand and the default full pipeline resolve
-    these caps from, so they stay in sync.
+def get_pattern_detection_caps(config_path: Optional[str] = None):
+    """Resolve the sequential/parallel pattern-detection event-sampling caps
+    plus the advisory large-file threshold.
+
+    Defaults to the hardcoded DETECTOR_MAX_EVENTS/MAX_PATTERN_EVENTS/
+    LARGE_FILE_THRESHOLD_DEFAULT constants; when `config_path` is given,
+    `processing.pattern_detection.max_events` / `max_pattern_events` /
+    `large_file_threshold` override them (#219, #334) — this is the single
+    place both the `detect-patterns` subcommand and the default full pipeline
+    resolve these caps from, so they stay in sync.
     """
     max_events = DETECTOR_MAX_EVENTS
     max_pattern_events = MAX_PATTERN_EVENTS
+    large_file_threshold = LARGE_FILE_THRESHOLD_DEFAULT
     if config_path:
         try:
             config_manager = ConfigManager(config_path)
@@ -59,7 +67,9 @@ def get_pattern_detection_caps(config_path: Optional[str] = None):
         max_events = config_manager.get("processing.pattern_detection.max_events", DETECTOR_MAX_EVENTS)
         max_pattern_events = config_manager.get(
             "processing.pattern_detection.max_pattern_events", MAX_PATTERN_EVENTS)
-    return max_events, max_pattern_events
+        large_file_threshold = config_manager.get(
+            "processing.pattern_detection.large_file_threshold", LARGE_FILE_THRESHOLD_DEFAULT)
+    return max_events, max_pattern_events, large_file_threshold
 
 def load_json_stage(path, required_keys, stage_name):
     """Load an inter-stage JSON artifact with an existence/parse/key guard.
@@ -636,7 +646,7 @@ def run_detect_patterns(args):
     frames = load_json_stage(args.input, [], 'frames')
 
     # Sequential detector's event cap, optionally overridden by --config (#219).
-    max_events, _ = get_pattern_detection_caps(getattr(args, 'config', None))
+    max_events, _, _ = get_pattern_detection_caps(getattr(args, 'config', None))
 
     # Create tempo map and pattern detector. tempo_map is a required
     # constructor arg but carries no real tempo-change data here (the events
@@ -857,14 +867,16 @@ def run_full_pipeline(args):
                 # extractor skips the dpcm_sample_map side table — #261).
                 events = frames_to_events(frames)
 
-                # Check if we should skip pattern detection for very large files
-                LARGE_FILE_THRESHOLD = 10000
-                if len(events) > LARGE_FILE_THRESHOLD:
+                # Sampling caps + advisory large-file threshold, optionally
+                # overridden in lockstep by --config (#219, #334/PERF-14).
+                max_events, max_pattern_events, large_file_threshold = get_pattern_detection_caps(
+                    getattr(args, 'config', None))
+
+                # Heads-up only -- does not alter detection (that's what
+                # max_pattern_events actually caps).
+                if len(events) > large_file_threshold:
                     print(f"  ⚠️  Large MIDI file ({len(events):,} events) detected")
                     print(f"  🚀 Proceeding with improved pattern detection...")
-
-                # Sampling caps, optionally overridden by --config (#219).
-                max_events, max_pattern_events = get_pattern_detection_caps(getattr(args, 'config', None))
 
                 # Use parallel pattern detection with position mapping fix
                 try:

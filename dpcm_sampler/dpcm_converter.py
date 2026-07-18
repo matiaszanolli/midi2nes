@@ -12,9 +12,14 @@ def convert_wav_to_unsigned_pcm(wav_path, sample_rate=8000):
         dtype = {1: np.uint8, 2: np.int16}[sampwidth]
         data = np.frombuffer(frames, dtype=dtype)
 
-        # Convert to mono if needed
+        # Convert to mono if needed. Cast back to the source dtype
+        # immediately: .mean() always promotes to float64, and the 8-bit
+        # (sampwidth==1) path has no later re-cast to catch it -- only the
+        # sampwidth==2 branch below normalizes back to uint8, so a
+        # multi-channel 8-bit WAV previously left this function returning a
+        # float64 array where every other path returns uint8 (#337/REG-18).
         if channels > 1:
-            data = data.reshape(-1, channels).mean(axis=1)
+            data = data.reshape(-1, channels).mean(axis=1).astype(dtype)
 
         # Normalize to 8-bit unsigned PCM range
         if sampwidth == 2:

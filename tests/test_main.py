@@ -1503,10 +1503,17 @@ class TestGetPatternDetectionCaps:
     the hardcoded constants and honor a config file override when given."""
 
     def test_defaults_when_no_config_path(self):
-        from main import get_pattern_detection_caps, DETECTOR_MAX_EVENTS, MAX_PATTERN_EVENTS
-        max_events, max_pattern_events = get_pattern_detection_caps(None)
+        from main import (
+            get_pattern_detection_caps, DETECTOR_MAX_EVENTS, MAX_PATTERN_EVENTS,
+            LARGE_FILE_THRESHOLD_DEFAULT
+        )
+        max_events, max_pattern_events, large_file_threshold = get_pattern_detection_caps(None)
         assert max_events == DETECTOR_MAX_EVENTS
         assert max_pattern_events == MAX_PATTERN_EVENTS
+        assert large_file_threshold == LARGE_FILE_THRESHOLD_DEFAULT
+        # #334/PERF-14: the advisory threshold defaults in lockstep with the
+        # parallel detector's real sampling cap, not an unrelated magic number.
+        assert large_file_threshold == MAX_PATTERN_EVENTS
 
     def test_overridden_by_config_file(self):
         from main import get_pattern_detection_caps
@@ -1518,10 +1525,12 @@ class TestGetPatternDetectionCaps:
                 "  pattern_detection:\n"
                 "    max_events: 250\n"
                 "    max_pattern_events: 5000\n"
+                "    large_file_threshold: 4000\n"
             )
-            max_events, max_pattern_events = get_pattern_detection_caps(str(config_path))
+            max_events, max_pattern_events, large_file_threshold = get_pattern_detection_caps(str(config_path))
             assert max_events == 250
             assert max_pattern_events == 5000
+            assert large_file_threshold == 4000
         finally:
             import shutil
             shutil.rmtree(temp_dir, ignore_errors=True)

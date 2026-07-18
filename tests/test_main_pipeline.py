@@ -476,9 +476,11 @@ class TestRunFullPipeline:
         self, mock_parse, mock_assign, mock_emulator_class,
         mock_exporter_class, mock_builder_class, mock_compile
     ):
-        """Test full pipeline with large MIDI file (>10000 events)."""
+        """Test full pipeline with large MIDI file (exceeds the advisory
+        large-file threshold, which defaults to MAX_PATTERN_EVENTS=15000 per
+        #334/PERF-14 -- use a count comfortably past that, not equal to it)."""
         # Create large event list
-        large_events = [{"frame": i, "note": 60, "volume": 15} for i in range(15000)]
+        large_events = [{"frame": i, "note": 60, "volume": 15} for i in range(20000)]
 
         mock_parse.return_value = {
             "events": {"0": large_events},
@@ -488,7 +490,7 @@ class TestRunFullPipeline:
 
         mock_emulator = Mock()
         mock_emulator.process_all_tracks.return_value = {
-            "pulse1": {str(i): {"note": 60, "volume": 15} for i in range(15000)}
+            "pulse1": {str(i): {"note": 60, "volume": 15} for i in range(20000)}
         }
         mock_emulator_class.return_value = mock_emulator
 
