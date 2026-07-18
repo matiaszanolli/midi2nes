@@ -117,7 +117,7 @@ class MemoryMonitor:
                 self._memory_samples.append(memory_mb)
                 self._peak_memory = max(self._peak_memory, memory_mb)
                 time.sleep(self.interval_ms / 1000.0)
-            except:
+        except Exception:
                 break
 
 
