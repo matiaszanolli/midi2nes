@@ -132,6 +132,21 @@ class TestArrangerGMProgramHint(unittest.TestCase):
         self.assertEqual(bass_note.program, 33)
         self.assertEqual(trumpet_note.program, 56)
 
+    def test_track_program_uses_most_common_not_first_note(self):
+        """Regression (#308): a program_change arriving after the first note-on
+        (e.g. a leading pickup note) must not misidentify the track as program 0.
+        The representative program is the most frequent across the track, not the
+        first note's."""
+        events = {
+            'track': (_held(60, 0, 2, program=0)       # leading pickup, default piano
+                      + _held(43, 4, 4, program=38)    # Synth Bass — the real instrument
+                      + _held(45, 10, 4, program=38)
+                      + _held(47, 16, 4, program=38)),
+        }
+        plan, _, _ = analyze_midi_events(events)
+        track = next(t for t in plan.tracks if t.name == 'track')
+        self.assertEqual(track.program, 38)
+
 
 class TestArrangerArpeggiation(unittest.TestCase):
     def _chord_events(self):
