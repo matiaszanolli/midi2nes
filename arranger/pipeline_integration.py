@@ -5,6 +5,7 @@ Bridges the arranger module with the existing MIDI2NES pipeline,
 providing drop-in replacements for track mapping and frame generation.
 """
 
+from collections import Counter
 from typing import Dict, List, Tuple
 
 from .role_analyzer import VoiceRoleAnalyzer, NoteInfo, ArrangementPlan
@@ -127,13 +128,14 @@ def analyze_midi_events(
         if is_drum_track:
             analyzer.mark_drum_track(track_idx)
 
-        # GM program hint for role/timbre analysis (#86): parser_fast now
-        # carries each channel's active program on every note event; use the
-        # first note's program as the track's representative instrument
-        # (GM programs are conventionally set once per track before any notes).
-        track_program = next(
-            (e['program'] for e in events if e.get('program') is not None), 0
-        )
+        # GM program hint for role/timbre analysis (#86): parser_fast carries
+        # each channel's active program on every note event. Use the most
+        # frequently-occurring program across the track as its representative
+        # instrument rather than the first note's — a program_change that
+        # arrives after the first note-on (e.g. a leading pickup note, common in
+        # DAW exports) would otherwise misidentify the track as program 0 (#308).
+        programs = [e['program'] for e in events if e.get('program') is not None]
+        track_program = Counter(programs).most_common(1)[0][0] if programs else 0
         analyzer.set_track_program(track_idx, track_program)
 
         # Group note_on and note_off events
