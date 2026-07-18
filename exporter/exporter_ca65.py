@@ -597,7 +597,8 @@ class CA65Exporter(BaseExporter):
             lines.extend(self._emit_safe_beq('@sustain', 'p1_sustain', bank_size,
                                               "; Same note - sustain, don't retrigger"))
             lines.extend([
-                '    sta last_pulse1_note   ; Different note - update tracker',
+                '    sta last_pulse1_note   ; NB: STA does not affect Z',
+                '    cmp #0                 ; re-test the note (A still holds it); STA left the stale CMP flags (#66/#107)',
                 '    ',
                 '    ; Note changed - check if new note is silence',
             ])
@@ -652,7 +653,8 @@ class CA65Exporter(BaseExporter):
             ])
             lines.extend(self._emit_safe_beq('@sustain', 'p2_sustain', bank_size))
             lines.extend([
-                '    sta last_pulse2_note',
+                '    sta last_pulse2_note   ; NB: STA does not affect Z',
+                '    cmp #0                 ; re-test the note (A still holds it); STA left the stale CMP flags (#66/#107)',
                 '    ',
                 '    ; Note changed - check if silence',
             ])
@@ -704,7 +706,8 @@ class CA65Exporter(BaseExporter):
             ])
             lines.extend(self._emit_safe_beq('@sustain', 'tri_sustain', bank_size))
             lines.extend([
-                '    sta last_triangle_note',
+                '    sta last_triangle_note ; NB: STA does not affect Z',
+                '    cmp #0                 ; re-test the note (A still holds it); STA left the stale CMP flags (#66/#107)',
                 '    ',
                 '    ; Note changed - check if silence',
             ])

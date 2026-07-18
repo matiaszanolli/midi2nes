@@ -241,6 +241,53 @@ class TestNoiseDpcmReachAPU(unittest.TestCase):
         self.assertIn('beq @done', guard)
 
 
+class TestDirectExportSilenceGuardReTestsNote(unittest.TestCase):
+    """Regression (NH-14 / #107): the pulse1/pulse2/triangle direct-export
+    note-changed-to-silence guard tested the stale Z flag left by `cmp
+    last_*_note` (STA does not affect Z), so `beq @silence` never actually
+    branched on the newly loaded note. Same root-cause 6502 flag bug as #66
+    (D-03) in play_dpcm. Noise is unaffected: #162/NH-19 already removed its
+    last_noise_note sustain check, so its @silence guard tests A right after
+    the table-read `lda`, with no intervening `sta`."""
+
+    def setUp(self):
+        self.exporter = CA65Exporter()
+
+    def _guard_between(self, content, proc_name, sta_var):
+        proc = content.split(f'.proc {proc_name}')[1].split('.endproc')[0]
+        return proc[proc.index(sta_var):proc.index('@silence:')]
+
+    def _export(self, frames):
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            self.exporter.export_direct_frames(frames, out, standalone=True)
+            return Path(out).read_text()
+        finally:
+            if os.path.exists(out):
+                os.remove(out)
+
+    def test_pulse1_silence_guard_re_tests_note(self):
+        content = self._export({'pulse1': {'0': {'note': 40, 'volume': 10},
+                                            '1': {'note': 0, 'volume': 0}}})
+        guard = self._guard_between(content, 'play_pulse1', 'sta last_pulse1_note')
+        self.assertIn('cmp #0', guard)
+        self.assertIn('beq @silence', guard)
+
+    def test_pulse2_silence_guard_re_tests_note(self):
+        content = self._export({'pulse2': {'0': {'note': 40, 'volume': 10},
+                                            '1': {'note': 0, 'volume': 0}}})
+        guard = self._guard_between(content, 'play_pulse2', 'sta last_pulse2_note')
+        self.assertIn('cmp #0', guard)
+        self.assertIn('beq @silence', guard)
+
+    def test_triangle_silence_guard_re_tests_note(self):
+        content = self._export({'triangle': {'0': {'note': 40, 'volume': 10},
+                                              '1': {'note': 0, 'volume': 0}}})
+        guard = self._guard_between(content, 'play_triangle', 'sta last_triangle_note')
+        self.assertIn('cmp #0', guard)
+        self.assertIn('beq @silence', guard)
+
+
 class TestTriangleControlByte(unittest.TestCase):
     """Test triangle channel control byte generation - critical for silence."""
 
