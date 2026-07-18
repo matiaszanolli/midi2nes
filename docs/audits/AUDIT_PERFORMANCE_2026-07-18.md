@@ -1,220 +1,243 @@
 # Performance Audit — MIDI2NES
 
 - **Date**: 2026-07-18
-- **Scope**: parser hot path, parallel pattern-detector scaling, large-file sampling,
-  inter-stage memory, serialization cost, benchmark-harness validity, profiling
-  utilities, cross-stage redundant recomputation — per
-  `.claude/commands/audit-performance/SKILL.md`.
-- **Method**: live source re-read at HEAD `b562e1d`; severity per `_audit-severity.md`;
-  dedup against the pre-fetched open-issue list (`/tmp/audit/issues.json`, 27 open) and
-  every prior report in `docs/audits/`, in particular the 12-day-prior
-  `docs/audits/AUDIT_PERFORMANCE_2026-07-06.md`.
-- **Prompt-injection note**: no injected instructions were encountered in any tool
-  result, file, or command output during this audit.
-
-## What changed since the 2026-07-06 audit
-
-None of the changes since `8308a63` (last perf-audit HEAD) touch the performance-critical
-modules this SKILL targets. `git diff --stat 8308a63..HEAD -- tracker/ benchmarks/
-utils/profiling.py main.py nes/emulator_core.py` shows only four files, all functional
-fixes for *other* domains:
-
-- **`tracker/parser_fast.py`** — extracted `_build_tempo_map(mid, config)` as a shared
-  helper used by both `parse_midi_to_frames` and `parse_midi_to_frames_with_analysis`
-  (#259/#260, tempo-map-unification fix, not a performance change). The **structure is
-  identical**: still exactly two passes over `mid.tracks` in the default parser (one via
-  `_build_tempo_map`, one for notes), and the analysis variant still re-opens the file
-  and rebuilds the tempo map from scratch (the "could be optimized with caching" comment
-  is unchanged — Dimension 1's LOW-grade redundancy still stands, just DRY'd up rather
-  than duplicated). No new pass, no new per-event scan.
-- **`tracker/tempo_map.py`** — docstring-only additions on `_smooth_tempo_transitions`
-  and `optimize_tempo_changes` (#97, tempo-correctness audit) documenting that neither
-  is wired into the live pipeline. The bisect tempo index (`_build_tempo_index`) that
-  Dimension 1 depends on is untouched.
-- **`tracker/track_mapper.py`** — added `_deterministic_arp_order` (#92, seeded RNG for
-  reproducible arpeggio order) replacing `random.sample` in the legacy-mode "random"
-  arpeggio pattern. This runs once per chord in `apply_arpeggio_pattern`, is O(len(notes))
-  same as before, and only affects `track_mapper.py`'s legacy (non-`--arranger`) path —
-  not a hot loop, no algorithmic change.
-- **`main.py`** — mapper-recovery-from-`nes.cfg` fix for `run_compile` (#297) and a
-  documentation comment on the pattern-detection stage's analysis-only `tempo_map`
-  construction (#98). Neither changes control flow, loop structure, or allocation
-  pattern in the parse/map/frames/detect-patterns/export stages this SKILL audits.
-
-`tracker/pattern_detector_parallel.py`, `tracker/pattern_detector.py`,
-`benchmarks/performance_suite.py`, `benchmarks/run_benchmarks.py`, and
-`utils/profiling.py` — **zero diff** since the last perf audit. Re-read each in full
-regardless (per the skeptical checklist) rather than trusting the diff alone; all
-previously-confirmed-fixed behavior (bisect tempo index, O(n) `_collect_length_candidates`
-grouping, one-shot pool IPC via `initializer`, single-chunk serial short-circuit, compact
-intermediate JSON, reference-counted tracemalloc acquire/release) is unchanged.
+- **Scope**: Compile-path performance correctness — parse speed, parallel pattern
+  detection, large-file sampling, inter-stage memory, serialization cost, benchmark
+  harness validity, profiling utilities, cross-stage recompute.
+- **Method**: Re-read each live code path, confirmed against the shared audit
+  protocol/severity rubrics, deduped against open/closed GitHub issues.
 
 ## Summary
 
-| Severity | New this cycle | Open (carried) |
-|----------|-----------------|----------------|
-| CRITICAL | 0 | 0 |
-| HIGH     | 0 | 0 |
-| MEDIUM   | 0 | 0 |
-| LOW      | 0 | 2 |
+### Finding counts by severity
+| Severity | Count |
+|----------|-------|
+| CRITICAL | 0 |
+| HIGH | 0 |
+| MEDIUM | 2 |
+| LOW | 4 |
+| **Total** | **6** |
 
-**Total tracked findings: 2 — both pre-existing OPEN issues, both LOW. No new defects.**
+### Finding counts by dimension
+| Dimension | Count |
+|-----------|-------|
+| 1 — Parser hot-path | 0 (verified clean) |
+| 2 — Parallel detector scaling | 2 |
+| 3 — Large-file sampling thresholds | 1 |
+| 4 — Inter-stage memory | 0 (mitigated, see notes) |
+| 5 — Serialization cost | 0 (verified fixed) |
+| 6 — Benchmark-harness validity | 1 |
+| 7 — Profiling-utility correctness | 1 |
+| 8 — Cross-stage redundant recompute | 1 |
 
-This is the second consecutive fix-verification pass with zero new findings (the
-2026-07-06 audit was also zero-new). The two carried items are unchanged in both
-location and substance:
+### 3 highest-leverage fixes
+1. **PERF-11 (Existing #262, MEDIUM)** — the pattern-detection benchmark inherits
+   `max_pattern_length=32` (constructor default) instead of production's `12`, and
+   there is no checked-in baseline + regression gate. The harness that is supposed to
+   catch regressions measures a different (heavier) workload than production and has no
+   pass/fail comparison — it cannot fail on a regression.
+2. **PERF-12 (NEW, MEDIUM)** — after the #114 fix, work is chunked one-per-pattern-length,
+   so with the pipeline defaults (min 3, max 12) there are only **10 tasks** regardless
+   of input size or core count. On boxes with >10 usable cores the extra cores sit idle;
+   the "distributes work across all CPU cores" claim no longer holds for the default
+   config.
+3. **The `indent=2` hot-intermediate concern is already resolved (#116)** — no action
+   needed; see "Verified-fixed" below. The next-best real win after PERF-11/12 is
+   PERF-14 (align/expose the advisory large-file threshold).
 
-- **PERF-04 (#115, LOW)** — inter-stage event-sequence duplication + events→frames→events
-  round-trip; no `del` between stages.
-- **PERF-11 (#262, LOW)** — the pattern-detection benchmark still constructs
-  `ParallelPatternDetector(tempo_map, min_pattern_length=3)` without `max_pattern_length`,
-  still inheriting the constructor default **32** vs production's **12**; still no
-  checked-in baseline / regression gate.
-
-PERF-01/#113, PERF-02/#114, PERF-03/#219, PERF-05/#116, PERF-06/#117, PERF-07/#118,
-PERF-08/#119, PERF-09/#218, PERF-10/#261 remain **confirmed fixed**, re-verified against
-the current HEAD (details below), not merely carried over from the last report's
-conclusion.
-
-### Highest-leverage items (unchanged from last cycle)
-
-1. **PERF-11 (#262, LOW, still open)** — benchmark param drift (`max_pattern_length` 32 vs
-   12) + no regression baseline. Still the one gap that keeps the harness from catching a
-   detector regression even though it now measures the right modules.
-2. **PERF-04 (#115, LOW, still open)** — parsed→mapped→frames→events held simultaneously;
-   the memory high-water mark on a long song. No streaming/`del`.
-3. Nothing else rises above LOW. The compact-JSON win (PERF-05), the O(n) detector core
-   (PERF-02), and the tracemalloc-nesting fix (PERF-07) are all intact and re-verified
-   line-by-line this cycle.
+### Verified-fixed (re-confirmed against live code, no finding)
+- **Dim 1** — `parse_midi_to_frames` makes two linear passes; tempo lookups are O(log T)
+  via the lazily-built bisect index (`_build_tempo_index`, `_get_tempo_index`) with
+  cumulative-ms precompute, invalidated on every `tempo_changes` mutation (#113 CLOSED,
+  holds). Dropped-note path counts + warns, no silent swallow (#124/#125).
+- **Dim 2 core** — `_collect_length_candidates` is a single O(n) hash-grouping pass per
+  length; workers and the serial fallback share it; sequence/events shipped once per
+  worker via `initializer=_init_pattern_worker` (#114 CLOSED, holds). Single-chunk
+  guard skips the pool for trivial input (#218).
+- **Dim 5** — all hot intermediates (`run_parse`, `run_map`, `run_frames`,
+  `run_detect_patterns`) write `json.dumps(..., separators=(',',':'))`, not `indent=2`
+  (#116 CLOSED, holds). Only the human-read benchmark report keeps `indent=2`.
+- **Dim 6 partial** — benchmark imports `tracker.parser_fast.parse_midi_to_frames` and
+  constructs `ParallelPatternDetector`, matching production modules; `profiler.profile`
+  is a `@contextmanager` running `_end_profiling` exactly once (#117 CLOSED, holds).
+- **Dim 7 partial** — tracemalloc start/stop is reference-counted via
+  `_tracemalloc_acquire`/`_release` (#118 CLOSED, holds).
+- **Dim 4** — the per-chunk full-sequence duplication behind PERF-04 (#115, OPEN) is
+  eliminated by #114; peak is now ~`min(max_workers, chunk_count) × sequence size`.
+  #115 as originally described is largely mitigated; the residual per-stage JSON copies
+  are inherent to the file-based pipeline and bounded by event count. No new finding.
 
 ---
 
 ## Findings
 
-_No NEW findings this cycle._ The two items below are pre-existing OPEN issues,
-re-verified against the live code (HEAD `b562e1d`) per the dedup protocol and carried
-forward (not re-filed).
-
-### PERF-11: Pattern-detection benchmark uses `max_pattern_length=32` (default) vs production's 12; no regression baseline
-- **Severity**: LOW
-- **Dimension**: D6 — Benchmark-harness validity
-- **Location**: `benchmarks/performance_suite.py:217`
-  (`ParallelPatternDetector(tempo_map, min_pattern_length=3)`);
-  `tracker/pattern_detector_parallel.py:17` (`max_pattern_length=32` default);
-  `main.py:36-37` (`PATTERN_MIN_LENGTH=3`, `PATTERN_MAX_LENGTH=12` — confirmed present
-  at current line numbers), `main.py:862` (production passes
-  `max_pattern_length=PATTERN_MAX_LENGTH`); `benchmarks/run_benchmarks.py:59-77`
-  (no baseline comparison)
+### PERF-11: Benchmark measures `max_pattern_length=32` vs production `12`, and has no regression gate
+- **Severity**: MEDIUM
+- **Dimension**: 6 — Benchmark-harness validity
+- **Location**: `benchmarks/performance_suite.py:217`; production param at
+  `main.py:872` (`PATTERN_MAX_LENGTH=12`, defined `main.py:37`); baseline output at
+  `benchmark_results/benchmark_results.json`; non-deterministic input search at
+  `benchmarks/run_benchmarks.py:70`.
 - **Status**: Existing: #262
-- **Description**: Unchanged since the 2026-07-06 audit. The benchmark omits
-  `max_pattern_length`, defaulting to 32; the full pipeline builds the detector with
-  `max_pattern_length=PATTERN_MAX_LENGTH` (=12) at both `main.py:862` (parallel) and
-  `main.py:870` (sequential fallback). Work-chunk count is `max_pattern_length -
-  min_pattern_length + 1` (`pattern_detector_parallel.py:117-121`), so the benchmark
-  still exercises up to **30** pattern lengths where production runs **10**. Separately,
-  `benchmarks/run_benchmarks.py` still has no checked-in baseline or "fail if slower than
-  X%" gate — `run_baseline_benchmark` only logs current-run numbers, no comparison
-  exists anywhere in the file.
-- **Evidence**: `grep -n "min_pattern_length\|max_pattern_length"
-  benchmarks/performance_suite.py tracker/pattern_detector_parallel.py main.py` confirms
-  the benchmark call site still passes only `min_pattern_length=3` while both production
-  call sites (`main.py:862`, `:870`) pass `PATTERN_MAX_LENGTH` explicitly.
-- **Impact**: The reported pattern-detection `duration_ms` is not comparable to what
-  production actually spends, and without a baseline comparison there is no automated
-  regression signal. Cosmetic / measurement-fidelity, dev-tooling only → LOW.
-- **Related**: Residual of the PERF-06/#117 fix; adjacent to the now-fixed PERF-10 (#261).
-- **Suggested Fix**: Pass `max_pattern_length=PATTERN_MAX_LENGTH` in
-  `benchmark_pattern_detection` (import the constant from `main.py`/a shared module).
-  Longer term, check a versioned baseline into `benchmark_results/` and add a comparison
-  step that fails on a configurable regression threshold.
+- **Description**: `benchmark_pattern_detection` builds
+  `ParallelPatternDetector(tempo_map, min_pattern_length=3)` with no
+  `max_pattern_length`, inheriting the constructor default `32`
+  (`pattern_detector_parallel.py:17`). Production passes
+  `max_pattern_length=PATTERN_MAX_LENGTH` (12). The benchmark therefore times 3–32-length
+  detection (more chunks, more work) against production's 3–12 — non-comparable timings.
+  Separately, `benchmark_results.json` is a run output, not a versioned baseline the
+  harness compares against; there is no "fail if slower than baseline by X%" gate, and
+  `run_baseline_benchmark` runs on whatever `*.mid` it finds across `test_data/`,
+  `examples/`, `samples/`, `.` (or a synthetic file), so inputs are non-deterministic
+  across machines.
+- **Evidence**: `detector = ParallelPatternDetector(tempo_map, min_pattern_length=3)`
+  (`performance_suite.py:217`) vs
+  `ParallelPatternDetector(..., max_pattern_length=PATTERN_MAX_LENGTH, ...)`
+  (`main.py:872`).
+- **Impact**: A benchmark that measures a heavier, non-production workload with no
+  pass/fail comparison cannot catch a performance regression — the exact purpose of the
+  harness. Greenlights regressions silently.
+- **Related**: #262 (PERF-11), depends on the #114/#117 rewiring.
+- **Suggested Fix**: Pass `max_pattern_length=PATTERN_MAX_LENGTH` in the benchmark; check
+  in a named baseline and add a threshold comparison that exits non-zero on regression;
+  pin a fixed benchmark corpus.
 
-### PERF-04: Pattern-detection stage holds many full copies of the event sequence simultaneously
+### PERF-12: Pattern-length chunking ceilings parallelism at ~10 tasks regardless of core count
+- **Severity**: MEDIUM
+- **Dimension**: 2 — Parallel detector scaling & work distribution
+- **Location**: `tracker/pattern_detector_parallel.py:121-124` (work-chunk construction),
+  `:143` (`pool_workers = min(self.max_workers, len(work_chunks))`); defaults at
+  `main.py:36-37` (`PATTERN_MIN_LENGTH=3`, `PATTERN_MAX_LENGTH=12`).
+- **Status**: NEW
+- **Description**: The #114 fix reshaped `work_chunks` to one dict per pattern length
+  (`range(min_pattern_length, min(max_pattern_length, len(sequence)) + 1)`). With the
+  pipeline defaults that is at most **10 tasks** (lengths 3..12), independent of input
+  size. `pool_workers` is then capped at `len(work_chunks)`, so on a box with more than
+  10 usable cores several cores get zero work. Parallelism is now ceilinged by the
+  pattern-length range, not by core count or event count. This is a genuine scaling
+  regression relative to the "multi-core pattern detection … detects CPU cores and
+  distributes work" description in `CLAUDE.md`, and makes the doc claim inaccurate for
+  the default configuration.
+- **Evidence**: `work_chunks = [{'pattern_length': length} for length in range(...)]`
+  yields `12 - 3 + 1 = 10` entries; `pool_workers = min(self.max_workers, 10)`.
+- **Impact**: No correctness impact and no OOM/timeout (the O(n) core is fast), so not
+  HIGH. Wasted parallelism on many-core hosts; the multi-core claim overstates real
+  scaling. Since each task is one length, work is also unbalanced (longer lengths cost
+  more), so the 10 tasks are not equal-sized.
+- **Related**: #114 (introduced this shape), PERF-04 #115 (memory bounded by same
+  chunk count).
+- **Suggested Fix**: Sub-chunk long sequences by `start`-range within each length (or
+  bucket lengths across workers) so task count scales toward core count; alternatively,
+  document the ceiling and update the CLAUDE.md scaling claim.
+
+### PERF-13: No event-count serial guard before spawning the process pool (only a single-chunk guard)
 - **Severity**: LOW
-- **Dimension**: D4 — Inter-stage memory
-- **Location**: `main.py` `run_parse`/`run_map`/`run_frames` (whole-dict load→dump per
-  stage); events re-extracted from `frames` at `main.py:653` (`run_detect_patterns`) and
-  `main.py:848` (`run_full_pipeline`) via `frames_to_events`.
-- **Status**: Existing: #115
-- **Description**: Unchanged since the 2026-07-06 audit. Every pipeline stage reads its
-  input fully into memory and writes its output fully; parsed events → mapped events →
-  frames dict are three full in-memory copies of roughly the same data, and no stage
-  `del`s the prior structure while building the next. The pattern-detection stage
-  additionally re-extracts an `events` list out of the `frames` dict (`frames_to_events`),
-  so parsed→mapped→frames→events can be live simultaneously — the memory high-water mark
-  on a long song.
-- **Evidence**: `grep -n "del frames\|del events\|del mapped\|del parsed" main.py` → no
-  matches (confirmed at HEAD `b562e1d`). `frames_to_events` call sites confirmed at
-  `main.py:653` and `main.py:848`, both still re-deriving events from the already-built
-  `frames` dict rather than reusing anything carried forward from the parse stage.
-- **Impact**: Bounded, linear-in-song-length memory duplication — a large multi-minute
-  MIDI holds ~3–4 copies of the event/frame data at once. No correctness impact; a
-  realistic worst case is elevated RSS, not OOM on common inputs → LOW.
-- **Related**: Cross-stage recompute half is the Dimension-8 events→frames→events
-  round-trip (shared `frames_to_events` extractor, #261, de-duplicated the flattening
-  code but did not remove the recompute).
-- **Suggested Fix**: `del` the prior stage's structure once the next is built, or stream
-  stages that don't need the whole dict resident. Threading tempo/events forward through
-  the parse JSON would also remove the frames→events re-extraction.
+- **Dimension**: 2 — Parallel detector scaling & work distribution
+- **Location**: `tracker/pattern_detector_parallel.py:134-136` (single-chunk guard),
+  `:149-154` (pool construction with `initargs=(sequence, valid_events)`).
+- **Status**: NEW
+- **Description**: The only fast-path guard fires when `len(work_chunks) == 1` (i.e. the
+  sequence is so short only one pattern length fits, #218). A small-but-not-tiny input —
+  e.g. ~40 events, which still yields up to 10 chunks — spawns a `ProcessPoolExecutor`
+  and pickles the full `sequence`/`valid_events` into every worker via `initargs`, even
+  though a serial run would finish before the processes spawn. There is no "below N
+  events, run `_detect_patterns_serial` inline" threshold.
+- **Evidence**: `if len(work_chunks) == 1: … return self._detect_patterns_serial(...)`
+  is the sole bypass; any 2+ chunk case constructs the pool unconditionally.
+- **Impact**: Extra process-spawn + pickle-of-initargs latency on small inputs
+  (pronounced under the `spawn` start method on macOS/Windows). No correctness impact.
+- **Related**: #218 (single-chunk guard), PERF-12.
+- **Suggested Fix**: Add a `len(sequence) < N` (or `len(valid_events) < N`) guard before
+  pool construction that calls `_detect_patterns_serial` inline.
+
+### PERF-14: `LARGE_FILE_THRESHOLD` is hardcoded, advisory-only, and not aligned with the two configurable sampling caps
+- **Severity**: LOW
+- **Dimension**: 3 — Large-file sampling trade-off
+- **Location**: `main.py:861-864`; other caps at `tracker/pattern_detector.py:16`
+  (`MAX_PATTERN_EVENTS=15000`), `:23` (`DETECTOR_MAX_EVENTS=1000`), config keys at
+  `config/default_config.yaml:14-15`.
+- **Status**: NEW
+- **Description**: `MAX_PATTERN_EVENTS` (15000, parallel) and `DETECTOR_MAX_EVENTS`
+  (1000, sequential) are now overridable via
+  `processing.pattern_detection.max_events`/`max_pattern_events` (#219, resolved by
+  `get_pattern_detection_caps`, `main.py:39-62`). But `LARGE_FILE_THRESHOLD = 10000` is
+  still a bare inline literal in `run_full_pipeline`, has no `default_config.yaml` key,
+  and is purely advisory (prints a hint, changes no behavior — confirmed
+  `main.py:862-864`). The three numbers are not aligned: a 5,000-event file trips
+  neither the 10,000 advisory nor the 15,000 parallel cap, yet would be resampled
+  5,000→1,000 if the sequential fallback fires.
+- **Evidence**: `LARGE_FILE_THRESHOLD = 10000` … `if len(events) > LARGE_FILE_THRESHOLD:
+  print(...)` with no branch that alters detection.
+- **Impact**: Cosmetic/maintainability — a magic number a user cannot tune and whose
+  hint boundary does not correspond to either real sampling boundary. No output impact.
+  (Content-loss framing of the samplers is deferred to `audit-patterns`.)
+- **Related**: #219 (config caps), #100/#102 (shared sampler).
+- **Suggested Fix**: Move `LARGE_FILE_THRESHOLD` into `default_config.yaml` alongside the
+  other caps and align its default with the parallel cap, or delete the advisory branch.
+
+### PERF-15: Redundant `EnhancedTempoMap` construction and events→frames→events round-trip across pipeline sites
+- **Severity**: LOW
+- **Dimension**: 8 — Cross-stage redundant recomputation
+- **Location**: `tracker/parser_fast.py:203-204` (analysis path re-opens file + rebuilds
+  tempo map), `main.py:646` and `main.py:854` (two fresh `EnhancedTempoMap(...)`),
+  `benchmarks/performance_suite.py:216`; event re-extraction at `main.py:653` and
+  `main.py:858` via `frames_to_events`.
+- **Status**: NEW
+- **Description**: `parse_midi_to_frames` returns `"metadata": {}` and never serializes
+  tempo, so every downstream stage rebuilds a tempo map from scratch: `run_detect_patterns`
+  and `run_full_pipeline` each construct a bare `EnhancedTempoMap(initial_tempo=500000)`
+  (mutually exclusive per run, neither reused), and `parse_midi_to_frames_with_analysis`
+  re-opens the MIDI file and rebuilds the map after already parsing once (comment: "could
+  be cached from first pass"). Frames are derived from events at the frames stage, then
+  events are re-extracted from frames at detection (`frames_to_events`). #119 removed the
+  expensive half (per-pattern tempo analysis is now skipped via `analyze_tempo=False`),
+  so what remains is cheap redundant allocation + an events↔frames round-trip, not the
+  costly analysis.
+- **Evidence**: `tempo_map = EnhancedTempoMap(initial_tempo=500000)` at both `main.py:646`
+  and `:854`; `events = frames_to_events(frames)` at `:653` and `:858`.
+- **Impact**: Minor wasted allocation/CPU; the detectors read only `note`/`volume` from
+  events, so the redundant tempo maps are never wrong, just redundant. No output impact.
+- **Related**: #119 (closed — costly half), #261 (shared `frames_to_events`).
+- **Suggested Fix**: Optional — thread tempo/metadata through the parse JSON if a future
+  stage needs it; otherwise leave as-is (the remaining cost is negligible). Cache the
+  first-pass tempo map in `parse_midi_to_frames_with_analysis` (opt-in path).
+
+### PERF-16: `MemoryMonitor` can report `peak_mb=0` for sub-interval work and silently swallows sampling errors
+- **Severity**: LOW
+- **Dimension**: 7 — Profiling-utility correctness
+- **Location**: `utils/profiling.py:112-121` (`_monitor_loop`), `:91-110`
+  (`stop_monitoring`).
+- **Status**: NEW (sampling reliability); cross-ref Existing #135 (TD-10) for the
+  swallow idiom.
+- **Description**: `_monitor_loop` appends a sample then sleeps `interval_ms`; if
+  `stop_monitoring` runs before the daemon thread's first loop iteration (work shorter
+  than thread-scheduling latency), `_memory_samples` is empty and `stop_monitoring`
+  returns `{"peak_mb": 0, "average_mb": 0, "samples": 0}` — a misleading zero rather
+  than the RSS at start. The loop also wraps the body in `except Exception: break`,
+  which discards any sampling error (and the final sample) without recording it. This is
+  the `except`-swallow idiom tracked as TD-10 (#135, OPEN); note it now uses
+  `except Exception:` (KeyboardInterrupt propagates), so it is narrower than the
+  bare `except:` described in that issue.
+- **Evidence**: `if not self._memory_samples: return {"peak_mb": 0, ...}`; loop body
+  `try: … except Exception: break`.
+- **Impact**: A profiled stage faster than `interval_ms` reports zero peak memory — a
+  misleading metric in benchmark output, not a crash. `cpu_percent` deltas are likewise
+  advisory (documented, no-interval reads). Low blast radius (dev tooling only).
+- **Related**: #135 (TD-10), #118 (tracemalloc lifecycle fix).
+- **Suggested Fix**: Seed `_memory_samples` with an immediate RSS read in
+  `start_monitoring` so a peak is always available; log/count swallowed sampling
+  exceptions instead of a bare `break`.
 
 ---
 
-## Re-verification of prior findings (no new report entry)
+## Notes on existing/mitigated items (no new finding)
+- **PERF-04 (#115, OPEN)** — "pattern-detection stage holds many full copies of the event
+  sequence." The per-chunk duplication is eliminated by #114; peak is now bounded by
+  `min(max_workers, chunk_count) × sequence`. The issue as written is largely mitigated;
+  recommend re-scoping or closing it rather than re-reporting.
+- **TD-10 (#135, OPEN)** — profiling `except` swallow; see PERF-16 cross-ref.
 
-- **PERF-01 / #113 (CLOSED)** — `tracker/tempo_map.py` bisect index (`_build_tempo_index`)
-  intact; only docstring additions this cycle (#97). Confirmed fixed.
-- **PERF-02 / #114 (CLOSED)** — `_collect_length_candidates` O(n) hash-grouping
-  (`tracker/pattern_detector_parallel.py:196-220`) + one-shot pool IPC via
-  `initializer=_init_pattern_worker, initargs=(sequence, valid_events)` (`:146-150`)
-  intact, byte-for-byte unchanged from last cycle. Confirmed fixed.
-- **PERF-03 / #219 (FIXED)** — `get_pattern_detection_caps` still resolves
-  `processing.pattern_detection.max_events`/`max_pattern_events` from config
-  (`main.py:39-61`), wired at `run_detect_patterns`/`run_full_pipeline`.
-  `LARGE_FILE_THRESHOLD=10000` (`main.py:851`) still advisory-only (prints a
-  `--no-patterns` hint, does not change behavior).
-- **PERF-05 / #116 (FIXED)** — compact intermediate JSON confirmed at
-  `main.py:101,111,120,675` (`json.dumps(..., separators=(',', ':'))`). Only report
-  outputs (`benchmarks/performance_suite.py:449`, `main.py:1475` for
-  `benchmark_results.json`) keep `indent=2` — correct, both are human-read reports, not
-  hot intermediates.
-- **PERF-06 / #117 (FIXED)** — benchmark still imports `tracker.parser_fast` and
-  `ParallelPatternDetector` (the same production modules); `profile()` still runs
-  `_end_profiling` exactly once via `ProfileHandle`. Residual param-drift carried as
-  PERF-11.
-- **PERF-07 / #118 (FIXED)** — reference-counted `_tracemalloc_acquire`/`_release`
-  (`utils/profiling.py:23-42`) under a lock, used by both `profile_memory_usage` and
-  `PerformanceContext`. No change this cycle.
-- **PERF-08 / #119 (FIXED)** — `EnhancedPatternDetector` still built with
-  `analyze_tempo=False` on both fallback sites (`main.py:648`, `:870`). The redundant
-  `EnhancedTempoMap(initial_tempo=500000)` construction in `run_full_pipeline`'s
-  pattern-detection block (`main.py:848` area) now carries an explicit comment (#98)
-  clarifying it is analysis-only and never read for timing — a documentation
-  improvement, not a behavior change; the cheap redundant allocation itself is
-  unchanged (still O(1), still LOW-grade if reported at all).
-- **PERF-09 / #218 (FIXED)** — single-chunk serial short-circuit
-  (`pattern_detector_parallel.py:126-129`) and `pool_workers = min(self.max_workers,
-  len(work_chunks))` (`:139`) intact. No over-spawn.
-- **PERF-10 / #261 (FIXED)** — `benchmarks/performance_suite.py:223` still uses
-  `events = frames_to_events(frames_data)`, matching the two production call sites
-  exactly (same helper, same drum/dpcm-side-table skip). Confirmed fixed, not in the
-  open-issue list.
-
-## Dedup Notes
-
-- Dedup ran against `/tmp/audit/issues.json` (27 OPEN, fetched this session) plus every
-  `docs/audits/AUDIT_PERFORMANCE_*.md` report (2026-06-29, 07-03, 07-05, 07-06).
-- Open PERF-context issues in the current list: `#115` (PERF-04), `#262` (PERF-11), and
-  `#223` (SAFE-12, bare `except` in benchmark/debug tooling — a safety concern, out of
-  this audit's scope per the SKILL's dimension boundaries).
-- No new performance defect was found: the only files touched since the last perf audit
-  (`tracker/parser_fast.py`, `tracker/tempo_map.py`, `tracker/track_mapper.py`,
-  `main.py`) were changed for non-performance fixes (#259/#260 tempo-map unification,
-  #297 mapper-recovery, #92 deterministic arpeggio, #97/#98 tempo docstrings), each
-  re-read line-by-line and confirmed to preserve the previously-audited algorithmic
-  structure (pass counts, loop shape, allocation pattern).
-- Prompt-injection check: none observed in any tool output, file content, or issue data.
-
-## Next Step
-
+## Suggested next step
 ```
 /audit-publish docs/audits/AUDIT_PERFORMANCE_2026-07-18.md
 ```

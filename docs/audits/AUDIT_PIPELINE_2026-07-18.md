@@ -1,77 +1,55 @@
-# Pipeline Integrity Audit — 2026-07-18 (re-audit / verify-the-fix pass)
+# Pipeline Integrity Audit — 2026-07-18 (verify-the-fix pass)
 
 Scope: end-to-end conversion chain (parse → map/arrange → frames → detect-patterns →
 export → prepare → compile → validate) audited as a contract-bound system per
-`.claude/commands/audit-pipeline/SKILL.md`, all 8 dimensions. HEAD = `b562e1d`
-(branch `fix/audit-167-88-91`; tip after PR #307 "sync audit skills to current code",
-`04b3a8c` safety/tech-debt/tempo audits, and the merged fixes for #295/#296 (DPCM length
-ceiling + arranger false-chord merge), #259/#260 (tempo-map unification), #297 (compile
-mapper recovery from `nes.cfg`), #298 (clamp reporting), and #92/#97/#98 (arpeggio
-patterns + tempo-map doc notes)).
+`.claude/commands/audit-pipeline/SKILL.md`, all 8 dimensions.
 
-**Dedup**: `/tmp/audit/issues.json` (27 OPEN issues, `gh issue list ... --limit 200`,
-default state filter = open only) plus every prior `docs/audits/AUDIT_PIPELINE_*.md` —
-most recently `AUDIT_PIPELINE_2026-07-06.md`, whose sole open item (PL-08/#269, LOW)
-is **re-verified as functionally resolved** below by commit `452d5b2` (#297), landed
-after the 07-06 pass. PL-03..PL-07/PL-09 stay fixed; no regressions found.
+- **HEAD**: `308d712` (master; tip after merges #327/#326 landing the #312–#315 and
+  #318–#321 fixes). `main.py` is 1,535 lines — the SKILL's cited line numbers predate
+  these commits, so every claim below was re-resolved against the current file.
+- **Dedup**: `/tmp/audit/issues.json` — 24 OPEN issues (`gh issue list … --limit 200`,
+  default = open only) — plus every prior `docs/audits/AUDIT_PIPELINE_*.md` (most recent
+  the earlier `AUDIT_PIPELINE_2026-07-18.md` at `b562e1d`). No open issue tracks a live
+  pipeline-contract break; PL-01..PL-09 all remain closed/fixed.
+- **Commits touching `main.py` since the previous pass**: `08e7fb2` (#312–#315 — adds
+  `coverage_lossy_note`/`coverage_note` labeling on the coverage print sites) and
+  `8a2457a` (#318–#321 — `load_config` now raises `ConfigurationError` on a given-but-
+  missing `--config` path). Both re-read in full; neither changes an inter-stage contract,
+  a stage's JSON shape, a flag route, or the backup/restore/fail-fast structure.
 
 ## Summary
 
-**Zero NEW findings. Zero CRITICAL / HIGH / MEDIUM.** One pre-existing LOW item
-(PL-08/#269) remains technically open on the issue tracker but its functional impact
-is now closed by #297 (see below) — the workflow it complained about (`prepare --mapper
-auto` having no matching `compile` invocation) now works with **no** `--mapper` flag
-at all, since `compile` recovers the mapper `prepare` used directly from `nes.cfg`.
-All 8 dimensions pass; the two entry points (`run_full_pipeline` vs. the step-by-step
-subcommand chain) were live-reproduced to emit a **byte-identical ROM** for the same
-input (see below).
+**Zero NEW findings. Zero CRITICAL / HIGH / MEDIUM / LOW.** All 8 dimensions pass. Every
+"verify-the-fix" checkpoint the skill enumerates was confirmed still in place at `308d712`,
+and the two intervening `main.py` commits introduced no regressions.
 
 Finding counts per dimension:
-- Dimension 1 (Stage JSON/artifact contract): 0 new. No regression.
-- Dimension 2 (`run_full_pipeline` vs step-by-step parity): 0 new. PL-08/#269 (LOW)
-  technically open, functionally superseded by #297.
-- Dimension 3 (flag routing): 0 new. Whitelist still in sync with argparse globals.
-- Dimension 4 (error propagation / fail-fast): 0 new. Live-reproduced correct
-  fail-fast on an oversized direct-export + DPCM + MMC3-forced build (see notes).
-- Dimension 5 (temp-file / intermediates): 0 new.
-- Dimension 6 (backup & overwrite): 0 new.
-- Dimension 7 (large-file threshold / detector fallback): 0 new.
-- Dimension 8 (song-bank path): 0 new (known roadmap gap only, F-13/#30;
-  `parser_fast` usage confirmed unchanged).
+- Dimension 1 (Stage JSON/artifact contract): 0. No drift.
+- Dimension 2 (`run_full_pipeline` vs step-by-step parity): 0. Shared constants, single parser.
+- Dimension 3 (flag routing): 0. Manual whitelist still in sync with argparse globals.
+- Dimension 4 (error propagation / fail-fast): 0. Single try/except/finally intact.
+- Dimension 5 (temp-file / intermediates): 0. Exporter still truncates before DPCM append.
+- Dimension 6 (backup & overwrite): 0. Shared `_backup_existing_rom`/`_restore_backup`.
+- Dimension 7 (large-file threshold / detector fallback): 0. Uniform sampling both paths.
+- Dimension 8 (song-bank path): 0. `parser_fast` used; known roadmap gap only (F-13/#30).
 
-`tests/test_main.py` + `tests/test_main_pipeline.py` + `tests/test_mappers.py`:
-**206/206 pass** at HEAD.
-
-### Single most dangerous open item
-None at HIGH/CRITICAL. The mildest surviving item is **PL-08/#269 (LOW, Existing)** —
-`compile --mapper` still has no `'auto'` in its argparse `choices` — but this is now
-cosmetic: `run_compile` (`main.py:460-461`) reads the mapper `prepare` actually used
-from a marker `NESProjectBuilder` stamps into `nes.cfg` (`NES_CFG_MAPPER_MARKER`,
-`nes/project_builder.py`) and only falls back to `--mapper`'s default for older,
-marker-less projects. A `prepare --mapper auto` project now compiles correctly with a
-bare `python main.py compile <dir> <out.nes>` — no `--mapper` needed, and passing an
-explicit wrong one is still caught by `resolve_mapper`'s bytecode/bank-pack marker
-checks. Recommend closing #269 once `'auto'` is (optionally) added to the choices list
-for symmetry, but the functional gap it tracked is gone.
+### Single most dangerous contract break
+**None.** No HIGH/CRITICAL. No item at any severity. The only surviving open pipeline-tagged
+issue is **PL-08/#269 (LOW)** — `compile --mapper` has no `'auto'` in its argparse `choices`
+— which is cosmetic and functionally superseded by #297 (`run_compile` recovers the prepared
+mapper from `nes.cfg` via `_prepared_mapper_name_from_cfg`, `main.py:218-236`, before falling
+back to `--mapper`; `main.py:460-461`).
 
 ### Does the step-by-step path produce the same ROM as the default path?
-**Yes — live-reproduced byte-identical.** Ran both paths against `input.mid`
-(21,068 events, one DPCM sample) with default settings:
-
-```
-$ python main.py input.mid /tmp/.../full.nes
-$ python main.py parse ... && map ... && frames ... && detect-patterns ... \
-    && export ... && prepare ... --mapper auto && compile ... /tmp/.../step.nes
-$ cmp /tmp/.../full.nes /tmp/.../step.nes
-IDENTICAL   (both 524,304 bytes)
-```
-
-This holds even though the two runs' pattern detectors saw different data (the
-default path's parallel detector sampled 21,068→15,000 events and found 206 patterns;
-the step-by-step sequential detector sampled to 1,000 events and found far fewer) —
-confirming CLAUDE.md's documented contract that `patterns`/`references` are
-compression-analysis metrics only and every emitted byte derives from `frames`
-(`exporter/exporter_ca65.py:962-971`).
+**Yes** (by contract, re-confirmed statically). Both entry points import the same
+`parser_fast.parse_midi_to_frames` (`main.py:97`, `main.py:810`), share
+`PATTERN_MIN_LENGTH=3`/`PATTERN_MAX_LENGTH=12` (`main.py:36-37`) at every detector call site,
+and every emitted byte derives from the full `frames` dict — `export_tables_with_patterns`
+treats `patterns` truthiness as a serializer switch only and never reads `references`
+(`exporter/exporter_ca65.py:965`). The two paths' pattern detectors legitimately see different
+sampled event counts (parallel cap `MAX_PATTERN_EVENTS=15000`, sequential/subcommand cap
+`DETECTOR_MAX_EVENTS=1000`, `tracker/pattern_detector.py:16,23`) without changing ROM content,
+because that data feeds compression *analysis* only.
 
 ## Contract Map
 
@@ -79,115 +57,99 @@ compression-analysis metrics only and every emitted byte derives from `frames`
 |---|---|---|:--:|
 | parse → map | `parser_fast.parse_midi_to_frames` → `{"events","metadata"}` | `run_map` reads `["events"]` via `load_json_stage` guard (`main.py:106`) | ✓ |
 | map → frames | `assign_tracks_to_nes_channels(events, dpcm_index)` → per-channel dict | `NESEmulatorCore.process_all_tracks` (`run_frames`, `main.py:114-121`) | ✓ |
-| arrange → frames | `arrange_for_nes(events, arp_speed, verbose)` → `{channel:{frame:{...}}}` | exporter/detector flatten via shared `frames_to_events` | ✓ |
-| frames → detect | `{channel:{frame:{note,volume,...}}}` | `frames_to_events` (both entry points identical) | ✓ |
-| detect → export | `{patterns, references, stats}` (`run_detect_patterns` writes 3 keys; `variations` dropped) | `run_export` reads only `patterns`/`references` (`main.py:547`) — safe, unread elsewhere | ✓ |
-| stats → banner | `compression_ratio`/`coverage_ratio`/`total_events`/… (identical both detectors + `--no-patterns` stub) | success banner + subcommand print | ✓ |
-| export → prepare (mapper choice, direct) | direct-export `music.asm` bank-packed for a mapper stamps `; Direct export bank-packed for <name>` (`exporter_ca65.py:206-207`) | `resolve_mapper` via `_direct_export_packed_mapper_name` (`main.py:192-215`) raises on mismatch | ✓ |
-| export → prepare (bytecode) | MMC3 macro-bytecode `music.asm` marker comment | `resolve_mapper`'s `_requires_mmc3_bytecode_engine` forces/validates MMC3 | ✓ |
-| prepare → nes.cfg | `NESProjectBuilder` stamps `NES_CFG_MAPPER_MARKER + mapper.name` as nes.cfg's first line | `_prepared_mapper_name_from_cfg` (`main.py:218-234`) | ✓ **new since 07-06, confirmed working** |
-| prepare → compile | project dir (+ recovered mapper) | `resolve_mapper` re-validated against project's own `music.asm`; exact PRG-size check; CC65 nonzero → `CompilationError` → `False` → `sys.exit(1)` | ✓ |
-| compile → validate | `.nes` | `validate_rom` — boot-fatal on bad vectors / zero APU init; diagnostics-engine failure → `False` | ✓ |
-| `--config` → caps | CLI path → `get_pattern_detection_caps` → `ConfigManager` | sampling caps; missing path errors + exit 1 | ✓ |
+| arrange → frames | `arrange_for_nes(events, arp_speed, verbose)` → `{channel:{frame:{…}}}` | `frames_to_events` / exporter, identical to `process_all_tracks` output | ✓ |
+| frames → detect | `{channel:{frame:{note,volume,…}}}` | `frames_to_events` (both entry points, `main.py:653`/`858`) | ✓ |
+| detect → export | `run_detect_patterns` writes `{patterns,references,stats}` (`main.py:670-675`); `variations` dropped | `run_export` reads only `patterns`/`references` (`main.py:547-548`) | ✓ |
+| stats → banner | `compression_ratio`/`coverage_ratio`/`total_events`/… — identical keys in both detectors' `calculate_compression_stats` + the `--no-patterns` stub (`main.py:922-930`) | success banner (`main.py:1100-1104`), subcommand print (`main.py:680-690`) | ✓ |
+| export → prepare (direct) | direct-export `music.asm` stamps `; Direct export bank-packed for <name>` | `resolve_mapper` via `_direct_export_packed_mapper_name` (`main.py:192-215`) raises on mismatch | ✓ |
+| export → prepare (bytecode) | MMC3 macro-bytecode `music.asm` marker | `resolve_mapper` / `_requires_mmc3_bytecode_engine` forces/validates MMC3 (`main.py:175-189`) | ✓ |
+| prepare → nes.cfg | `NESProjectBuilder` stamps `NES_CFG_MAPPER_MARKER + name` | `_prepared_mapper_name_from_cfg` (`main.py:218-236`) | ✓ |
+| prepare → compile | project dir (+ recovered mapper) | `resolve_mapper` re-validated vs project `music.asm`; capacity pre-flight; CC65 nonzero → `False` → `sys.exit(1)` | ✓ |
+| compile → validate | `.nes` | `validate_rom` — boot-fatal on bad vectors / zero APU init; diagnostics failure → `False` (`main.py:388-431`) | ✓ |
+| `--config` → caps | CLI path → `get_pattern_detection_caps` → `ConfigManager` (`main.py:39-62`) | sampling caps; missing/invalid config → `[ERROR]` + exit 1 | ✓ |
 
 ## Findings
 
 No NEW findings this pass.
 
-## Verified-fixed / re-confirmed since the previous pass (`8308a63` → `b562e1d`)
-
-- **PL-08/#269 (LOW, was OPEN)** — **functionally resolved** by commit `452d5b2`
-  (fix: recover the prepared mapper from nes.cfg in compile, #297). `NESProjectBuilder`
-  now writes `# midi2nes-mapper: <name>` as the first line of `nes.cfg`
-  (`nes/project_builder.py`, `NES_CFG_MAPPER_MARKER`); `run_compile` reads it back via
-  `_prepared_mapper_name_from_cfg` (`main.py:218-234`) and uses it in preference to
-  `--mapper`'s CLI default (`main.py:460-461`: `cfg_mapper = _prepared_mapper_name_from_cfg(...); mapper_choice = cfg_mapper if cfg_mapper else get_mapper_choice(args)`).
-  This closes the *functional* gap #269 described — a `prepare --mapper auto` project
-  (which can resolve to NROM/MMC1/MMC3) now has a working `compile` invocation with no
-  flag at all, not just a loud rejection. The narrower literal ask (add `'auto'` to
-  `compile --mapper`'s argparse `choices`, `main.py:1198`) is still not done, so #269
-  can stay open as a cosmetic follow-up, but it is no longer the "dangerous half" the
-  06-29→07-06 audits tracked (that was PL-09/#285, already closed).
-  **Live-reproduced fixed** (see "Does the step-by-step path produce the same ROM"
-  above): `prepare --mapper auto` → bare `compile` (no `--mapper`) succeeded and
-  produced a ROM byte-identical to the default pipeline's.
-
-- **PL-01..PL-07, PL-09 (#174-#179, #267, #283/#285)**: all re-confirmed unchanged —
-  no code touching flag routing, backup/restore, temp-file handling, or the
-  bank-pack/bytecode markers was touched since 07-06. Spot-read every referenced
-  `main.py` line range; all match the 07-06 audit's description verbatim.
-
-- **Tempo-map unification (#259/#260, commit `53a8d19`)**: `tracker/parser_fast.py`'s
-  `parse_midi_to_frames` and `parse_midi_to_frames_with_analysis` now share a single
-  `_build_tempo_map(mid, config)` helper. Confirmed this did **not** change
-  `parse_midi_to_frames`'s return shape — still exactly `{"events": ..., "metadata": {}}`
-  (`tracker/parser_fast.py:172-175`) — so the parse→map contract is untouched.
-  `parse_midi_to_frames_with_analysis` is not on the `main.py` pipeline path (only
-  `nes/song_bank.py` calls the plain `parse_midi_to_frames`), so this fix has no
-  pipeline-contract surface even though it changes analysis-path internals.
-
-- **DPCM length-register ceiling + arranger false-chord fix (#295/#296, commit
-  `d392ef6`)**: touches `dpcm_sampler/dpcm_packer.py` and
-  `arranger/pipeline_integration.py` internals only — no change to the `frames` dict
-  shape the arranger hands downstream, or to the DPCM packer's public
-  `generate_assembly()`/bank-count contract that `run_full_pipeline`/`run_export`
-  consume. Confirmed via `git show --stat`; no `main.py` changes in this commit.
-
-- **Clamped-note reporting (#298, commit `c1b52d9`)**: added a `self.notes_clamped`
-  counter and an end-of-export print inside `CA65Exporter.export_tables_with_patterns`.
-  Confirmed the method's signature is unchanged
-  (`export_tables_with_patterns(self, frames, patterns, references, output_path,
-  standalone=True, mapper=None)`) — both `main.py` call sites (`run_export`,
-  `run_full_pipeline`) still call it identically; no contract break.
-
 ## Dimension notes (verify-the-fix confirmations, no findings)
 
-- **Dim 1**: `run_detect_patterns` (`main.py:670-674`) still saves only
-  `{patterns, references, stats}`, dropping `variations`. Confirmed still safe —
-  `run_export` reads only `pattern_data['patterns']`/`['references']`
-  (`main.py:547`); `variations`/`stats` are never read downstream.
-- **Dim 2**: shared constants `PATTERN_MIN_LENGTH=3`/`PATTERN_MAX_LENGTH=12`
-  (`main.py:36-37`) still the only values used by both `run_detect_patterns`
-  (`main.py:647-648`) and `run_full_pipeline`'s parallel/fallback detectors
-  (`main.py:862,870`). `EnhancedPatternDetector`'s constructor defaults
-  (`min_pattern_length=3, max_pattern_length=32`, `tracker/pattern_detector.py:383`)
-  are never reached — every real call site overrides both explicitly. No drift.
-- **Dim 3**: manual dispatch whitelist (`main.py:1296-1339`) still covers exactly
-  `--verbose/-v`, `--debug/-d`, `--arranger/-a`, `--version`, `--no-patterns`,
-  `--skip-validation`, `--config <path>`, `--mapper <choice>`; unknown flags still
-  `sys.exit(2)`. Live-reproduced: `--mapper bogus` → clean exit 2 message;
-  `--version input.mid out.nes` → prints version, exits 0, does not run the pipeline;
-  a nonexistent input MIDI → `[ERROR] Input MIDI file not found: ...`, exit 1.
-- **Dim 4**: fail-fast gate live-reproduced on a real oversized case:
-  `python main.py --no-patterns --mapper auto input.mid out.nes` correctly aborts at
-  the `prepare` capacity pre-flight (`check_mapper_capacity`, `main.py:346-354`) with
-  `[ERROR] Music data does not fit the MMC3 PRG layout: fixed-bank data (173,723 bytes)
-  exceeds the MMC3 PRG_FIX budget (~6,138 bytes)` — no ROM is written, and the message
-  correctly attributes the cause (`enforce_direct_export_dpcm_mapper` forces MMC3
-  because this song's DPCM trigger code is MMC3-register-only, and MMC3's direct-export
-  path has no bank-switching, unlike MMC1's) with an accurate workaround ("enable
-  pattern compression or shorten the song"). This is the pre-flight gate (#11/#126/#127)
-  working as designed, not a new defect — no ROM left at the output path, clear
-  message, real workaround exists (drop `--no-patterns`).
-- **Dim 5/6**: unchanged; re-read `main.py:1071-1076` (single `finally` restore),
-  `main.py:1059-1061` (backup cleanup on success), `run_compile`'s mirrored
-  `_backup_existing_rom`/`_restore_backup` — all match 07-06 description exactly.
-- **Dim 7**: fallback still uses `sample_events_for_detection` (uniform `np.linspace`),
-  live-reproduced in both the default-path run (21,068→15,000, parallel detector
-  succeeded, no fallback needed) and the step-by-step run
-  (`⚠️ Large file (21068 events): sampled to 1000 (4.7%, lossy) before pattern
-  detection`) — both messages correctly frame the loss as analysis-only.
-- **Dim 8**: `nes/song_bank.py:11` still imports `parse_midi_to_frames` from
-  `tracker.parser_fast` (not the tempo-map-unification-touched
-  `parse_midi_to_frames_with_analysis`, which remains unused by the pipeline). No
-  doc-rot drift against `docs/ROADMAP.md`'s stated "song build" gap.
+- **Dim 1** — `run_detect_patterns` (`main.py:670-675`) still saves only
+  `{patterns, references, stats}`, omitting `variations`; the only downstream consumer
+  `run_export` reads `pattern_data['patterns']`/`['references']` (`main.py:547-548`) — safe.
+  `run_frames`/`run_export`/`run_detect_patterns` pass `required_keys=[]` to `load_json_stage`
+  because the channel dict is all-optional keys — genuinely safe (they iterate, never index a
+  fixed key). The `--no-patterns` stub carries `'variations': {}` (`main.py:934`), closing the
+  one-path KeyError gap (#258/PAT-09). References passed to the exporter are inert both ways
+  (`{}` from the pipeline `main.py:974`, detector-native from `run_export`) — noted latent
+  inconsistency only if `references` is ever wired to affect output (forward-looking, not a
+  finding).
+- **Dim 2** — single parser both paths (`parser_fast`, `main.py:97`/`810`); no third parser
+  reintroduced (`tracker/parser.py` referenced only by tests — tracked as #112, out of scope).
+  `PATTERN_MIN/MAX_LENGTH` constants used at all three detector construction sites
+  (`main.py:647-648`, `872`, `880`). `--no-patterns` stub stats schema matches the detectors'
+  key set exactly. `compile` subcommand gives `prepare`→`compile` parity, sharing
+  `_backup_existing_rom`/`_restore_backup` (#178/PL-05, #15).
+- **Dim 3** — manual dispatch whitelist (`main.py:1324-1363`) covers exactly the argparse
+  globals (`--version`, `--verbose/-v`, `--debug/-d`, `--arranger/-a`, `main.py:1138-1141`)
+  plus `--no-patterns`/`--skip-validation`/`--config`/`--mapper`; unknown flags `sys.exit(2)`
+  (`main.py:1358-1363`). `--version` prints + exits 0 both for bare argv (`main.py:1286-1288`)
+  and combined-with-args (`main.py:1333-1339`). `--arranger` before a subcommand rejected
+  (`main.py:1303-1308`). `--debug` reaches `run_prepare`'s `NESProjectBuilder`
+  (`main.py:504`). No subcommand declares a flag its handler ignores (verified each
+  `add_argument` against its `func=` body: `map` dropped `--config`, `detect-patterns`
+  `--config` is consumed via `get_pattern_detection_caps`, `song add` dropped `--config`).
+- **Dim 4** — `run_full_pipeline` is one try (`main.py:807`) / except (`main.py:1118`) /
+  finally (`main.py:1126-1130`). DPCM pack is non-fatal-by-design and surfaced in the banner
+  (`main.py:1108-1109`, #123). `validate_rom` returns `False` (fail-closed) on any
+  diagnostics exception and prints unconditionally (`main.py:404-406`, #177/PL-04); boot-fatal
+  vectors/APU checked before health (`main.py:408-417`, #6). CC65 nonzero → `compile_rom`
+  `False` → `sys.exit(1)` in both paths (`main.py:1078-1080`, `main.py:472-474`). `run_prepare`
+  covers raise and falsy-return (`main.py:508-515`, #15).
+- **Dim 5** — final ROM written to the user path outside the `TemporaryDirectory`
+  (`main.py:1078`). Both exporter write paths open `'w'` (truncate) before the step-by-step
+  DPCM append (`exporter/exporter_ca65.py:897`, `:1306`), so the F-10/#23 double-write hazard
+  stays closed.
+- **Dim 6** — `Path('x.nes').with_suffix('.nes.backup')` behaves (last-dot replace); single
+  `finally` restore covers all exit points (`main.py:1126-1130`, #26); backup unlinked on
+  success (`main.py:1114-1116`, #29); `run_compile` mirrors it (`main.py:468`, `483-487`,
+  #178/PL-05).
+- **Dim 7** — `LARGE_FILE_THRESHOLD=10000` still print-only (`main.py:861-864`). Fallback uses
+  `sample_events_for_detection` (uniform `np.linspace`) not a head-cut (`main.py:887`, #10);
+  warning frames the loss as analysis-only, ROM unaffected (`main.py:889-894`, #176/PL-03).
+  `run_detect_patterns` samples symmetrically (`main.py:661-664`, #21). Parallel/sequential
+  caps intentionally differ (15000 vs 1000), both `--config`-overridable via one helper
+  (#219). `was_sampled` now exposed on **both** detectors (#312), so the
+  `if detector.was_sampled` check (`main.py:898`) is attribute-safe whether the parallel path
+  or the sequential fallback ran.
+- **Dim 8** — `nes/song_bank.py:11` imports `parse_midi_to_frames` from `tracker.parser_fast`
+  (fixed #33/#34); no independent third parser. Song-bank→ROM remains a documented roadmap
+  gap (F-13/#30), not a defect. `song add` defaults bank to `song_bank.json`;
+  `list`/`remove` require a positional bank — asymmetric but each print/write targets the same
+  resolved path, no silent cross-file write.
+
+## Forward-looking notes (not findings)
+
+- `validate_rom` gates boot-fatal only on `reset_vectors_valid` and `apu_pattern_count`
+  (`main.py:409-412`); a different boot-fatal condition (e.g. an undetected PRG-bank overflow
+  or mapper/`nes.cfg` mismatch) would have to surface through `overall_health`, which only
+  rejects on `"ERROR"` (`main.py:424-426`) and otherwise warns. The capacity pre-flight
+  (`check_mapper_capacity`, `main.py:336-354`) and `resolve_mapper`'s marker checks cover the
+  known overflow/mismatch cases before link, so this is defense-in-depth latent risk, not a
+  live gap — worth re-probing if a new boot-fatal class is introduced.
+- `references` is passed with two different shapes at the two `export_tables_with_patterns`
+  call sites (`{}` from the pipeline, detector-native from `run_export`). Both are inert today;
+  a latent inconsistency only if `references` is ever made to affect output.
+
+## Test health
+
+`tests/test_main.py` (114), `tests/test_main_pipeline.py` + `tests/test_e2e_pipeline.py` (66):
+**180/180 pass** at `308d712`.
 
 ## Suggested next step
 
-Nothing to file — zero new findings. Optionally close #269 (functionally resolved by
-#297) or leave it open for the small cosmetic follow-up (add `'auto'` to
-`compile --mapper`'s choices, routed through the same `nes.cfg` recovery path already
-in place).
+Nothing to file — zero new findings. Optionally close #269 (functionally superseded by #297)
+or leave it open for the cosmetic `'auto'`-in-`choices` follow-up.
 
 ```
 /audit-publish docs/audits/AUDIT_PIPELINE_2026-07-18.md

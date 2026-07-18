@@ -1,126 +1,136 @@
 # Arranger Audit — 2026-07-18
 
-**Scope:** The `--arranger` front-end (`arranger/` subsystem): role detection
-(`role_analyzer.py`), GM-instrument mapping (`gm_instruments.py`), priority-based voice
-allocation + arpeggiation (`voice_allocator.py`), and the `arrange_for_nes` integration
-(`pipeline_integration.py`). All 8 dimensions of `audit-arranger/SKILL.md`.
-
-**This is a delta/re-verify pass.** The branch `fix/audit-167-88-91` has uncommitted changes
-directly in this audit's scope — `arranger/__init__.py`, `arranger/gm_instruments.py`,
-`arranger/role_analyzer.py`, `arranger/voice_allocator.py`, `tests/test_voice_allocator.py` —
-that appear to be an in-progress fix for the two items the 2026-07-17 report left open: **#88
-(ARR-05)** and **#91 (ARR-08)**. This audit was run against the current working tree (not just
-HEAD), verifying that in-progress fix plus re-checking the rest of the subsystem for
-regressions.
-
-**Entry path traced:** `main.py` `run_full_pipeline` (`arp_speed=3` hardcoded at the call
-site) → `arrange_for_nes` (`arranger/pipeline_integration.py:201`) → `analyze_midi_events`
-(incl. `_apply_sustain`) → `allocate_with_arpeggiation` →
-`FrameByFrameAllocator.process_song` → `VoiceAllocator.set_arrangement` / `allocate_frame`.
-Downstream: `frames` → Step-4 pattern detection (`main.py`) →
-`CA65Exporter.export_tables_with_patterns`.
+Scope: the `--arranger` front-end (`arranger/` — `pipeline_integration.py`,
+`voice_allocator.py`, `role_analyzer.py`, `gm_instruments.py`) plus its seams with
+`tracker/parser_fast.py`, `tracker/track_mapper.py`, `nes/pitch_table.py`, and
+`exporter/exporter_ca65.py`. All 8 dimensions covered.
 
 ## Summary
 
-| Severity | Count |
-|----------|-------|
-| CRITICAL | 0 |
-| HIGH | 0 |
-| MEDIUM | 0 |
-| LOW | 0 |
-| **Total** | **0 new** |
+**Severity counts:** CRITICAL 0 · HIGH 0 · MEDIUM 1 · LOW 2 (3 findings total).
 
-No new findings survived skeptical re-reading. Both previously-open items (#88, #91) have
-correct, complete fixes in the working tree (see "Verified fixed" below). The one previously
-open LOW finding, **ARR-NEW-5** (GM-program hint picks the first note's program, not a
-program change that arrives later), is untouched by this diff and remains open — carried
-forward, not re-filed.
+**Contract-parity verdict: PASS.** `arrange_for_nes` emits, for every channel, exactly
+the keys the CA65 exporter reads: pulse/triangle carry `note`/`pitch`/`volume`/`control`
+(exporter reads all four — `exporter/exporter_ca65.py:334-349`, and the bytecode path at
+`:1138-1158` honors a pre-baked `pitch`); noise carries `note` (period low-nibble, floored
+to 1), `control` (mode bit 6), `volume` (floored to 1) — matching `:402-407`; DPCM carries
+`note = sample_id+1` and `volume=15` — matching `:417-424`. `frames_to_events`
+(`nes/emulator_core.py:238-260`) reads only `note`/`volume`, which every channel provides
+with real non-zero values. The five-channel dict makes `sum(len(ch) …)` (the `--no-patterns`
+stub at `main.py:918`) meaningful. No key drift found.
 
-**Contract-parity verdict: PASS.** The working-tree diff does not touch
-`pipeline_integration.py`'s frame-conversion code (the `output` dict construction for
-`pulse1`/`pulse2`/`triangle`/`noise`/`dpcm`), so the 2026-07-17 verdict still holds unchanged:
-`arrange_for_nes` emits the canonical key set (`note`/`pitch`/`volume`/`control`) the exporter
-reads for every channel, triangle carries no duty, and noise/DPCM use the rest-sentinel-safe
-floors from #84/#253. Re-ran `tests/test_arranger_frame_contract.py` (all pass) to confirm.
+**Verify-the-fix results (all HOLD):**
+- **#84/ARR-01** (frame keys) — noise/DPCM emit canonical `note`/`control`/`volume`, no
+  stray `period`/`sample`. Confirmed against exporter reads. HOLD.
+- **#85/#86** (channel-9 drum detection, GM program hint) — `parser_fast.py:129-151`
+  attaches `channel` and channel-scoped `program` to every note event; `analyze_midi_events`
+  consumes them. HOLD, with a NEW multi-channel caveat (ARR-NEW-5 below).
+- **#87/ARR-04** (drum routing via `GM_DRUM_MAP`) — `_allocate_noise`/`_allocate_dpcm`
+  consult `get_drum_mapping`; noise fallback `5` matches `get_drum_mapping`'s default. HOLD.
+- **#88/ARR-05** (`get_role_priority` dead) — **now CLOSED and fixed**: the function is
+  removed (only an explanatory NOTE remains at `gm_instruments.py:1303-1307`); no callers,
+  not re-exported. The skill text listing it "STILL OPEN" is stale. HOLD.
+- **#89/#90/ARR-06/07** (pitch tables) — `midi_note_to_nes_pitch` clamps 0–127 and indexes
+  `NES_TRIANGLE_TABLE`/`NES_NOTE_TABLE` (both dicts with keys 0–127, floor-8 at idx 127,
+  2047 at idx 0). Noise never routes through it. HOLD.
+- **#91/ARR-08** (`arp_speed=0` ZeroDivisionError) — **now CLOSED and fixed**: an `arp_speed`
+  property setter (`voice_allocator.py:97-108`) clamps `max(1, int(value))`, covering both
+  `VoiceAllocator.__init__` and `allocate_with_arpeggiation`'s direct reassignment. Confirmed
+  no crash. The skill text listing it "STILL OPEN" is stale. HOLD.
+- **#92/ARR-09** (arp patterns) — `_order_arp_notes` delegates to
+  `track_mapper.apply_arpeggio_pattern`; `ArpStyle.value` strings (`up`/`down`/`up_down`/
+  `down_up`/`random`) all match its `PATTERNS` keys; `RANDOM` is note-seeded/deterministic.
+  Live path only ever uses `UP`. HOLD.
+- **#268/NH-30** (soft-note floor) and **#319/TD-23** (linear `vel // 8` curve + noise floor)
+  — verified: pulse and noise both use `max(1, vel // 8)`, triangle `15 if vel>0 else 0`,
+  with the deliberate-divergence comment at `voice_allocator.py:421-427`. HOLD.
 
-**Highest-leverage item:** none — this run is a clean bill for the two items it was scoped to
-verify. #91 (ARR-08) was the last unguarded crash path in the arranger and is now closed.
+Test state: `tests/test_arranger*.py` + `tests/test_voice_allocator.py` — 50 passed.
 
-## Verified fixed (this run's diff)
-
-- **#91 (ARR-08) — FIXED, verified complete.** `VoiceAllocator.arp_speed` is now a property
-  (`arranger/voice_allocator.py:97-108`) whose setter clamps `self._arp_speed = max(1,
-  int(value))`. Checked **every** mutation site that sets `arp_speed` on a `VoiceAllocator`
-  instance:
-  - `VoiceAllocator.__init__` (`:77`): `self.arp_speed = arp_speed` — assigns through the
-    property (not `self._arp_speed` directly), so construction with `arp_speed=0` or negative
-    is clamped to 1.
-  - `allocate_with_arpeggiation` (`:483`): `processor.allocator.arp_speed = arp_speed` —
-    also an attribute assignment on the instance, so it goes through the same setter.
-  - `grep -rn "_arp_speed\b"` across the repo shows only the property's own `getter`/`setter`
-    body touch the private attribute — no code path bypasses the setter to write
-    `self._arp_speed` directly.
-  - The consuming read site, `state.arp_frame % self.arp_speed` (`:267`), now can never see 0.
-  - Reproduced the prior crash is gone: `arrange_for_nes(events, arp_speed=0)` on a 3-note
-    chord that persists across two frames (the exact repro condition documented in the
-    2026-07-17 report — the crash previously hit on the *second* frame of a held chord, not
-    the first) now returns normally instead of raising `ZeroDivisionError`.
-  - `int(value)` also absorbs non-int numeric input (e.g. a stray float `arp_speed=0.0`)
-    before the floor, so the guard is not narrowly typed to `int` inputs only.
-  - New test class `tests/test_voice_allocator.py::TestArpSpeedValidation` (3 tests) covers
-    construction with `arp_speed=0` and `-5`, reassignment to `0` post-construction, and an
-    end-to-end `arrange_for_nes(events, arp_speed=0)` call — all pass (`python -m pytest
-    tests/test_voice_allocator.py -q` → 21 passed). This is the right regression net: it pins
-    both mutation sites, not just the constructor.
-- **#88 (ARR-05) — FIXED, verified complete (different fix than previously suggested).**
-  Rather than wiring `get_role_priority()` into `_assign_channels` (the "Suggested Fix" in
-  earlier reports), this diff removes the function entirely: deleted from
-  `arranger/gm_instruments.py` (replaced with an explanatory comment at the former location,
-  `:1300-1305`, pointing at `TrackAnalysis.priority` as the single source of truth) and
-  un-exported from `arranger/__init__.py` (both the `from .gm_instruments import
-  get_role_priority` line and its `__all__` entry). `grep -rn "get_role_priority"` across the
-  whole repo now matches only that explanatory comment — no remaining import, call site, or
-  test reference. This is a valid resolution of the underlying problem (dead code that could
-  mislead a maintainer into thinking it governs drop order) without the risk of wiring in a
-  second, contradictory priority scheme. `role_analyzer.py`'s only change is a comment
-  clarifying `TrackAnalysis.priority` is the live drop key (`:287-288`) — no behavior change,
-  confirmed by diff.
-  - Full arranger-scoped test run after the removal: `python -m pytest tests/test_arranger.py
-    tests/test_arranger_drum_detection.py tests/test_arranger_frame_contract.py
-    tests/test_voice_allocator.py tests/test_role_analyzer.py -q` → all pass, no
-    `ImportError`/`AttributeError` from the removed export.
-
-## Verified unaffected by this diff (re-confirmed, not re-filed)
-
-- **#84–#87, #89–#90, #92, #205–#207, #230–#232, #251–#253, #268, #295/#296 — still fixed.**
-  None of the files touched by this working-tree diff (`__init__.py`, `gm_instruments.py`,
-  `role_analyzer.py`, `voice_allocator.py`) alter the frame-key contract, GM drum routing,
-  pitch-table delegation, per-note drum dispatch, per-chord arp phase, or `_apply_sustain`
-  overlap logic — all diff hunks are scoped to the `arp_speed` property and the
-  `get_role_priority` removal. Re-ran the full arranger + role-analyzer + voice-allocator test
-  files (`56 passed`) as a regression net.
-- **ARR-NEW-5 (2026-07-17, LOW, no issue number yet)** — `analyze_midi_events`
-  (`arranger/pipeline_integration.py:134-137`) still picks the *first* event with a non-`None`
-  `program` rather than accounting for a program change arriving after the first note-on. This
-  file is untouched by the current diff; the gap is unchanged and not re-filed here since it
-  was already reported last cycle.
-
-## Findings
-
-None. No new defect survived the skeptical re-read: the `arp_speed` fix guards both
-mutation sites with no bypass, and the `get_role_priority` removal has no dangling references.
-The scope of this run's diff is narrow and the fixes are complete for what they target.
+**Highest-leverage fix:** ARR-NEW-5 — the arranger has no per-channel handling for a single
+MIDI track that carries multiple channels (every Type-0 file, plus multi-channel Type-1
+tracks). Drums merged into a pitched track are silently misrouted to pulse/triangle and the
+GM program hint is corrupted.
 
 ---
 
-*Generated by `/audit-arranger` (delta/re-verify pass on uncommitted working-tree changes).
-Deduplicated against `/tmp/audit/issues.json` (matiaszanolli/midi2nes open issues, 27 entries
-including #88 and #91, both still OPEN on GitHub pending commit/close) and `docs/audits/`
-prior reports (`AUDIT_ARRANGER_2026-06-29/07-03/07-05/07-06/07-17.md`). #88 and #91 have
-verified-complete fixes in the working tree but remain open on GitHub until committed and
-closed. ARR-NEW-5 carries forward unchanged, untouched by this diff.*
+## Findings
 
-Suggested next step (once the working-tree changes are committed):
+### ARR-NEW-5: Multi-channel / Type-0 MIDI tracks are mis-arranged — drums misrouted, GM hint corrupted
+- **Severity**: MEDIUM
+- **Dimension**: 2 (Role Detection) / 3 (Voice Allocation)
+- **Location**: `arranger/pipeline_integration.py:120-139`; root cause `tracker/parser_fast.py:109-153`
+- **Status**: NEW
+- **Description**: `parser_fast` groups events by MIDI *track* only (`track_events[track_name]`),
+  never by channel. A Type-0 MIDI (one track carrying all 16 channels, including channel-9
+  drums) — and any multi-channel Type-1 track — therefore reaches the arranger as a single
+  merged voice. `analyze_midi_events` then (a) samples the drum flag from only the *first*
+  event that has a channel: `track_channel = next((e['channel'] for e in events if …), None)`,
+  so unless that first event happens to be channel 9 the whole track is `is_drum_track=False`;
+  and (b) derives one GM program via `Counter(programs).most_common(1)` across *all* mixed
+  channels. Result: channel-9 percussion is analyzed as pitched notes and routed to
+  pulse/triangle — it never reaches NOISE/DPCM — while the melodic program hint is skewed by
+  the drum channel's program 0.
+- **Evidence**: Empirically reproduced. A single track `{'track_0': [...]}` with melody on
+  channel 0 (program 80) and kick/hat on channel 9 yields
+  `role=MELODY, is_drum=False, program=0, noise_tracks=[], dpcm_tracks=[]` — all percussion
+  routed to pulse1 as pitched notes.
+- **Impact**: Whole-song musical corruption for a very common export class (Type-0 MIDI):
+  drums lost from the percussion channels, melody timbre mis-hinted. Playable (no crash), so
+  not CRITICAL, but musically wrong across the entire song — the `--arranger` path silently
+  degrades. The legacy path shares the same track granularity, but the arranger's drum
+  detection specifically only inspects the first channel, giving a false impression of
+  channel-9 support.
+- **Related**: #85/#86 (added the per-event channel/program the fix should split on); the
+  name-heuristic drum fallback (`:126-127`) is also effectively unreachable via `parser_fast`
+  since every real event carries a channel, so it cannot rescue this case.
+- **Suggested Fix**: Split events by `(track, channel)` before role analysis (either in
+  `parser_fast` or at the top of `analyze_midi_events`), so channel-9 events become their own
+  drum track and each pitched channel gets its own GM program and role.
+
+### ARR-NEW-6: Drum-track toms/agogos/cuicas ignore their GM_DRUM_MAP channel and always render as noise
+- **Severity**: LOW
+- **Dimension**: 3 (Voice Allocation) / 6 (GM Drum Routing)
+- **Location**: `arranger/voice_allocator.py:204-218` (`_route_note`)
+- **Status**: NEW
+- **Description**: A drum track claims only NOISE + DPCM (`role_analyzer.py:313-321`).
+  `_route_note` returns `NESChannel.NOISE` for *any* non-sample drum note as soon as NOISE is
+  in the track's channels (`:212`), which fires *before* the "honor the mapped channel" branch
+  at `:216`. So `GM_DRUM_MAP` notes whose curated channel is TRIANGLE (toms 41/43/45/47/48/50)
+  or PULSE2 (agogos 67/68, cuicas 78/79, mute/open triangle 80/81) are funneled to noise
+  instead — and since those mappings carry no `noise_period`, they fall back to the generic
+  period `5`. Pitched toms lose their pitch and sound like a generic noise hit.
+- **Evidence**: `_route_note`: `if NESChannel.NOISE in channels: return NESChannel.NOISE`
+  precedes `if mapping.channel in channels: return mapping.channel`. Toms have
+  `noise_period=None` → `_allocate_noise` fallback `5` (`:337-338`).
+- **Impact**: Musical-quality degradation on drum tracks that use melodic toms or the
+  agogo/cuica/triangle percussion; the intended pitched-percussion timbre is lost. No crash,
+  workaround is to author those on a separate pitched track. Structurally constrained
+  (triangle is reserved for bass), but the current routing ignores the mapping table it
+  otherwise consults.
+- **Related**: #87/ARR-04 (routing driven by `GM_DRUM_MAP`).
+- **Suggested Fix**: Before defaulting to NOISE, honor `mapping.channel` when that channel is
+  in the track's assignment; only fall through to NOISE when the mapped channel isn't owned.
+
+### ARR-NEW-7: `enhanced_track_mapper` is an unused, re-exported public helper
+- **Severity**: LOW
+- **Dimension**: 4 (dead/misleading API surface)
+- **Location**: `arranger/pipeline_integration.py:332-357`; re-exported in `arranger/__init__.py`
+- **Status**: NEW
+- **Description**: `enhanced_track_mapper` (converts arranger frames back to an event-list
+  format) has no call site anywhere in the repo — the live pipeline uses `arrange_for_nes`
+  directly (`main.py:820`). It is nonetheless in `__all__`, so a maintainer may assume it is a
+  supported/used entry point.
+- **Evidence**: `grep -rn enhanced_track_mapper --include=*.py` returns only the definition
+  and the `__init__` re-export; no callers.
+- **Impact**: Maintenance noise / misleading API. No runtime effect.
+- **Related**: mirrors the #88/ARR-05 dead-code cleanup pattern.
+- **Suggested Fix**: Remove it (and its `__all__`/import entries), or add a test/caller if it
+  is intended as public API.
+
+---
+
+Suggested next step:
 
 ```
 /audit-publish docs/audits/AUDIT_ARRANGER_2026-07-18.md
