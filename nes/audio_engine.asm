@@ -8,6 +8,7 @@
 .import triangle_period_low, triangle_period_high
 .import dpcm_bank_table, dpcm_pitch_table, dpcm_addr_table, dpcm_len_table
 .import instrument_table
+.import channel_start_banks
 .import fetch_sequence_byte
 
 .segment "ZEROPAGE"
@@ -88,43 +89,50 @@ temp_inst_base: .res 1
 .endmacro
 
 audio_init:
-    ; Initialize sequence pointers from the exported CA65 labels
+    ; Initialize sequence pointers from the exported CA65 labels. Each channel's
+    ; starting bank comes from the exporter's channel_start_banks table, NOT a
+    ; hardcoded 0 -- a later channel's sequence label can spill past BANK_00 once
+    ; earlier channels fill a bank, and reading it from bank 0 plays garbage
+    ; (#328/EXP-13). The within-stream CMD_BANK_JUMP path already updates
+    ; stream_bank,x; this fixes only the initial per-channel bank.
     lda #<pulse1_sequence
     sta stream_ptr_lo+0
     lda #>pulse1_sequence
     sta stream_ptr_hi+0
-    lda #$00
+    lda channel_start_banks+0
     sta stream_bank+0
-    
+
     lda #<pulse2_sequence
     sta stream_ptr_lo+1
     lda #>pulse2_sequence
     sta stream_ptr_hi+1
-    lda #$00
+    lda channel_start_banks+1
     sta stream_bank+1
-    
+
     lda #<triangle_sequence
     sta stream_ptr_lo+2
     lda #>triangle_sequence
     sta stream_ptr_hi+2
-    lda #$00
+    lda channel_start_banks+2
     sta stream_bank+2
-    
+
     lda #<noise_sequence
     sta stream_ptr_lo+3
     lda #>noise_sequence
     sta stream_ptr_hi+3
-    lda #$00
+    lda channel_start_banks+3
     sta stream_bank+3
-    
+
     lda #<dpcm_sequence
     sta stream_ptr_lo+4
     lda #>dpcm_sequence
     sta stream_ptr_hi+4
-    lda #$00
+    lda channel_start_banks+4
     sta stream_bank+4
-    
-    ; Initialize DMC output level to 0 to prevent muffling Triangle/Noise
+
+    ; Initialize DMC output level to 0 to prevent muffling Triangle/Noise.
+    ; (A no longer holds 0 after the bank loads above, so reload it.)
+    lda #$00
     sta $4011
 
     ; Initialize the APU so the NMI-driven engine owns the channels.

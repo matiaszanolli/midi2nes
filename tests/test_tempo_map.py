@@ -198,6 +198,23 @@ class TestEnhancedTempoMap(unittest.TestCase):
             )
         self.assertIn("outside valid range", str(context.exception))
 
+    def test_zero_initial_tempo_raises_validation_error_not_zerodivision(self):
+        # Regression (#317/TEMPO-14): initial_tempo == 0 divided by zero before
+        # any guard, surfacing a bare ZeroDivisionError instead of the
+        # actionable TempoValidationError.
+        with self.assertRaises(TempoValidationError) as context:
+            EnhancedTempoMap(initial_tempo=0,
+                             validation_config=self.default_config)
+        self.assertIn("positive", str(context.exception).lower())
+
+    def test_negative_initial_tempo_raises_validation_error(self):
+        # A negative tempo divided cleanly to a negative BPM that failed the
+        # range check, but pin it explicitly so both non-positive cases raise
+        # the same typed error (#317/TEMPO-14).
+        with self.assertRaises(TempoValidationError):
+            EnhancedTempoMap(initial_tempo=-500000,
+                             validation_config=self.default_config)
+
     def test_validation_tempo_out_of_range(self):
         """Test tempo validation - out of range"""
         tempo_map = EnhancedTempoMap(

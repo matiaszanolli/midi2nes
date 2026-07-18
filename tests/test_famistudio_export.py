@@ -86,11 +86,12 @@ class TestFamiStudioExport(unittest.TestCase):
         self.assertIn("C-4 15", output)  # Should clamp to 15
 
     def test_dpcm_sample_map_side_table_does_not_crash(self):
-        # Regression (#313/EXP-11): nes/emulator_core.py attaches a
-        # dpcm_sample_map side table (dense_id -> catalog_id) to frames for
-        # any DPCM-using song. Iterating it as a playable channel produced a
+        # Regression (#313/EXP-11, coverage gap #322/REG-16): nes/emulator_core.py
+        # attaches a dpcm_sample_map side table (dense_id -> catalog_id) to frames
+        # for any DPCM-using song. Iterating it as a playable channel produced a
         # "dpcm_sample_map_N" pattern key that crashed
-        # channel, index = pattern_key.split('_') with ValueError.
+        # channel, index = pattern_key.split('_') with ValueError. The dpcm_sample_map
+        # value shape here matches what emulator_core emits (dense_id -> catalog_id).
         frames = {
             'pulse1': {str(f): {'note': 60, 'volume': 15} for f in range(0, 400, 50)},
             'dpcm': {'0': {'note': 5, 'volume': 15}},
@@ -98,7 +99,10 @@ class TestFamiStudioExport(unittest.TestCase):
         }
         output = generate_famistudio_txt(frames)  # must not raise
         self.assertIn('PATTERN "pulse1_0"', output)
+        # The side table must not leak into the output as a pseudo-channel or a
+        # "dpcm_sample_map_*" PATTERN block.
         self.assertNotIn("dpcm_sample_map", output)
+        self.assertNotIn('PATTERN "dpcm_sample_map', output)
 
 
 class TestFamiStudioGoldenBytes(unittest.TestCase):

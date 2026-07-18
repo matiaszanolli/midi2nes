@@ -138,7 +138,14 @@ class ROMCompiler:
             CompilationError: If compilation fails
             ValidationError: If project is invalid
         """
-        project_dir = Path(project_dir)
+        # Resolve to an absolute path up front (#316/MAP-2026-07-18-1): the
+        # ca65/ld65 invocations below pass `project_dir / "main.asm"` as the
+        # source arg *and* `project_dir` as the subprocess cwd. With a relative
+        # project_dir (e.g. `main.py compile nes_project out.nes`, the exact
+        # form CLAUDE.md documents) that doubles into `nes_project/nes_project/
+        # main.asm` and ca65 fails with a confusing file-not-found. Absolute
+        # paths make the source args independent of cwd.
+        project_dir = Path(project_dir).resolve()
         output_path = Path(output_path)
 
         # Check toolchain availability
