@@ -81,13 +81,22 @@ def generate_famistudio_txt(frames_data, project_name="MIDI2NES", author="", cop
     if not frames_data:
         max_frame = 0
     else:
-        # Find maximum frame across all channels
+        # Find maximum frame across all channels. dpcm_sample_map's keys are
+        # dense sample ids, not frame numbers (#313/EXP-11) -- exclude it.
         all_frames = []
-        for channel_data in frames_data.values():
+        for channel_name, channel_data in frames_data.items():
+            if channel_name == 'dpcm_sample_map':
+                continue
             all_frames.extend(int(f) for f in channel_data.keys())
         max_frame = max(all_frames) if all_frames else 0
     
     for channel, events in frames_data.items():
+        if channel == 'dpcm_sample_map':
+            # dense_id -> catalog_id side table (#200/D-14), not a playable
+            # channel; iterating it like one produces a malformed
+            # "dpcm_sample_map_N" pattern key that crashes the split('_')
+            # below (#313/EXP-11).
+            continue
         current_pattern = []
         for frame in range(max_frame + 1):
             if str(frame) in events:

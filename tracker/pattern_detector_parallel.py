@@ -32,6 +32,10 @@ class ParallelPatternDetector:
         """
         Detect patterns using parallel processing across multiple CPU cores.
         """
+        # Whether internal sampling below discarded events this run. Exposed so
+        # a caller reporting coverage_ratio can label it as measured over a
+        # lossy subset rather than the full song (#312/PAT-11).
+        self.was_sampled = False
         if not events:
             return {
                 'patterns': {},
@@ -57,8 +61,8 @@ class ParallelPatternDetector:
         # Handle large sequences using the shared large-file policy (#21) so the
         # default path and the `detect-patterns` subcommand sample identically.
         original_count = len(valid_events)
-        valid_events, was_sampled = sample_events_for_detection(valid_events, self.max_pattern_events)
-        if was_sampled:
+        valid_events, self.was_sampled = sample_events_for_detection(valid_events, self.max_pattern_events)
+        if self.was_sampled:
             print(f"⚠️  Large sequence ({original_count} events), sampling to "
                   f"{len(valid_events)} ({len(valid_events)/original_count*100:.1f}%, lossy)")
             print(f"   ✅ Sampled {len(valid_events)} events preserving temporal distribution")

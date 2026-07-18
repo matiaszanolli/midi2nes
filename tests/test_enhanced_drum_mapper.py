@@ -199,6 +199,72 @@ class TestDpcmSampleNameFallback:
         assert noise_out[0]["note"] == 90
 
 
+class TestDpcmRoleAliasFallback:
+    """Regression (#315/DP-07): DEFAULT_MIDI_DRUM_MAPPING produces 40 distinct
+    role names, but the shipped dpcm_index.json only has 26 of them under an
+    identical key -- 6 of the other 14 have a real sample under a different
+    filename (e.g. "tambourine" -> "tamborin") that _resolve_dpcm_sample_name
+    never tried, so they always fell back to noise despite a usable sample
+    existing. The remaining 4 (splash, vibraslap, triangle mute/open) are a
+    genuine asset gap with no matching sample anywhere in the catalog."""
+
+    @pytest.fixture
+    def curated_index_path(self, tmp_path):
+        index = {
+            "tamborin": {"id": 0, "filename": "tamborin.dmc"},
+            "whistle1": {"id": 1, "filename": "whistle1.dmc"},
+            "whistle2": {"id": 2, "filename": "whistle2.dmc"},
+            "guiro1": {"id": 3, "filename": "guiro1.dmc"},
+            "guiro2": {"id": 4, "filename": "guiro2.dmc"},
+            "cuica1": {"id": 5, "filename": "cuica1.dmc"},
+            "cuica2": {"id": 6, "filename": "cuica2.dmc"},
+            "mario_2_woodblock": {"id": 7, "filename": "mario_2_woodblock.dmc"},
+            "stickrim": {"id": 8, "filename": "stickrim.dmc"},
+        }
+        path = tmp_path / "curated_index.json"
+        path.write_text(json.dumps(index))
+        return str(path)
+
+    @pytest.fixture
+    def mapper(self, curated_index_path):
+        return EnhancedDrumMapper(dpcm_index_path=curated_index_path)
+
+    @pytest.mark.parametrize("note,expected_sample", [
+        (37, "stickrim"),            # side_stick
+        (54, "tamborin"),            # tambourine
+        (71, "whistle1"),            # whistle_short
+        (72, "whistle2"),            # whistle_long
+        (73, "guiro1"),              # guiro_short
+        (74, "guiro2"),              # guiro_long
+        (76, "mario_2_woodblock"),   # woodblock_hi
+        (77, "mario_2_woodblock"),   # woodblock_lo
+        (78, "cuica1"),              # cuica_mute
+        (79, "cuica2"),              # cuica_open
+    ])
+    def test_aliased_role_resolves_to_catalog_sample(self, mapper, note, expected_sample):
+        assert mapper._resolve_dpcm_sample_name(note, 100, use_advanced=False) == expected_sample
+
+    def test_true_asset_gaps_still_fall_back_to_none(self, mapper):
+        # splash, vibraslap, triangle_mute, triangle_open have no sample
+        # anywhere in the catalog -- aliasing must not invent one.
+        for note in (55, 58, 80, 81):
+            assert mapper._resolve_dpcm_sample_name(note, 100, use_advanced=False) is None
+
+    def test_shipped_catalog_closes_exactly_six_of_fourteen_gaps(self):
+        index_path = REPO_ROOT / "dpcm_index.json"
+        if not index_path.exists():
+            pytest.skip("shipped dpcm_index.json not present in this checkout")
+
+        mapper = EnhancedDrumMapper(dpcm_index_path=str(index_path))
+        missing = [
+            note for note in range(35, 82)
+            if mapper._resolve_dpcm_sample_name(note, 100, use_advanced=False) is None
+        ]
+        # Only the 4 true asset gaps (splash, vibraslap, triangle mute/open)
+        # should remain unresolved on the real shipped catalog.
+        assert set(missing) == {55, 58, 80, 81}
+
+
 class TestNoiseModeForMetallicPercussion:
     """Regression (#204/NH-29): noise_mode had no producer anywhere in the
     pipeline, so every noise hit played the default long/hiss Mode 0 even

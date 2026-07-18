@@ -166,6 +166,10 @@ class PatternDetector:
         # sampling below. Exposed so callers (EnhancedPatternDetector) can report
         # coverage in the same event space the patterns are measured in (#257).
         self._last_analyzed_count = 0
+        # Whether internal sampling below discarded events this run. Exposed so
+        # a caller reporting coverage_ratio can label it as measured over a
+        # lossy subset rather than the full song (#312/PAT-11).
+        self.was_sampled = False
         if not events:
             return {}
 
@@ -204,7 +208,7 @@ class PatternDetector:
         if len(valid_events) > self.max_events:
             print(f"Warning: Large sequence ({len(valid_events)} events), "
                   f"uniformly sampling to {self.max_events} for performance")
-            valid_events, _ = sample_events_for_detection(valid_events, self.max_events)
+            valid_events, self.was_sampled = sample_events_for_detection(valid_events, self.max_events)
 
         sequence = [(e['note'], e['volume']) for e in valid_events]
         events = valid_events  # Use cleaned events for the rest of the method

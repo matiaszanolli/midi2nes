@@ -573,6 +573,38 @@ class TestErrorHandling:
         assert not (project_dir / "main.asm").exists()
 
 
+class TestDeadMacroInstrumentCodeRemoved:
+    """Regression (#314/EXP-12): prepare_project used to append a second,
+    fully dead macro-instrument/DPCM-trigger implementation (seq_cmd_instrument,
+    seq_cmd_dpcm_play, plus ~85 bytes of dedicated ch_*/apu_shadow_* BSS state)
+    into every bytecode-mode music.asm -- nes/audio_engine.asm implements both
+    operations itself, inline, with different names/calling convention, so
+    neither routine was ever called. fetch_sequence_byte in the same block IS
+    live (audio_engine.asm imports and calls it) and must survive."""
+
+    def test_dead_symbols_are_gone_but_fetch_sequence_byte_remains(
+            self, project_dir, temp_dir):
+        bytecode_music_asm = temp_dir / "music.asm"
+        bytecode_music_asm.write_text(
+            "; CA65 Exporter: MMC3 Macro Bytecode mode\n"
+            ".segment \"CODE\"\ninit_music:\n    rts\nupdate_music:\n    rts\n"
+        )
+
+        builder = NESProjectBuilder(str(project_dir))
+        assert builder.prepare_project(str(bytecode_music_asm))
+
+        music_content = (project_dir / "music.asm").read_text()
+        for dead_symbol in (
+            "seq_cmd_instrument", "seq_cmd_dpcm_play", "ch_macro_vol_lo",
+            "ch_sequence_bank", "apu_shadow_ctrl", "switch_dpcm_bank",
+        ):
+            assert dead_symbol not in music_content, \
+                f"{dead_symbol} should have been removed as dead code"
+
+        assert ".global fetch_sequence_byte" in music_content
+        assert "fetch_sequence_byte:" in music_content
+
+
 class TestReturnValues:
     """Test function return values."""
 

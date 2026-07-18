@@ -132,75 +132,14 @@ class NESProjectBuilder:
             music_content += "\n.global debug_init, debug_update, debug_test_apu\n"
             music_content += "\n" + overlay.generate_full_debug_system()
 
-        # DPCM sequence command implementation (bytecode runtime only)
+        # fetch_sequence_byte (bytecode runtime only) is .import'ed and called
+        # by nes/audio_engine.asm (#314/EXP-12 -- this used to also append a
+        # seq_cmd_dpcm_play/seq_cmd_instrument macro-instrument/DPCM-trigger
+        # implementation here, but audio_engine.asm implements both of those
+        # inline with its own variable names and calling convention, so that
+        # second copy was fully dead code + ~85 bytes of unused BSS; removed).
         if is_bytecode:
             music_content += """
-.import switch_dpcm_bank
-
-; ------------------------------------------------------------------
-; seq_cmd_dpcm_play ($85)
-; Triggers a DPCM sample based on the sample_id parameter.
-; ------------------------------------------------------------------
-.global seq_cmd_dpcm_play
-seq_cmd_dpcm_play:
-    ; Assuming X contains the Sample_ID from the sequence data
-    ; 1. Swap the required MMC3 bank into the $C000-$DFFF window
-    lda dpcm_bank_table, x
-    jsr switch_dpcm_bank
-
-    ; 2. Setup the APU DMC registers using the lookup tables
-    lda dpcm_pitch_table, x
-    sta $4010                   ; Set Pitch/Rate index
-
-    lda dpcm_addr_table, x
-    sta $4012                   ; Set 64-byte aligned Address
-
-    lda dpcm_len_table, x
-    sta $4013                   ; Set 16-byte aligned Length
-
-    ; 3. Trigger the DMC DMA playback
-    lda #$0F                    ; Disable DMC
-    sta $4015
-    lda #$1F                    ; Enable all channels AND DMC
-    sta $4015
-
-    rts
-"""
-
-        # Instrument and macro engine implementation (bytecode runtime only)
-        if is_bytecode:
-            music_content += """
-.segment "BSS"
-; Sequence Bank tracking for 5 channels (Pulse1, Pulse2, Triangle, Noise, DPCM)
-ch_sequence_bank:   .res 5
-
-; Channel state variables (4 channels: Pulse1, Pulse2, Triangle, Noise)
-ch_macro_vol_lo:    .res 4
-ch_macro_vol_hi:    .res 4
-ch_macro_vol_idx:   .res 4
-ch_vol_current:     .res 4
-
-ch_macro_duty_lo:   .res 4
-ch_macro_duty_hi:   .res 4
-ch_macro_duty_idx:  .res 4
-ch_duty_current:    .res 4
-
-ch_macro_arp_lo:    .res 4
-ch_macro_arp_hi:    .res 4
-ch_macro_arp_idx:   .res 4
-ch_arp_offset:      .res 4 ; semitone offset
-
-ch_macro_pitch_lo:  .res 4
-ch_macro_pitch_hi:  .res 4
-ch_macro_pitch_idx: .res 4
-ch_pitch_offset:    .res 4 ; signed 8-bit offset
-
-ch_base_note:       .res 4 ; The base note for the current sound
-
-apu_shadow_ctrl:    .res 4
-apu_shadow_timer_lo: .res 4
-apu_shadow_timer_hi: .res 4
-
 .segment "CODE"
 ; ------------------------------------------------------------------
 ; fetch_sequence_byte
@@ -211,80 +150,31 @@ fetch_sequence_byte:
     ; Select MMC3 PRG Bank Register 7 ($A000-$BFFF), keep P=1
     lda #$47
     sta $8000
-    
+
     ; Swap in the sequence bank
     lda sequence_bank
     sta $8001
-    
+
     ; Translate pointer from linker address to the $A000 window
     lda sequence_ptr+1
     pha
     and #$1F          ; Isolate the offset within the 8KB bank
     ora #$A0          ; Shift it into the $A000-$BFFF range
     sta sequence_ptr+1
-    
+
     ldy #$00
     lda (sequence_ptr), y
-    
+
     ; Restore original pointer high byte
     pla
     sta sequence_ptr+1
-    
+
     ; Advance the pointer
     inc sequence_ptr
     bne @no_carry
     inc sequence_ptr+1
 @no_carry:
     rts
-
-; ------------------------------------------------------------------
-; seq_cmd_instrument ($80)
-; Sets the current instrument for the active channel.
-; ------------------------------------------------------------------
-.global seq_cmd_instrument
-seq_cmd_instrument:
-    ; Assuming X is the channel index (0-3)
-    ; Assuming A contains the instrument ID from the sequencer stream
-    
-    ; Multiply instrument ID by 8 (4 pointers * 2 bytes)
-    asl a
-    asl a
-    asl a
-    tay
-    
-    ; Load Volume Macro pointer (Offset 0)
-    ; (Assuming instrument_table is exported from CA65Exporter)
-    lda instrument_table+0, y
-    sta ch_macro_vol_lo, x
-    lda instrument_table+1, y
-    sta ch_macro_vol_hi, x
-    
-    ; Load Arpeggio Macro pointer (Offset 2)
-    lda instrument_table+2, y
-    sta ch_macro_arp_lo, x
-    lda instrument_table+3, y
-    sta ch_macro_arp_hi, x
-
-    ; Load Pitch Macro pointer (Offset 4)
-    lda instrument_table+4, y
-    sta ch_macro_pitch_lo, x
-    lda instrument_table+5, y
-    sta ch_macro_pitch_hi, x
-
-    ; Load Duty Macro pointer (Offset 6)
-    lda instrument_table+6, y
-    sta ch_macro_duty_lo, x
-    lda instrument_table+7, y
-    sta ch_macro_duty_hi, x
-    
-    ; Reset macro indices
-    lda #$00
-    sta ch_macro_vol_idx, x
-    sta ch_macro_duty_idx, x
-    sta ch_macro_arp_idx, x
-    sta ch_macro_pitch_idx, x
-    rts
-
 """
 
         # Guarantee the DPCM lookup tables the audio engine imports resolve exactly

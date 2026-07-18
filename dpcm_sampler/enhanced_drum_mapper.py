@@ -3,7 +3,7 @@ from typing import Dict, List, Tuple, Optional
 import json
 from tracker.pattern_detector import DrumPatternDetector
 from .dpcm_sample_manager import DPCMSampleManager
-from .drum_engine import DEFAULT_MIDI_DRUM_MAPPING, ADVANCED_MIDI_DRUM_MAPPING
+from .drum_engine import DEFAULT_MIDI_DRUM_MAPPING, ADVANCED_MIDI_DRUM_MAPPING, DPCM_ROLE_ALIASES
 
 
 @dataclass
@@ -438,6 +438,11 @@ class EnhancedDrumMapper:
         default_name = DEFAULT_MIDI_DRUM_MAPPING.get(midi_note)
         if default_name and default_name not in candidates:
             candidates.append(default_name)
+            # Some role names don't match the catalog's filename even though
+            # a real sample exists under a different name (#315/DP-07).
+            alias_name = DPCM_ROLE_ALIASES.get(default_name)
+            if alias_name and alias_name not in candidates:
+                candidates.append(alias_name)
 
         for name in candidates:
             if name in self.sample_index:
