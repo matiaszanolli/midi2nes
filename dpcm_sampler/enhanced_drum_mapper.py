@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
-from collections import defaultdict
 import json
 from tracker.pattern_detector import DrumPatternDetector
 from .dpcm_sample_manager import DPCMSampleManager
@@ -260,9 +259,6 @@ class EnhancedDrumMapper:
         dpcm_events = []
         noise_events = []
 
-        # Track pattern instances for optimization
-        pattern_instances = defaultdict(list)
-
         for ch, events in midi_events.items():
             channel_patterns = patterns.get(ch, {})
             
@@ -370,11 +366,8 @@ class EnhancedDrumMapper:
         template = pattern_info['info']['template']
         position = pattern_info['position']
 
-        # Get template note and velocity
-        template_note, template_vel = template[position]
-
-        # Use template velocity as a reference
-        velocity_ratio = velocity / template_vel
+        # Get template note (template velocity is unused here)
+        template_note, _ = template[position]
 
         # Try to reuse previously allocated samples for this pattern. Raw
         # catalog id emitted as-is -- see the non-pattern path's comment

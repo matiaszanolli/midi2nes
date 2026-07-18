@@ -1,5 +1,20 @@
 import math
 
+
+def velocity_to_volume(velocity, clamp=True):
+    """Convert a MIDI velocity (0-127) to a 4-bit NES APU volume (0-15).
+
+    Uses a 1.5 power curve (perceptual loudness -> linear APU steps),
+    shared by every pulse/triangle/noise volume conversion in nes/ so the
+    exponent and clamp only need to change in one place (#319/TD-23).
+    """
+    if clamp:
+        velocity = min(127, max(0, velocity))
+    if velocity <= 0:
+        return 0
+    return max(1, int(15 * math.pow(velocity / 127.0, 1.5)))
+
+
 class EnvelopeProcessor:
     """Engine-driven ADSR/effects model for the pulse channels
     (docs/APU_ENVELOPE_REFERENCE.md §4/§5).
@@ -113,12 +128,7 @@ class EnvelopeProcessor:
         
         # Apply base velocity if provided (scale from MIDI 0-127 to NES 0-15)
         if base_velocity is not None:
-            # Using a 1.5 power curve maps logarithmic human hearing to linear APU steps
-            base_velocity = min(127, max(0, base_velocity))
-            if base_velocity > 0:
-                midi_volume = max(1, int(15 * math.pow(base_velocity / 127.0, 1.5)))
-            else:
-                midi_volume = 0
+            midi_volume = velocity_to_volume(base_velocity)
             # Round instead of floor division to preserve fidelity during instrument fades
             volume = min(15, round((envelope_volume * midi_volume) / 15.0))
         else:

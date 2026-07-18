@@ -1,8 +1,7 @@
 from collections import defaultdict
-import math
 from .pitch_table import PitchProcessor
 from collections import defaultdict
-from .envelope_processor import EnvelopeProcessor
+from .envelope_processor import EnvelopeProcessor, velocity_to_volume
 
 
 class NESEmulatorCore:
@@ -110,18 +109,13 @@ class NESEmulatorCore:
                         "pitch": pitch,
                         "control": control_byte,
                         "note": event['note'],
-                        "volume": max(1, int(15 * math.pow(velocity / 127.0, 1.5)))
+                        "volume": velocity_to_volume(velocity)
                     }
                 else:
                     # Apply power curve for volume fidelity on all non-pulse channels too
-                    v_clamped = min(127, max(0, velocity))
-                    if v_clamped > 0:
-                        volume = max(1, int(15 * math.pow(v_clamped / 127.0, 1.5)))
-                    else:
-                        volume = 0
                     frames[f] = {
                         "pitch": pitch,
-                        "volume": volume,
+                        "volume": velocity_to_volume(velocity),
                         "note": event['note']
                     }
 
@@ -164,8 +158,7 @@ class NESEmulatorCore:
                     # active hit at 1 (loses only the very highest noise pitch).
                     period = max(1, self.midi_to_nes_pitch(e['note'], 'noise'))
                     mode = e.get('noise_mode', 0) & 1
-                    v_clamped = min(127, max(0, velocity))
-                    peak_volume = max(1, int(15 * math.pow(v_clamped / 127.0, 1.5)))
+                    peak_volume = velocity_to_volume(velocity)
 
                     start_frame = e['frame']
                     end_frame = start_frame + NOISE_DECAY_FRAMES

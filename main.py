@@ -762,7 +762,9 @@ def run_song_remove(args):
 
 def load_config(config_path: Optional[str] = None) -> DrumMapperConfig:
     """Load drum mapper configuration from file or use defaults"""
-    if config_path and Path(config_path).exists():
+    if config_path:
+        if not Path(config_path).exists():
+            raise ConfigurationError(f"Configuration file not found: {config_path}")
         return DrumMapperConfig.from_file(config_path)
     return DrumMapperConfig()
 
