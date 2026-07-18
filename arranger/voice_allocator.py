@@ -419,6 +419,12 @@ class FrameByFrameAllocator:
             allocation = self.allocator.allocate_frame(active_notes)
 
             # Store allocations
+            # The arranger deliberately keeps this linear vel // 8 curve instead
+            # of the power curve nes/envelope_processor.py:velocity_to_volume()
+            # uses (#319/TD-23) -- arpeggiated polyphony here needs a cheap,
+            # predictable scale rather than the legacy front-end's
+            # perceptual-loudness shaping. Every channel below floors at 1
+            # when active so a genuine hit is never silenced by truncation.
             if allocation.pulse1:
                 note, vel, duty = allocation.pulse1
                 frames["pulse1"][frame] = {
@@ -450,7 +456,7 @@ class FrameByFrameAllocator:
                 period, vel = allocation.noise
                 frames["noise"][frame] = {
                     "period": period,
-                    "volume": vel // 8,
+                    "volume": max(1, vel // 8),
                 }
 
             if allocation.dpcm is not None:

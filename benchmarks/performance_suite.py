@@ -467,10 +467,7 @@ class PerformanceBenchmark:
 if __name__ == "__main__":
     # Example usage
     benchmark = PerformanceBenchmark()
-    
-    # Test with a simple synthetic MIDI file (if available)
-    import tempfile
-    
+
     print("MIDI2NES Performance Benchmark Suite")
     print("Note: This requires MIDI files to benchmark against.")
     print("Add MIDI files to test_data/ directory to run benchmarks.")

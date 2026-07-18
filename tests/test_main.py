@@ -32,6 +32,7 @@ from main import (
     DETECTOR_MAX_EVENTS, resolve_mapper, get_mapper_choice,
     enforce_direct_export_dpcm_mapper,
 )
+from core.exceptions import ConfigurationError
 
 
 class TestMainArgumentParsing:
@@ -1730,16 +1731,12 @@ class TestLoadConfig:
     
     @patch('main.DrumMapperConfig')
     def test_load_config_missing_file(self, mock_config_class):
-        """Test loading config from non-existent file."""
-        mock_config = Mock()
-        mock_config_class.return_value = mock_config
-        
-        result = load_config("nonexistent.json")
-        
-        # Should fall back to default config
-        mock_config_class.assert_called_once_with()
+        """Test loading config from non-existent file raises ConfigurationError."""
+        with pytest.raises(ConfigurationError, match="Configuration file not found"):
+            load_config("nonexistent.json")
+
+        mock_config_class.assert_not_called()
         mock_config_class.from_file.assert_not_called()
-        assert result == mock_config
 
 
 class TestMainIntegration:
