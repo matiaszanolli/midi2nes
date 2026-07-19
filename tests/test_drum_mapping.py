@@ -26,18 +26,20 @@ class TestDrumMapping(unittest.TestCase):
             self.test_index_path,
             use_advanced=True
         )
-        # With advanced mapping, each drum hit produces layered samples
-        # 3 drum hits with 2 layers each = 6 layer events + 3 main events = 9 total
-        self.assertEqual(len(dpcm_events), 9)
-        
+        # Advanced mapping resolves each hit to ONE velocity-split sample.
+        # Layering was removed (#300/DP-05): the DMC is a single-voice channel
+        # and cannot play two samples at once, so each of the 3 drum hits emits
+        # exactly one dpcm event (no duplicated "layer" events).
+        self.assertEqual(len(dpcm_events), 3)
+
         # Verify sample selection based on velocity by checking main velocity-based samples
         kick_hard_events = [e for e in dpcm_events if e['frame'] == 0 and e['sample_id'] in [0, 2]]  # kick or kick_hard
         kick_soft_events = [e for e in dpcm_events if e['frame'] == 10 and e['sample_id'] in [0, 1]]  # kick or kick_soft
-        
+
         # Should have different velocity-based samples
         kick_hard_velocity_sample = next((e for e in kick_hard_events if e['sample_id'] == 2), None)  # kick_hard
         kick_soft_velocity_sample = next((e for e in kick_soft_events if e['sample_id'] == 1), None)  # kick_soft
-        
+
         self.assertIsNotNone(kick_hard_velocity_sample, "Should have kick_hard sample for high velocity")
         self.assertIsNotNone(kick_soft_velocity_sample, "Should have kick_soft sample for low velocity")
         

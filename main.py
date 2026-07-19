@@ -678,6 +678,10 @@ def run_detect_patterns(args):
     # Extract events from frames structure (shared extractor skips the
     # dpcm_sample_map side table and returns them frame-sorted — #261).
     events = frames_to_events(frames)
+    # This subcommand only emits patterns, never a ROM, so `frames` (the largest
+    # structure) is dead once events are extracted. Free it before detection
+    # rather than holding it alongside the detector's working copies (#115/PERF-04).
+    del frames
 
     # This subcommand runs the sequential EnhancedPatternDetector, whose internal
     # cap is max_events (DETECTOR_MAX_EVENTS unless overridden). Sample uniformly
@@ -934,6 +938,12 @@ def run_full_pipeline(args):
                         " (lossy — measured over the sampled subset, "
                         "detection quality reduced)"
                     )
+
+                # Detection is done and its result is captured in pattern_result;
+                # the intermediate events list is dead. `frames` must stay alive
+                # (the exporter derives every ROM byte from it), so free only
+                # events here to trim the pattern-stage peak (#115/PERF-04).
+                del events
             else:
                 print("[4/7] Skipping pattern detection (direct export mode)...")
                 print(f"  📊 Processing direct frame export for complete data preservation")

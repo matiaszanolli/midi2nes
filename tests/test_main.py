@@ -2100,5 +2100,35 @@ class TestFullPipelineBackupCleanup:
             assert output_rom.read_bytes() == original, "original ROM must be restored on unexpected exception"
 
 
+class TestParserSelection:
+    """Regression (#112/P-04): main.py must parse only via the fast parser.
+
+    A dangling module-top `from tracker.parser import parse_midi_to_frames`
+    (the older full parser) was a foot-gun: deleting a local `parse_fast`
+    import would silently switch a path to the slower, behaviorally-different
+    parser with no error. Every live path now imports parser_fast locally as
+    `parse_fast`; pin that the old parser is not reachable through `main`."""
+
+    def test_main_has_no_module_level_old_parser_binding(self):
+        # Reference the module explicitly: the test namespace's bare `main`
+        # is the imported main() function (from main import main), not the module.
+        import sys
+        main_module = sys.modules["main"]
+        # The old parser is never imported at module scope, so the module must
+        # not expose a top-level `parse_midi_to_frames` name at all.
+        assert not hasattr(main_module, "parse_midi_to_frames"), \
+            "main.py must not bind the old full parser at module scope (#112)"
+
+    def test_main_source_does_not_import_old_parser(self):
+        import inspect
+        import sys
+        src = inspect.getsource(sys.modules["main"])
+        assert "from tracker.parser import" not in src, \
+            "main.py must import only tracker.parser_fast (#112)"
+        # The fast parser is the only sanctioned front-end and is imported
+        # locally as parse_fast at every call site.
+        assert "parser_fast import parse_midi_to_frames as parse_fast" in src
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
