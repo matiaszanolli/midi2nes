@@ -114,11 +114,16 @@ class TestExporterIntegration(unittest.TestCase):
         output = exporter.generate_famistudio_txt(self.test_frames, "Test Song")
         Path(output_path).write_text(output)
         
-        # Verify file exists and contains pattern data
+        # Verify file exists and contains pattern data. No bare
+        # assertIn("PATTERNS") here (#339/REG-20): a section-header-only
+        # check would still pass if every note in the pattern rows were
+        # wrong -- FamiStudioExporter.generate_famistudio_txt delegates to
+        # the same module-level generate_famistudio_txt that
+        # TestFamiStudioGoldenBytes (tests/test_famistudio_export.py) pins
+        # exact pattern-row content for.
         self.assertTrue(os.path.exists(output_path))
         with open(output_path, 'r') as f:
             content = f.read()
-            self.assertIn("PATTERNS", content)
             self.assertIn("C-4 15", content)  # Middle C note
 
 
