@@ -16,6 +16,34 @@ from core.exceptions import CompilationError, ValidationError
 from mappers.base import BaseMapper
 
 
+def _recover_mapper_from_cfg(nes_cfg_path: Path) -> Optional[BaseMapper]:
+    """Recover the mapper a project was prepared with from the leading marker
+    NESProjectBuilder stamps into nes.cfg, or None if absent/unknown.
+
+    Lets a library consumer that calls compile()/compile_rom() without a
+    ``mapper`` argument still get the exact per-mapper ROM-size check instead of
+    the flat 32768-byte floor — the same recovery main.run_compile already does
+    via _prepared_mapper_name_from_cfg (#363/MAP-2026-07-19-3). Imports are
+    deferred so this module stays importable without pulling nes/ at import time.
+    """
+    from nes.project_builder import NES_CFG_MAPPER_MARKER
+    from mappers.factory import MapperFactory
+
+    path = Path(nes_cfg_path)
+    if not path.exists():
+        return None
+    for line in path.read_text().splitlines():
+        if line.startswith(NES_CFG_MAPPER_MARKER):
+            name = line[len(NES_CFG_MAPPER_MARKER):].strip()
+            if not name:
+                return None
+            try:
+                return MapperFactory.get_mapper(name)
+            except ValueError:
+                return None
+    return None
+
+
 class ROMCompiler:
     """
     Compiles NES projects into ROM files.
@@ -156,6 +184,14 @@ class ROMCompiler:
         # Validate project structure
         if validate:
             self.validate_project(project_dir)
+
+        # Recover the mapper from nes.cfg when the caller didn't pass one
+        # (#363/MAP-2026-07-19-3), so a library consumer bypassing main.py still
+        # gets the exact per-mapper size check + post-process step below instead
+        # of the flat MIN_ROM_SIZE floor. The CLI already passes the resolved
+        # mapper, so this only fires for direct library use.
+        if mapper is None:
+            mapper = _recover_mapper_from_cfg(project_dir / "nes.cfg")
 
         # Compile main.asm
         if self.verbose:

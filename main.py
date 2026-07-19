@@ -140,73 +140,16 @@ def run_frames(args):
     Path(args.output).write_text(json.dumps(frames, separators=(',', ':')))
     print(f" Generated frames -> {args.output}")
 
-def estimate_segment_sizes(music_asm_path):
-    """ROM byte totals music.asm emits (.byte/.word/.incbin), keyed by the active
-    `.segment "NAME"`.
-
-    Per-segment rather than a single total because a banked mapper (MMC3)
-    distributes data across distinct PRG regions, and the binding limit is the
-    region each segment lands in, not the full PRG (#126, #127). ld65 remains the
-    exact backstop. .res lives in RAM/ZP (not PRG ROM) and is ignored. A bounded
-    `.incbin "f", 0, N` (a truncated DPCM sample, #68) counts N, not the file size.
-
-    `.align N` rounds the *running offset within the current segment* up to the
-    next multiple of N, mirroring ld65's actual behavior, rather than being
-    ignored -- `DpcmPacker.generate_assembly` emits `.align 64` before every
-    packed DPCM sample (#301/MAP-2026-07-06-2), and skipping it previously let
-    a segment's estimated size fall up to 63 bytes/sample short of ld65's real
-    total, the exact slack `DpcmPacker`'s own `aligned_size` bank-fit check
-    already accounts for.
-    """
-    import re
-    import math
-    music_path = Path(music_asm_path)
-    if not music_path.exists():
-        return {}
-    sizes = {}
-    current = None
-    base_dir = music_path.parent
-    for raw in music_path.read_text().splitlines():
-        line = raw.split(';', 1)[0].strip()  # drop comments
-        low = line.lower()
-        if low.startswith('.segment'):
-            m = re.search(r'"([^"]+)"', line)
-            if m:
-                current = m.group(1)
-            continue
-        if low.startswith('.align'):
-            m = re.search(r'\.align\s+(\d+)', line, re.IGNORECASE)
-            if m and current is not None:
-                boundary = int(m.group(1))
-                if boundary > 0:
-                    offset = sizes.get(current, 0)
-                    sizes[current] = math.ceil(offset / boundary) * boundary
-            continue
-        n = 0
-        if low.startswith('.byte'):
-            n = len([t for t in line[5:].split(',') if t.strip()])
-        elif low.startswith('.word'):
-            n = 2 * len([t for t in line[5:].split(',') if t.strip()])
-        elif low.startswith('.incbin'):
-            bounded = re.search(r'"[^"]+"\s*,\s*\d+\s*,\s*(\d+)', line)
-            if bounded:
-                n = int(bounded.group(1))
-            else:
-                m = re.search(r'"([^"]+)"', line)
-                if m:
-                    p = Path(m.group(1))
-                    if not p.is_absolute():
-                        p = base_dir / p
-                    if p.exists():
-                        n = p.stat().st_size
-        if n:
-            sizes[current] = sizes.get(current, 0) + n
-    return sizes
-
-
-def estimate_music_data_size(music_asm_path):
-    """Total ROM data bytes music.asm emits (sum across all segments)."""
-    return sum(estimate_segment_sizes(music_asm_path).values())
+# Music.asm sizing + the mapper capacity pre-flight live in mappers.capacity so
+# NESProjectBuilder.prepare_project (a library entry point) runs the same gate
+# the CLI does, not just main.py (#363/MAP-2026-07-19-3). Re-exported here so
+# existing `from main import estimate_segment_sizes` / `check_mapper_capacity`
+# imports keep resolving.
+from mappers.capacity import (  # noqa: E402
+    estimate_segment_sizes,
+    estimate_music_data_size,
+    check_mapper_capacity,
+)
 
 
 def _requires_mmc3_bytecode_engine(music_asm_path):
@@ -252,6 +195,29 @@ def _direct_export_packed_mapper_name(music_asm_path):
     return None
 
 
+# Marker CA65Exporter.export_direct_frames stamps when a direct-export song has
+# a DPCM channel. Direct-export DPCM is MMC3-only, so the split prepare/compile
+# flow keys off this to re-force MMC3 / reject a non-MMC3 --mapper
+# (#362/MAP-2026-07-19-2).
+DIRECT_EXPORT_DPCM_MARKER = "; Direct export DPCM (MMC3-only)"
+
+
+def _direct_export_requires_mmc3_dpcm(music_asm_path):
+    """True if music.asm is a direct-export song carrying the DPCM marker.
+
+    Direct-export (--no-patterns) DPCM is MMC3-only: play_dpcm writes MMC3's
+    $8000/$8001 bank ports and DpcmPacker emits MMC3-only DPCM_NN segments. The
+    `export`/`run_full_pipeline` paths enforce this in-memory via
+    enforce_direct_export_dpcm_mapper, but the split `prepare`/`compile` flow
+    only has the finished music.asm — this marker lets resolve_mapper reproduce
+    the enforcement up front instead of failing at a raw ld65 "Missing memory
+    area assignment for DPCM_00" (#362/MAP-2026-07-19-2). Mirrors
+    _requires_mmc3_bytecode_engine / _direct_export_packed_mapper_name.
+    """
+    path = Path(music_asm_path)
+    return path.exists() and DIRECT_EXPORT_DPCM_MARKER in path.read_text()
+
+
 def _prepared_mapper_name_from_cfg(nes_cfg_path):
     """Return the mapper name a project was prepared with, read from the
     leading marker NESProjectBuilder stamps into nes.cfg, or None.
@@ -287,10 +253,12 @@ def resolve_mapper(mapper_choice, music_asm_path=None):
     """
     from mappers.factory import MapperFactory
     needs_mmc3 = music_asm_path is not None and _requires_mmc3_bytecode_engine(music_asm_path)
+    direct_dpcm = music_asm_path is not None and _direct_export_requires_mmc3_dpcm(music_asm_path)
     packed_for = (_direct_export_packed_mapper_name(music_asm_path)
                   if music_asm_path is not None else None)
     if mapper_choice == 'auto':
-        if needs_mmc3:
+        # Both the bytecode engine and direct-export DPCM are MMC3-only; force it.
+        if needs_mmc3 or direct_dpcm:
             return MapperFactory.get_mapper('mmc3')
         # A direct-export music.asm bin-packed for a specific banked mapper can
         # only link against that mapper's RODATA_BANK_NN regions, so 'auto'
@@ -298,14 +266,24 @@ def resolve_mapper(mapper_choice, music_asm_path=None):
         # (#283/#285) -- mirrors forcing MMC3 for the bytecode marker above.
         if packed_for:
             return MapperFactory.get_mapper(packed_for)
+        # Reaching here means a non-bytecode, non-bank-packed music.asm -- i.e.
+        # a direct (--no-patterns) export -- so rank by each mapper's real direct
+        # budget (#361/MAP-2026-07-19-1), not the flat banked capacity.
         data_size = estimate_music_data_size(music_asm_path)
-        return MapperFactory.auto_select(data_size)
+        return MapperFactory.auto_select(data_size, direct=True)
     mapper = MapperFactory.get_mapper(mapper_choice)
     if needs_mmc3 and mapper.mapper_number != 4:
         raise ValueError(
             f"{mapper.name} cannot run the MMC3 macro-bytecode (pattern-compressed) "
             f"engine this music.asm was built with -- rebuild with --no-patterns "
             f"for direct frame export, or pass --mapper mmc3."
+        )
+    if direct_dpcm and mapper.mapper_number != 4:
+        raise ValueError(
+            f"--mapper {mapper_choice} does not support DPCM samples in direct-export "
+            f"(--no-patterns) mode: this music.asm packs DPCM_NN sample segments and "
+            f"triggers them via MMC3-only $8000/$8001 bank writes. Use --mapper mmc3 "
+            f"(the default) or --mapper auto, or rebuild without --no-patterns."
         )
     if packed_for and mapper.name != packed_for:
         raise ValueError(
@@ -368,27 +346,6 @@ def get_mapper_choice(args):
     """
     value = getattr(args, 'mapper', 'mmc3')
     return value if isinstance(value, str) else 'mmc3'
-
-
-def check_mapper_capacity(music_asm_path, mapper):
-    """Pre-flight capacity gate (#11, #126, #127): abort before linking if the
-    emitted music data overflows any of the selected mapper's PRG regions.
-
-    Sizes each music.asm segment against the region the mapper's linker config
-    loads it into (a banked mapper has several binding regions, not one 510 KB
-    ceiling), so an oversized song fails with a clear budget message instead of a
-    raw ld65 region overflow. Raises ValueError listing every overflow. Returns
-    the total data size for logging.
-    """
-    segment_sizes = estimate_segment_sizes(music_asm_path)
-    errors = mapper.validate_segment_sizes(segment_sizes)
-    if errors:
-        detail = "\n".join(f"  - {e}" for e in errors)
-        raise ValueError(
-            f"Music data does not fit the {mapper.name} PRG layout:\n{detail}\n"
-            f"Shorten the song or DPCM samples, or select a larger mapper."
-        )
-    return sum(segment_sizes.values())
 
 
 def _backup_existing_rom(output_rom):
@@ -603,7 +560,7 @@ def run_export(args):
             try:
                 if mapper_choice == 'auto':
                     estimated_size = exporter.estimate_direct_export_size(frames)
-                    mapper = MapperFactory.auto_select(estimated_size)
+                    mapper = MapperFactory.auto_select(estimated_size, direct=True)
                 else:
                     mapper = MapperFactory.get_mapper(mapper_choice)
                 # Direct-export DPCM is MMC3-only: force MMC3 for 'auto', reject
@@ -1002,7 +959,7 @@ def run_full_pipeline(args):
                 try:
                     if mapper_choice == 'auto':
                         estimated_size = exporter.estimate_direct_export_size(frames)
-                        mapper = MapperFactory.auto_select(estimated_size)
+                        mapper = MapperFactory.auto_select(estimated_size, direct=True)
                     else:
                         mapper = MapperFactory.get_mapper(mapper_choice)
                     # Direct-export DPCM is MMC3-only: force MMC3 for 'auto',

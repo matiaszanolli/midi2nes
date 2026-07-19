@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from mappers import BaseMapper, get_mapper
+from mappers.capacity import check_mapper_capacity
 from core.exceptions import ExportError
 
 
@@ -127,6 +128,16 @@ class NESProjectBuilder:
             music_content += "\n.importzp sequence_ptr, sequence_bank\n"
 
         print(f"  Using {self.mapper.name} with {self.mapper.prg_rom_size // 1024}KB PRG-ROM")
+
+        # Capacity pre-flight (#363/MAP-2026-07-19-3): the CLI runs
+        # check_mapper_capacity before calling us, but a library consumer that
+        # builds NESProjectBuilder(...).prepare_project(...) directly would
+        # otherwise get no clean overflow message and rely entirely on ld65
+        # erroring at link time. Gate here too so both entry points fail the
+        # same way, with the region-naming budget message. ld65 stays the exact
+        # backstop. Runs on the source music.asm (before any transforms below),
+        # matching what the CLI check sizes.
+        check_mapper_capacity(music_asm_path, self.mapper)
 
         if self.debug_mode:
             print(f"  Debug mode enabled - adding on-screen diagnostics")

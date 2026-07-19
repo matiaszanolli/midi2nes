@@ -168,6 +168,21 @@ class BaseMapper(ABC):
         # Estimate ~2KB for code/vectors, rest is data
         return self.prg_rom_size - 2048
 
+    def direct_export_capacity(self) -> int:
+        """Available bytes for a direct (``--no-patterns``) frame-table export.
+
+        Defaults to :meth:`get_data_capacity` — correct for NROM (one flat PRG
+        region) and MMC1, whose ``export_direct_frames`` bin-packs frame tables
+        across its full switchable pool (``direct_export_bank_size`` is not None,
+        #255). A banked mapper whose direct export CANNOT bank-switch (MMC3:
+        ``direct_export_bank_size`` is None, so every table lands in the single
+        fixed bank) overrides this to return its far smaller fixed-bank budget,
+        so ``MapperFactory.auto_select(..., direct=True)`` ranks it correctly
+        instead of by the 512 KB banked figure it can never reach in direct mode
+        (#361/MAP-2026-07-19-1).
+        """
+        return self.get_data_capacity()
+
     def can_fit_data(self, data_size: int) -> bool:
         """
         Check if this mapper can fit the given data size.

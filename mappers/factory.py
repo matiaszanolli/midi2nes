@@ -81,12 +81,22 @@ class MapperFactory:
         raise ValueError(f"Unknown mapper: {name}. Available: {', '.join(available)}")
 
     @classmethod
-    def auto_select(cls, data_size: int) -> BaseMapper:
+    def auto_select(cls, data_size: int, direct: bool = False) -> BaseMapper:
         """
         Automatically select the smallest mapper that fits the data.
 
+        Mappers are tried in ascending ROM-size order (NROM → MMC1 → MMC3), so
+        the first that fits is the smallest ROM that holds the song.
+
         Args:
             data_size: Size of music data in bytes
+            direct: Rank by each mapper's direct (``--no-patterns``) export
+                budget (``direct_export_capacity``) instead of the flat banked
+                ``get_data_capacity``. MMC3's direct budget (~6 KB fixed bank) is
+                far smaller than its 512 KB banked capacity, so ranking a direct
+                export by the banked figure made ``auto`` pick MMC3 for any song
+                >112 KB and then the direct pre-flight always rejected it
+                (#361/MAP-2026-07-19-1).
 
         Returns:
             Mapper instance that can fit the data
@@ -94,23 +104,30 @@ class MapperFactory:
         Raises:
             ValueError: If data is too large for any mapper
         """
+        def capacity(mapper: BaseMapper) -> int:
+            return mapper.direct_export_capacity() if direct else mapper.get_data_capacity()
+
         # Try default mappers in order of size
         for mapper_name, mapper_class in cls._default_mappers:
             mapper = mapper_class()
-            if mapper.can_fit_data(data_size):
+            if data_size <= capacity(mapper):
                 return mapper
 
         # Try custom mappers
         for mapper_class in cls._custom_mappers.values():
             mapper = mapper_class()
-            if mapper.can_fit_data(data_size):
+            if data_size <= capacity(mapper):
                 return mapper
 
-        # Nothing fits
-        largest = cls._default_mappers[-1][1]()
+        # Nothing fits — report the genuinely largest budget for this mode
+        # (in direct mode the biggest direct budget is MMC1's pool, not MMC3's).
+        largest = max((mc() for _, mc in cls._default_mappers), key=capacity)
+        hint = (" — enable pattern compression (drop --no-patterns) to use MMC3's "
+                "bank-switched 512 KB capacity") if direct else ""
         raise ValueError(
-            f"Data size ({data_size} bytes) exceeds largest mapper capacity "
-            f"({largest.get_data_capacity()} bytes)"
+            f"Data size ({data_size} bytes) exceeds largest mapper "
+            f"{'direct-export ' if direct else ''}capacity "
+            f"({capacity(largest)} bytes){hint}"
         )
 
     @classmethod
