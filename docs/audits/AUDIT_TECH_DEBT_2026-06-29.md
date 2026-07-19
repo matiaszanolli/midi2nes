@@ -292,5 +292,3 @@ Dedup baseline: `/tmp/audit/issues.json` (22 open issues) plus prior reports
   avoid colliding with M-9 (`compile_rom` broad except, already open).
 - `.nes` / `.log` / `.s` artifacts in the repo root are **gitignored** (`.gitignore` lines
   18-85), so they are not tracked cruft and are not reported.
-</content>
-</invoke>

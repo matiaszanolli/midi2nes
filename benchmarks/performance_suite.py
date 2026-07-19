@@ -22,6 +22,9 @@ from tracker.pattern_detector_parallel import ParallelPatternDetector
 from tracker.tempo_map import EnhancedTempoMap
 from exporter.exporter_ca65 import CA65Exporter
 from utils.profiling import _tracemalloc_acquire, _tracemalloc_release
+# Shared with main.py's production call sites so the benchmark measures the same
+# pattern-length work profile the pipeline actually runs (#262/PERF-11).
+from constants import PATTERN_MIN_LENGTH, PATTERN_MAX_LENGTH
 
 
 @dataclass
@@ -212,9 +215,17 @@ class PerformanceBenchmark:
         def pattern_wrapper():
             # Create tempo map and pattern detector. Uses ParallelPatternDetector
             # (not the serial EnhancedPatternDetector fallback) to match the
-            # production detect-patterns default path (#117).
+            # production detect-patterns default path (#117), AND its production
+            # min/max_pattern_length bounds -- omitting max_pattern_length let it
+            # default to 32, so the benchmark exercised ~30 pattern lengths where
+            # production runs only 10, inflating measured time vs. the real path
+            # (#262/PERF-11).
             tempo_map = EnhancedTempoMap(initial_tempo=500000)
-            detector = ParallelPatternDetector(tempo_map, min_pattern_length=3)
+            detector = ParallelPatternDetector(
+                tempo_map,
+                min_pattern_length=PATTERN_MIN_LENGTH,
+                max_pattern_length=PATTERN_MAX_LENGTH,
+            )
 
             # Extract events from frames structure via the shared extractor so
             # the dpcm_sample_map side table is skipped exactly as the two

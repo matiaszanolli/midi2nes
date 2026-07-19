@@ -256,6 +256,15 @@ class TestPerformanceBenchmark:
             mock_detector.detect_patterns.assert_called_once()
             assert profile_result.stage == "pattern_detection"
             mock_end.assert_called_once()
+
+            # Regression (#262/PERF-11): the benchmark must construct the detector
+            # with the SAME min/max pattern-length bounds production uses, or it
+            # measures a work profile (up to 30 lengths at the default max=32) the
+            # pipeline never runs (production caps at 12).
+            from constants import PATTERN_MIN_LENGTH, PATTERN_MAX_LENGTH
+            _, kwargs = mock_detector_class.call_args
+            assert kwargs.get("min_pattern_length") == PATTERN_MIN_LENGTH
+            assert kwargs.get("max_pattern_length") == PATTERN_MAX_LENGTH
     
     @patch('benchmarks.performance_suite.CA65Exporter')
     def test_benchmark_export_stage(self, mock_exporter_class):

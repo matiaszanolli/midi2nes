@@ -285,12 +285,35 @@ class TestRunMap:
     def test_run_map_honors_dpcm_index(self, mock_print, mock_assign):
         """Regression (#13): --dpcm-index must be passed to the mapper, not the default."""
         mock_assign.return_value = {"channel_0": []}
+        # The index must exist so the #256 missing-index guard doesn't fire
+        # before the forwarding this test checks; write a minimal one.
+        custom_index = self.temp_dir / "custom_dpcm.json"
+        custom_index.write_text("{}")
         args = Namespace(input=str(self.test_input), output=str(self.test_output),
-                         dpcm_index='custom_dpcm.json')
+                         dpcm_index=str(custom_index))
 
         run_map(args)
 
-        mock_assign.assert_called_once_with({"0": [{"frame": 0, "note": 60}]}, 'custom_dpcm.json')
+        mock_assign.assert_called_once_with({"0": [{"frame": 0, "note": 60}]}, str(custom_index))
+
+    @patch('main.assign_tracks_to_nes_channels')
+    def test_run_map_missing_dpcm_index_exits_cleanly(self, mock_assign):
+        """Regression (#256/D-18): a missing DPCM index made the `map` subcommand
+        crash with a raw FileNotFoundError traceback (unlike the packer path).
+        It must exit cleanly with an [ERROR] and never reach the mapper."""
+        missing = self.temp_dir / "does_not_exist.json"
+        args = Namespace(input=str(self.test_input), output=str(self.test_output),
+                         dpcm_index=str(missing))
+
+        with patch('builtins.print') as mock_print:
+            with pytest.raises(SystemExit) as exc:
+                run_map(args)
+
+        assert exc.value.code == 1
+        mock_assign.assert_not_called()
+        assert not self.test_output.exists()
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list if c.args)
+        assert "[ERROR]" in printed and "DPCM index not found" in printed
 
     def test_map_parser_has_no_silent_config_flag(self):
         """Regression (#13): the unused --config flag was dropped from `map`."""
