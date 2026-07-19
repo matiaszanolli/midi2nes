@@ -140,10 +140,50 @@ class TestMemoryMonitor:
         """Test starting monitoring when already started."""
         monitor = MemoryMonitor()
         monitor._monitoring = True
-        
+
         # Should not create a new thread if already monitoring
         monitor.start_monitoring()
         assert monitor._monitor_thread is None
+
+    @patch('utils.profiling.threading.Thread')
+    @patch('utils.profiling.psutil.Process')
+    def test_sub_interval_work_reports_nonzero_peak(self, mock_process_class, mock_thread_class):
+        """Regression (#336/PERF-16): stopping before the monitor thread's
+        first loop iteration must still report the RSS at start, not a
+        misleading peak_mb=0. The background thread is mocked out entirely
+        (join() on a real thread that already ran once would mask the bug
+        this pins) so only the start_monitoring() seed sample is present."""
+        mock_process = Mock()
+        mock_process.memory_info.return_value.rss = 42 * 1024 * 1024  # 42MB
+        mock_process_class.return_value = mock_process
+        mock_thread_class.return_value = Mock()  # .start()/.join() are no-ops
+
+        monitor = MemoryMonitor(interval_ms=10_000)
+        monitor.start_monitoring()
+        stats = monitor.stop_monitoring()
+
+        assert stats["peak_mb"] == 42.0
+        assert stats["samples"] == 1
+        assert stats["sampling_errors"] == 0
+
+    @patch('utils.profiling.psutil.Process')
+    def test_sampling_error_is_counted_not_silently_dropped(self, mock_process_class):
+        """Regression (#336/PERF-16): a sampling exception in the monitor
+        loop increments a visible counter instead of vanishing silently."""
+        mock_process = Mock()
+        # First read (the start_monitoring seed) succeeds; every read from
+        # the background thread's loop raises, forcing it to break quickly.
+        mock_process.memory_info.side_effect = [
+            Mock(rss=10 * 1024 * 1024), RuntimeError("boom")
+        ]
+        mock_process_class.return_value = mock_process
+
+        monitor = MemoryMonitor(interval_ms=1)
+        monitor.start_monitoring()
+        monitor._monitor_thread.join(timeout=1.0)
+        stats = monitor.stop_monitoring()
+
+        assert stats["sampling_errors"] == 1
 
 
 class TestProfilerRegistry:

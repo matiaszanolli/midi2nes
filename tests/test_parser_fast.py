@@ -920,15 +920,15 @@ class TestInvalidMIDIGuard:
         with pytest.raises(InvalidMIDIError):
             _open_midi_file(str(bad))
 
-    def test_with_analysis_second_open_is_guarded(self):
-        """Regression (#221/SAFE-10): `parse_midi_to_frames_with_analysis`
-        rebuilds the tempo map via a second `mido.MidiFile` open (to
-        re-derive tempo events for pattern/loop analysis). Before the fix,
-        that second open was completely unguarded. Simulate the first open
-        succeeding (the fast parse already validated the file) and the
-        second open failing -- e.g. a TOCTOU race where the file is replaced
-        with a corrupt one between the two reads -- and assert it now
-        surfaces InvalidMIDIError instead of a raw mido/OSError."""
+    def test_with_analysis_opens_file_exactly_once_and_is_guarded(self):
+        """#335/PERF-15 made `parse_midi_to_frames_with_analysis` share one
+        file-open + tempo-map build with `parse_midi_to_frames` via
+        `_parse_frames_and_tempo_map`, instead of re-opening the file a
+        second time to rebuild an identical tempo map. The prior test here
+        pinned #221/SAFE-10's guard on that second open; there is no longer
+        a second open to race on -- one guarded open is strictly less attack
+        surface than two. Confirm both halves of that: exactly one
+        `mido.MidiFile` call happens, and it is still the guarded call."""
         good = self.temp_dir / "good.mid"
         mid = mido.MidiFile()
         track = mido.MidiTrack()
@@ -940,16 +940,19 @@ class TestInvalidMIDIGuard:
         real_open = mido.MidiFile
         call_count = {"n": 0}
 
-        def flaky_open(path, *args, **kwargs):
+        def counting_open(path, *args, **kwargs):
             call_count["n"] += 1
-            if call_count["n"] == 1:
-                return real_open(path, *args, **kwargs)
-            raise OSError("simulated TOCTOU failure on second open")
+            return real_open(path, *args, **kwargs)
 
-        with patch('tracker.parser_fast.mido.MidiFile', side_effect=flaky_open):
-            with pytest.raises(InvalidMIDIError):
-                parse_midi_to_frames_with_analysis(str(good))
-        assert call_count["n"] == 2
+        with patch('tracker.parser_fast.mido.MidiFile', side_effect=counting_open):
+            parse_midi_to_frames_with_analysis(str(good))
+        assert call_count["n"] == 1
+
+        # The single open is still guarded (shared _open_midi_file helper).
+        bad = self.temp_dir / "bad.mid"
+        bad.write_bytes(b"\x00" * 16)
+        with pytest.raises(InvalidMIDIError):
+            parse_midi_to_frames_with_analysis(str(bad))
 
 
 if __name__ == '__main__':

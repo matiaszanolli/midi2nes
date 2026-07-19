@@ -9,11 +9,9 @@ from core.exceptions import InvalidMIDIError
 def _open_midi_file(midi_path):
     """Open a MIDI file, converting parse/IO failures to InvalidMIDIError.
 
-    Shared by both `mido.MidiFile(midi_path)` call sites in this module
-    (#221/SAFE-10) -- `parse_midi_to_frames_with_analysis` re-opens the same
-    path to rebuild the tempo map, and that second open used to be
-    completely unguarded even though it can hit the same TOCTOU/IO failures
-    as the first.
+    Used by `_parse_frames_and_tempo_map`, the shared implementation behind
+    both `parse_midi_to_frames` and `parse_midi_to_frames_with_analysis`
+    (#221/SAFE-10).
     """
     try:
         return mido.MidiFile(midi_path)
@@ -69,11 +67,16 @@ def _build_tempo_map(mid, config):
     return tempo_map
 
 
-def parse_midi_to_frames(midi_path):
-    """
-    Fast MIDI parser that only does basic MIDI-to-frames conversion.
-    Pattern detection, loop detection, and other expensive analysis
-    is moved to separate pipeline steps.
+def _parse_frames_and_tempo_map(midi_path):
+    """Open the MIDI file once, build its tempo map once, and parse note
+    events once. Shared by `parse_midi_to_frames` and
+    `parse_midi_to_frames_with_analysis` so the latter no longer re-opens the
+    file and rebuilds an identical tempo map from scratch (#335/PERF-15) --
+    both entry points use the same widened-band, ratio-gate-disabled
+    `TempoValidationConfig` (#94), so a second build was pure redundant work,
+    not a behavior difference.
+
+    Returns (events_by_track, tempo_map).
     """
     mid = _open_midi_file(midi_path)
 
@@ -167,10 +170,21 @@ def parse_midi_to_frames(midi_path):
               f"unexpected parse error(s) (last: {last_drop_reason}); "
               f"the ROM may be missing notes.")
 
+    return dict(track_events), tempo_map
+
+
+def parse_midi_to_frames(midi_path):
+    """
+    Fast MIDI parser that only does basic MIDI-to-frames conversion.
+    Pattern detection, loop detection, and other expensive analysis
+    is moved to separate pipeline steps.
+    """
+    events, _tempo_map = _parse_frames_and_tempo_map(midi_path)
+
     # Return ONLY events - no expensive pattern/loop analysis
     # Pattern detection should be done in a separate step if needed
     return {
-        "events": dict(track_events),
+        "events": events,
         "metadata": {}  # Empty metadata - analysis moved to separate steps
     }
 
@@ -180,39 +194,26 @@ def parse_midi_to_frames_with_analysis(midi_path):
     Full parser that includes pattern and loop detection.
     This should only be used when analysis is specifically needed.
     """
-    # First do fast parsing
-    result = parse_midi_to_frames(midi_path)
-    
+    # Parse events and build the tempo map in one pass (#335/PERF-15) --
+    # both this function and parse_midi_to_frames used an identical widened
+    # tempo-validation band (#94), so re-opening the file and rebuilding a
+    # second, functionally-identical tempo map was pure redundant work.
+    events, tempo_map = _parse_frames_and_tempo_map(midi_path)
+
     # Then add expensive analysis if needed
     from tracker.pattern_detector import EnhancedPatternDetector
     from tracker.loop_manager import EnhancedLoopManager
 
-    # Create tempo map again (could be optimized with caching). Same widened
-    # band / disabled ratio gate as the first pass so analysis sees the real
-    # tempos rather than the narrow 40-250 BPM subset (#94). Rebuilt via the
-    # shared _build_tempo_map helper so this pass gets the same real
-    # ticks_per_beat and count-and-warn-on-drop behavior as the first pass,
-    # instead of silently diverging (#259/TEMPO-12, #260/TEMPO-13).
-    config = TempoValidationConfig(
-        min_tempo_bpm=1.0,
-        max_tempo_bpm=2000.0,
-        min_duration_frames=2,
-        max_duration_frames=FRAME_RATE_HZ * 300,
-        max_tempo_change_ratio=float('inf')
-    )
-    mid = _open_midi_file(midi_path)
-    tempo_map = _build_tempo_map(mid, config)
-
     # Now do expensive analysis
     pattern_detector = EnhancedPatternDetector(tempo_map)
     loop_manager = EnhancedLoopManager(tempo_map)
-    
+
     track_metadata = defaultdict(dict)
-    
-    for track_name, events in result['events'].items():
+
+    for track_name, track_events in events.items():
         # Filter only note_on events for pattern detection
         note_on_events = [
-            event for event in events 
+            event for event in track_events
             if event['type'] == 'note_on' and event['volume'] > 0
         ]
 
@@ -239,7 +240,7 @@ def parse_midi_to_frames_with_analysis(midi_path):
     
     # Return events with metadata
     return {
-        "events": result['events'],
+        "events": events,
         "metadata": dict(track_metadata)
     }
 

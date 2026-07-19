@@ -13,6 +13,7 @@ processing:
     enable_volume_variations: true   # Consider volume variations as valid patterns
     max_events: 1000                 # Sequential detector (EnhancedPatternDetector, O(n^2)-ish) event cap
     max_pattern_events: 15000        # Parallel detector (ParallelPatternDetector, O(n)) sampling cap
+    large_file_threshold: 15000      # Advisory-only "large file" heads-up in run_full_pipeline; aligned with max_pattern_events by default
 
   # Channel Mapping Settings  
   channel_mapping:
