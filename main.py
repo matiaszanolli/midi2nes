@@ -33,8 +33,9 @@ from compiler import compile_rom
 # Shared pattern-detection bounds. Both entry points (the `detect-patterns`
 # subcommand and the default full pipeline) must use identical parameters so
 # their `patterns`/`references` JSON artifacts agree for the same input (#19).
-PATTERN_MIN_LENGTH = 3
-PATTERN_MAX_LENGTH = 12
+# Sourced from constants.py (a leaf module) so the benchmark can share the exact
+# same bounds without a main.py <-> benchmarks import cycle (#262/PERF-11).
+from constants import PATTERN_MIN_LENGTH, PATTERN_MAX_LENGTH
 
 # Advisory large-file heads-up threshold, aligned with the parallel detector's
 # sampling cap by default (#334/PERF-14) -- overridable in lockstep with the
@@ -116,6 +117,15 @@ def run_map(args):
     midi_data = load_json_stage(args.input, ['events'], 'parse')
     # Honor --dpcm-index instead of silently using the default (#13).
     dpcm_index_path = getattr(args, 'dpcm_index', None) or 'dpcm_index.json'
+    # A missing DPCM index made assign_tracks_to_nes_channels raise a bare
+    # FileNotFoundError, so the step-by-step `map` subcommand exited with a raw
+    # traceback -- unlike the packer path (which checks .exists() and degrades)
+    # and every other subcommand guard here (#256/D-18). Surface a clean
+    # [ERROR] with the same exit(1) convention as load_json_stage.
+    if not Path(dpcm_index_path).exists():
+        print(f"[ERROR] DPCM index not found: {dpcm_index_path} "
+              f"(pass --dpcm-index <path>, or restore dpcm_index.json)")
+        sys.exit(1)
     # Extract just the events from the parsed data
     mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
     Path(args.output).write_text(json.dumps(mapped, separators=(',', ':')))

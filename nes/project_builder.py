@@ -95,7 +95,11 @@ class NESProjectBuilder:
         # Read music.asm content
         music_content = Path(music_asm_path).read_text()
         
-        # Remove old includes if they were left over
+        # Remove old includes if they were left over. mmc3_init.asm was deleted
+        # as fully dead code (#203/NH-28) -- the live reset/NMI/IRQ/APU-init is
+        # the inline template in _generate_main_asm -- so this strip stays purely
+        # to neutralize any stale `.include "mmc3_init.asm"` a hand-edited or
+        # legacy music.asm might still carry (which would now fail assembly).
         music_content = music_content.replace('.include "mmc3_init.asm"\n', '')
         music_content = music_content.replace('.include "audio_engine.asm"\n', '')
 
