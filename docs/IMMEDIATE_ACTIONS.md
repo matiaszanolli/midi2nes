@@ -1,5 +1,13 @@
 # MIDI2NES Immediate Actions for v0.4.0
 
+> **Archived — historical snapshot.** This checklist targeted v0.4.0-dev
+> ("All 186 tests passing", "177/177 tests passing") and shipped long ago —
+> the project is now v0.5.0-dev with 1000+ tests. It is superseded by
+> `docs/ROADMAP.md` for current/forward-looking plans (#266/TD-22, sibling of
+> `WORK_PLAN_1.0.0.md`'s #226/TD-17). Kept for historical reference only; do
+> not treat unchecked items below as open work without first checking
+> `ROADMAP.md` and `HISTORY.md`.
+
 ## 🎯 Completion Status (Updated)
 
 ### ✅ COMPLETED ITEMS

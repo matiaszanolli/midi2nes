@@ -139,8 +139,17 @@ def estimate_segment_sizes(music_asm_path):
     region each segment lands in, not the full PRG (#126, #127). ld65 remains the
     exact backstop. .res lives in RAM/ZP (not PRG ROM) and is ignored. A bounded
     `.incbin "f", 0, N` (a truncated DPCM sample, #68) counts N, not the file size.
+
+    `.align N` rounds the *running offset within the current segment* up to the
+    next multiple of N, mirroring ld65's actual behavior, rather than being
+    ignored -- `DpcmPacker.generate_assembly` emits `.align 64` before every
+    packed DPCM sample (#301/MAP-2026-07-06-2), and skipping it previously let
+    a segment's estimated size fall up to 63 bytes/sample short of ld65's real
+    total, the exact slack `DpcmPacker`'s own `aligned_size` bank-fit check
+    already accounts for.
     """
     import re
+    import math
     music_path = Path(music_asm_path)
     if not music_path.exists():
         return {}
@@ -154,6 +163,14 @@ def estimate_segment_sizes(music_asm_path):
             m = re.search(r'"([^"]+)"', line)
             if m:
                 current = m.group(1)
+            continue
+        if low.startswith('.align'):
+            m = re.search(r'\.align\s+(\d+)', line, re.IGNORECASE)
+            if m and current is not None:
+                boundary = int(m.group(1))
+                if boundary > 0:
+                    offset = sizes.get(current, 0)
+                    sizes[current] = math.ceil(offset / boundary) * boundary
             continue
         n = 0
         if low.startswith('.byte'):

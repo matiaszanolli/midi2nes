@@ -78,20 +78,25 @@ ADVANCED_MIDI_DRUM_MAPPING = {
         "velocity_ranges": {
             (0, 64): "kick_soft",
             (65, 127): "kick_hard"
-        },
-        "layers": ["kick", "kick_sub"]  # For layered samples
+        }
     },
     38: {  # Snare
         "primary": "snare",
         "velocity_ranges": {
             (0, 64): "snare_soft",
             (65, 127): "snare_hard"
-        },
-        "layers": ["snare", "snare_rattle"]
+        }
     },
     # Every other GM percussion note falls back to DEFAULT_MIDI_DRUM_MAPPING
     # (see EnhancedDrumMapper._resolve_dpcm_sample_name, #73/D-10) rather than
     # needing a hand-tuned velocity-split entry here.
+    #
+    # No "layers" key here (removed, #300/DP-05): the DMC is a single-voice
+    # channel (docs/APU_DMC_REFERENCE.md §1) and cannot play two samples at
+    # once, so "layering" could only ever (a) duplicate the primary sample on
+    # the same frame -- silently discarded by the same-frame collapse with a
+    # misleading "note dropped" warning -- or (b) reference a name absent from
+    # the shipped catalog (kick_sub/snare_rattle), which was silently skipped.
 }
 
 

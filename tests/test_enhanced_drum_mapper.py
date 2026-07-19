@@ -405,15 +405,26 @@ class TestHighCatalogIdsResolveToDpcm:
         assert dpcm_events[0]["sample_id"] == 200
         assert noise_events == []
 
-    def test_layered_high_id_sample_is_included_not_dropped(self, mapper):
-        # _handle_layered_samples appends additional hits on top of a primary
-        # drum; a high-id layer must be included like any other, not dropped.
-        events = []
-        mapper._handle_layered_samples(
-            layers=["kick", "snare"], frame=0, velocity=100, events=events
-        )
-        sample_ids = {e["sample_id"] for e in events}
-        assert sample_ids == {1318, 1620}
+    def test_single_kick_and_snare_hit_each_yield_exactly_one_dpcm_event(self, mapper):
+        """Regression (#300/DP-05): _handle_layered_samples used to append a
+        duplicate of the primary sample on the same frame for kick/snare
+        (the DMC is single-voice and can't actually layer -- see
+        docs/APU_DMC_REFERENCE.md §1), which the same-frame collapse then
+        silently discarded with a misleading "note dropped" warning. A
+        single kick or snare hit must now yield exactly one DPCM event."""
+        midi_events = {
+            9: [
+                {"frame": 0, "note": 36, "velocity": 100},   # kick -> id 1318
+                {"frame": 10, "note": 38, "velocity": 100},  # snare -> id 1620
+            ]
+        }
+        dpcm_events, noise_events = mapper.map_drums(midi_events)
+
+        assert noise_events == []
+        assert len(dpcm_events) == 2  # one per hit, no layered duplicate
+        by_frame = {e["frame"]: e["sample_id"] for e in dpcm_events}
+        assert by_frame[0] == 1318
+        assert by_frame[10] == 1620
 
     def test_pattern_event_with_high_id_resolves_to_dpcm(self, mapper):
         pattern_info = {

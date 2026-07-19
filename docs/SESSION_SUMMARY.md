@@ -1,5 +1,11 @@
 # Session Summary: Benchmark CLI Integration
 
+> **Archived — historical snapshot.** This session log describes v0.4.0-era
+> work that shipped long ago (project is now v0.5.0-dev with 1000+ tests). It
+> is superseded by `docs/ROADMAP.md` for current status (#266/TD-22 sibling
+> sweep, same family as `WORK_PLAN_1.0.0.md`'s #226/TD-17). Kept for
+> historical reference only.
+
 ## 🎯 Completed Work
 
 Today we successfully integrated the comprehensive benchmarking infrastructure into the main MIDI2NES CLI, completing a key milestone in the immediate actions plan for v0.4.0.

@@ -6,6 +6,8 @@ This document details the hardware behavior of the NES APU DMC (Delta Modulation
 
 The DMC channel contains a memory reader, interrupt flag, sample buffer, timer, output unit, and a 7-bit output level up/down counter.
 
+There is exactly **one** of each of those — one memory reader, one sample buffer, one output-level counter. The DMC can therefore only ever play a single sample at a time; it cannot mix ("layer") two samples together the way a software drum engine could. Triggering a second sample while one is still playing replaces it, it does not combine with it.
+
 **Signal Flow:**
 ```text
                          Timer

@@ -1,5 +1,11 @@
 # MIDI2NES Code Coverage Report
 
+> **Archived — historical snapshot.** This report's "186 tests" figure is a
+> 4.8×+ under-count of the current suite (project is now v0.5.0-dev with
+> 1000+ tests). It is superseded by `docs/ROADMAP.md` for current status
+> (#266/TD-22, sibling of `WORK_PLAN_1.0.0.md`'s #226/TD-17). Kept for
+> historical reference only.
+
 ## 📊 Overall Coverage Statistics
 
 **Test Execution:**
