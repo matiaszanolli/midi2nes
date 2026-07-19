@@ -94,9 +94,11 @@ verify this still holds and check for paths that might bypass it:
   units (`$4001`/`$4005`).
 - Bytecode export: `init_music` jumps to `audio_init` (`nes/audio_engine.asm`, around
   lines 90-138), which performs the equivalent `$4017`/`$4015` writes before returning.
-- The DPCM play path (`seq_cmd_dpcm_play` in `nes/project_builder.py`, ~lines 138-160)
-  writes `$4010`/`$4012`/`$4013` then toggles `$4015` (disable-then-enable-with-DMC) to
+- The DPCM play path (`@write_dpcm` in `nes/audio_engine.asm`, ~line 512) writes
+  `$4010`/`$4012`/`$4013` then toggles `$4015` (disable-then-enable-with-DMC) to
   trigger playback — verify channel enables aren't left disabled after the trigger.
+  (The old `seq_cmd_dpcm_play` copy in `nes/project_builder.py` was deleted as dead
+  code — #314/EXP-12.)
 - Missing APU init on any of these paths is **CRITICAL** per `_audit-severity.md`. Cite
   `docs/NES_APU_REFERENCE.md` for the register map and `docs/APU_FRAME_COUNTER_REFERENCE.md`
   for $4017.

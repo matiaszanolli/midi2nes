@@ -142,9 +142,12 @@ DMC is at `$4010–$4013`; direct level load is `$4011` (7-bit, `docs/APU_DMC_RE
   frame), not as a level to write to `$4011` — there is no "DMC volume" register on
   real hardware, so this is correct as long as nothing downstream reinterprets it as
   a level.
-- `nes/audio_engine.asm` and `nes/mmc3_init.asm` both write `$4011` **only** to reset
-  the DMC DAC to 0 at init (preventing the documented Triangle/Noise mixing-DC-offset
-  quirk) — confirm this is the only live `$4011` write.
+- `nes/audio_engine.asm` (bytecode path) writes `$4011` **only** to reset the DMC DAC
+  to 0 at init (`audio_engine.asm:128`), preventing the documented Triangle/Noise
+  mixing-DC-offset quirk — confirm this stays the only live `$4011` write on that path.
+  Note the direct-export path (`export_direct_frames`'s `init_music`/`reset`) omits this
+  `$00→$4011` DAC-zero, an open defense-in-depth gap on soft-reset (#348/NH-HW-1).
+  (nes/mmc3_init.asm — a second, never-assembled copy — was deleted as dead code, #203.)
 - The `@cmd_dmc_level` handler in `nes/audio_engine.asm` (reads a 7-bit level operand
   and writes it to `$4011`) still exists, but `exporter/exporter_ca65.py` never emits
   the `CMD_DMC_LEVEL`/`$87` opcode that would trigger it (confirmed by

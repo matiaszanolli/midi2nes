@@ -9,8 +9,8 @@ Entry point:      main.py                              (CLI dispatch + run_full_
 Version:          midi2nes/__version__.py
 
 MIDI core:        tracker/
-  Fast parser:    tracker/parser_fast.py               (parse_midi_to_frames — 120x; default front-end)
-  Full parser:    tracker/parser.py                    (older full-feature parser)
+  Fast parser:    tracker/parser_fast.py               (parse_midi_to_frames — 120x; the ONLY live front-end)
+  Full parser:    tracker/parser.py                    (older full parser — test-only, on NO pipeline path; TD-26/#346)
   Track mapper:   tracker/track_mapper.py              (assign_tracks_to_nes_channels — legacy mode)
   Tempo:          tracker/tempo_map.py                 (EnhancedTempoMap — frame-accurate tempo)
   Loops:          tracker/loop_manager.py              (loop point detection)

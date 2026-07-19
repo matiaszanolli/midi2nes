@@ -161,11 +161,15 @@ changed in the recent fix sprint — the following are still open, unverified cl
   0–127 range `$4011` accepts before emission.
 - Silence init: `docs/APU_DMC_REFERENCE.md` says init should write `$00` to `$4011`
   so the DMC counter doesn't muffle Triangle/Noise via the non-linear mixer.
-  Confirmed present: `nes/mmc3_init.asm:68-69` writes `LDA #$00` / `STA $4011`
-  before `STA $4010`. `seq_cmd_dpcm_play`
-  (`nes/project_builder.py:138-160`) writes `$4010` → `$4012` → `$4013` in that
-  order, matching `docs/APU_DMC_REFERENCE.md`; re-verify this order is still
-  correct if the trigger routine changes.
+  Live on the bytecode path: `nes/audio_engine.asm:128` writes `LDA #$00` / `STA $4011`
+  at `audio_init`. (The direct-export `init_music`/`reset` omits it — open gap
+  #348/NH-HW-1; nes/mmc3_init.asm, which also had this write, was deleted as dead
+  code, #203.) The live DPCM trigger is `@write_dpcm` (`nes/audio_engine.asm`, ~line
+  512), which writes `$4010` → `$4012` → `$4013` then toggles `$4015`
+  (disable-then-enable-with-DMC), matching `docs/APU_DMC_REFERENCE.md`; re-verify this
+  order is still correct if the trigger routine changes. (The old
+  `seq_cmd_dpcm_play`/`seq_cmd_instrument` copies in `nes/project_builder.py` were
+  removed as dead code — #314/EXP-12; only the live `fetch_sequence_byte` remains.)
 - DMA cost: `docs/NES_DMA_REFERENCE.md` notes each DMC DMA steals 3–4 CPU cycles and
   a heavy drum catalog fires constantly, delaying OAM DMA and corrupting
   side-effect reads (`$4016`/`$2007`/`$4015`). This subsystem can't avoid the cost,
