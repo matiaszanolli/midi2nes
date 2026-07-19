@@ -66,8 +66,12 @@ class TestDrumMappingConstants:
         kick_config = ADVANCED_MIDI_DRUM_MAPPING[36]
         assert kick_config["primary"] == "kick"
         assert "velocity_ranges" in kick_config
-        assert "layers" in kick_config
-        
+        # No "layers" key (#300/DP-05): the DMC is single-voice and can't
+        # play two samples at once, so a "layers" list could only ever
+        # duplicate the primary on the same frame or reference a
+        # nonexistent sample name -- both removed.
+        assert "layers" not in kick_config
+
         # Check velocity ranges structure
         velocity_ranges = kick_config["velocity_ranges"]
         assert isinstance(velocity_ranges, dict)
@@ -76,12 +80,6 @@ class TestDrumMappingConstants:
             assert len(vel_range) == 2
             assert isinstance(sample_name, str)
             assert vel_range[0] <= vel_range[1]
-        
-        # Check layers structure
-        layers = kick_config["layers"]
-        assert isinstance(layers, list)
-        assert len(layers) > 0
-        assert all(isinstance(layer, str) for layer in layers)
     
     def test_velocity_range_coverage(self):
         """Test that velocity ranges cover full MIDI velocity range."""

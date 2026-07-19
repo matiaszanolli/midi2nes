@@ -1,5 +1,11 @@
 # MIDI2NES v0.4.0-dev Progress Report
 
+> **Archived — historical snapshot.** This report tracked v0.4.0-dev progress
+> and shipped long ago (project is now v0.5.0-dev with 1000+ tests). It is
+> superseded by `docs/ROADMAP.md` for current status (#266/TD-22 sibling
+> sweep, same family as `WORK_PLAN_1.0.0.md`'s #226/TD-17). Kept for
+> historical reference only.
+
 ## Overview
 This report documents the progress made on the foundational improvements for MIDI2NES v0.4.0. The focus was on establishing version management, configuration systems, and enhanced CLI interface as outlined in the immediate actions plan.
 

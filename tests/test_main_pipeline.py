@@ -985,6 +985,64 @@ class TestPipelineSafetyGates:
         assert sizes["RODATA"] == 3
         assert sizes["BANK_00"] == 4 + 4081
 
+    def test_estimate_segment_sizes_accounts_for_align_padding(self):
+        """Regression (#301/MAP-2026-07-06-2): `.align N` must round the
+        running per-segment offset up to the next multiple of N, matching
+        ld65, instead of being silently ignored. `DpcmPacker` emits
+        `.align 64` before every packed sample -- an unaligned two-sample
+        segment previously undercounted the real ROM footprint by the
+        padding gap."""
+        from main import estimate_segment_sizes
+        asm = self.temp_dir / "aligned.asm"
+        asm.write_text(
+            '.segment "DPCM_00"\n'
+            '    .align 64\n'
+            '    dpcm_sample_0:\n'
+            '    .incbin "s0.dmc", 0, 10\n'   # offset 0 -> 10 (no padding needed)
+            '    .align 64\n'                  # 10 -> pad up to 64
+            '    dpcm_sample_1:\n'
+            '    .incbin "s1.dmc", 0, 20\n'   # 64 -> 84
+        )
+        sizes = estimate_segment_sizes(str(asm))
+        assert sizes["DPCM_00"] == 84  # not 10 + 20 = 30 (the pre-fix undercount)
+
+    def test_estimate_segment_sizes_matches_dpcm_packer_real_layout(self):
+        """The pre-flight estimate for a bank of packed DPCM samples must
+        match the real, tightly-packed layout `DpcmPacker.generate_assembly`
+        emits (#301): `.align 64` before each sample pads the running offset
+        up to the next boundary, then the raw sample bytes follow with no
+        further padding -- this is strictly tighter than (<=) the sum of each
+        sample's independently-rounded `aligned_size`, which is only a
+        conservative bin-fit budget `_pack_samples` uses to choose which bank
+        a sample goes in, not the final byte count."""
+        from main import estimate_segment_sizes
+
+        sample_sizes = [10, 20, 4081]  # arbitrary, unaligned raw sizes
+
+        # Simulate the same running-offset layout generate_assembly produces:
+        # align-before-each, no post-padding.
+        offset = 0
+        for size in sample_sizes:
+            offset = -(-offset // 64) * 64  # round up to next 64-byte boundary
+            offset += size
+        expected_total = offset
+
+        asm_lines = ['.segment "DPCM_00"']
+        for i, size in enumerate(sample_sizes):
+            asm_lines.append('    .align 64')
+            asm_lines.append(f'    dpcm_sample_{i}:')
+            asm_lines.append(f'    .incbin "s{i}.dmc", 0, {size}')
+        asm = self.temp_dir / "packed.asm"
+        asm.write_text('\n'.join(asm_lines) + '\n')
+
+        sizes = estimate_segment_sizes(str(asm))
+        assert sizes["DPCM_00"] == expected_total
+        # And that real layout is never larger than the packer's conservative
+        # per-sample bin-fit budget, confirming #301's "packer-guarded" claim:
+        # aligned_size-sum <= BANK_SIZE always implies real bytes <= BANK_SIZE.
+        conservative_budget = sum(-(-s // 64) * 64 for s in sample_sizes)
+        assert expected_total <= conservative_budget
+
     # --- #6: validation gate fails on boot-fatal defects ---
     @patch('main.compile_rom')
     @patch('main.NESProjectBuilder')
@@ -1319,6 +1377,43 @@ class TestPreparePath(object):
         args = Namespace(input=str(proj), output=str(out), skip_validation=True, verbose=False)
         run_compile(args)  # should not raise
         assert out.exists()
+
+    @patch('main.compile_rom')
+    def test_run_compile_recovers_prepare_auto_mapper_from_nes_cfg(self, mock_compile):
+        """Regression (#269/PL-08): a project prepared with --mapper auto has
+        no matching --mapper choice for `compile` (only nrom/mmc1/mmc3, no
+        'auto'). `_prepared_mapper_name_from_cfg` already recovers the mapper
+        `prepare` actually resolved from the nes.cfg marker it stamps, so
+        `compile` must use THAT mapper even when the user passes (or
+        defaults to) an unrelated --mapper value -- pinning the parity the
+        #297 cfg-recovery fix already provides at the code level."""
+        from main import run_compile, NES_CFG_MAPPER_MARKER
+        from mappers.nrom import NROMMapper
+
+        proj = self.temp_dir / "proj"
+        proj.mkdir()
+        # Mirror what `prepare --mapper auto` stamps for a small song that
+        # auto-selects NROM: a marker line at the top of nes.cfg.
+        (proj / "nes.cfg").write_text(f"{NES_CFG_MAPPER_MARKER}nrom\n# rest of cfg\n")
+        (proj / "music.asm").write_text(".byte 1, 2, 3\n")
+        out = self.temp_dir / "out.nes"
+
+        def create_rom(p, r, **kwargs):
+            Path(r).write_bytes(b'NES\x1a' + b'\x00' * 32768)
+            return True
+        mock_compile.side_effect = create_rom
+
+        # args.mapper defaults to 'mmc3' -- the CLI's own default -- and is
+        # NOT nrom, proving the nes.cfg marker wins over it.
+        args = Namespace(input=str(proj), output=str(out), skip_validation=True,
+                          verbose=False, mapper='mmc3')
+        run_compile(args)
+
+        used_mapper = mock_compile.call_args.kwargs['mapper']
+        assert isinstance(used_mapper, NROMMapper), (
+            "compile must build with the mapper prepare(auto) actually chose "
+            "(nrom, recovered from nes.cfg), not the --mapper default (mmc3)"
+        )
 
     def test_validate_rom_passes_for_bootable(self):
         from main import validate_rom

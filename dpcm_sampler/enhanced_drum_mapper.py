@@ -312,16 +312,6 @@ class EnhancedDrumMapper:
                         "sample_id": sample_data['id'],
                         "velocity": velocity
                     })
-
-                    # Handle layered samples if any
-                    if (use_advanced and midi_note in ADVANCED_MIDI_DRUM_MAPPING
-                            and "layers" in ADVANCED_MIDI_DRUM_MAPPING[midi_note]):
-                        self._handle_layered_samples(
-                            ADVANCED_MIDI_DRUM_MAPPING[midi_note]["layers"],
-                            frame,
-                            velocity,
-                            dpcm_events
-                        )
                 else:
                     # process_all_tracks (nes/emulator_core.py) requires a
                     # `note` key on every noise event to derive a period via
@@ -449,23 +439,6 @@ class EnhancedDrumMapper:
                 return name
         return None
         
-    def _handle_layered_samples(self, layers: List[str], 
-                              frame: int, 
-                              velocity: int,
-                              events: List[Dict]) -> None:
-        """Handle layered samples allocation"""
-        for layer in layers:
-            if layer in self.sample_index:
-                sample_data = self.sample_index[layer]
-                # Index id (not the manager's allocation counter) indexes the
-                # packer tables — see issue #65.
-                self.sample_manager.allocate_sample(layer, sample_data)
-
-                events.append({
-                    "frame": frame,
-                    "sample_id": sample_data['id'],
-                    "velocity": velocity
-                })
 
 # Update the existing map_drums_to_dpcm function to use the new system
 def map_drums_to_dpcm(midi_events: Dict, 
