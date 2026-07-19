@@ -183,6 +183,39 @@ class TestNoiseDpcmReachAPU(unittest.TestCase):
         self.assertEqual(sample_map[str(note0 - 1)], 1318)
         self.assertEqual(sample_map[str(note10 - 1)], 1620)
 
+    def test_over_255_distinct_samples_warns_instead_of_silently_aliasing(self):
+        """Regression (#343/DP-DPCM-04): the dense remap's own byte ceiling
+        (note = min(255, dense_id + 1)) means dense_id 255 collides with
+        dense_id 254 at 256+ distinct samples in one song -- every id past
+        254 silently plays the 254th sample. A song under the ceiling must
+        stay silent about it; a song over it must warn."""
+        import io, contextlib
+
+        under = {'dpcm': [
+            {'frame': i, 'note': 36, 'velocity': 100, 'sample_id': i}
+            for i in range(255)
+        ]}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.core.process_all_tracks(under)
+        self.assertNotIn('dense-id ceiling', buf.getvalue())
+
+        over = {'dpcm': [
+            {'frame': i, 'note': 36, 'velocity': 100, 'sample_id': i}
+            for i in range(256)
+        ]}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            frames = self.core.process_all_tracks(over)
+        self.assertIn('dense-id ceiling', buf.getvalue())
+        self.assertIn('256', buf.getvalue())
+        # The clamp itself still holds (no crash, no out-of-range byte) --
+        # dense_id 255 aliases onto the same note as dense_id 254.
+        note_254 = frames['dpcm'][254]['note']
+        note_255 = frames['dpcm'][255]['note']
+        self.assertEqual(note_254, note_255)
+        self.assertEqual(note_255, 255)
+
     def test_dense_remap_still_hits_byte_ceiling_past_255_distinct_ids(self):
         # The single-byte note field still caps at 255 total distinct ids per
         # song; only a song referencing more than 255 distinct DPCM samples
@@ -802,6 +835,19 @@ class TestSameFrameNoteCollapse(unittest.TestCase):
         self.assertEqual(self._notes(frames)[10], 60)
         self.assertEqual(self._notes(frames)[11], 60)
         self.assertEqual(self._notes(frames)[12], 67)
+
+    def test_equal_velocity_tie_keeps_the_later_event(self):
+        """Regression (#344/TEMPO-15): the docstring/comment say a same-frame,
+        equal-velocity tie keeps the LATER event, but the code's strict `>`
+        comparison kept the earlier one instead. Two equal-velocity note-ons
+        on one frame must retain the second (later-in-input) note."""
+        kept, dropped = NESEmulatorCore._collapse_same_frame_events(
+            [{'frame': 10, 'note': 60, 'velocity': 100},
+             {'frame': 10, 'note': 67, 'velocity': 100}],
+            'pulse1')
+        self.assertEqual(dropped, 1)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]['note'], 67, "tie must keep the later event")
 
     def test_collapse_applies_to_noise_channel(self):
         # CHANNEL: the same collapse covers the noise branch of process_all_tracks,
