@@ -9,9 +9,12 @@ the root relative to the index file, independent of cwd.
 """
 import os
 import json
+from unittest.mock import Mock
 
 from dpcm_sampler.generate_dpcm_index import (
     resolve_dpcm_sample_path,
+    generate_dpcm_index,
+    load_dpcm_index_into_packer,
     DPCM_ROOT_DIRNAME,
 )
 
@@ -120,3 +123,63 @@ def test_shipped_index_covers_most_default_drum_roles():
     # (a shared id would corrupt the packer's positional lookup tables).
     all_ids = [v['id'] for v in index.values()]
     assert len(all_ids) == len(set(all_ids)), "dpcm_index.json has duplicate ids"
+
+
+def test_generate_dpcm_index_walks_directory_with_sequential_ids(tmp_path):
+    """Regression (#338/REG-19): the os.walk-based builder had no coverage --
+    one JSON entry per .dmc file (recursively, non-.dmc files skipped), with
+    sequential ids and a filename relative to the scanned root."""
+    dmc_dir = tmp_path / "samples"
+    dmc_dir.mkdir()
+    (dmc_dir / "Kick.dmc").write_bytes(b"\x00" * 8)
+    (dmc_dir / "Snare.dmc").write_bytes(b"\x00" * 8)
+    (dmc_dir / "notes.txt").write_text("not a sample")  # non-.dmc, must be skipped
+    sub = dmc_dir / "sub"
+    sub.mkdir()
+    (sub / "Tom.dmc").write_bytes(b"\x00" * 8)
+
+    output_json = tmp_path / "out.json"
+    generate_dpcm_index(str(dmc_dir), str(output_json))
+
+    index = json.loads(output_json.read_text())
+    assert set(index.keys()) == {"Kick", "Snare", "Tom"}
+    ids = sorted(v["id"] for v in index.values())
+    assert ids == [0, 1, 2]  # sequential, one per file
+    assert index["Tom"]["filename"] == "sub/Tom.dmc"  # relative path, forward slashes
+    assert index["Kick"]["filename"] == "Kick.dmc"
+
+
+def test_load_dpcm_index_into_packer_skips_missing_sample(tmp_path):
+    """Regression (#338/REG-19): a genuinely-missing sample must be skipped
+    with a (loaded, skipped) count, not silently swallowed or raised -- this
+    is the live packer path (main.py) that would otherwise drop a drum with
+    no trace."""
+    index_path = tmp_path / "dpcm_index.json"
+    dpcm_index = {"Ghost": {"id": 0, "filename": "DoesNotExist.dmc"}}
+    index_path.write_text(json.dumps(dpcm_index))
+
+    packer = Mock()
+    loaded, skipped = load_dpcm_index_into_packer(packer, dpcm_index, str(index_path))
+
+    assert (loaded, skipped) == (0, 1)
+    packer.add_sample.assert_not_called()
+
+
+def test_load_dpcm_index_into_packer_loads_present_sample(tmp_path):
+    """Sibling of the skip-branch test: a real sample loads normally, so
+    (loaded, skipped) exercises both sides of the branch in one pack run."""
+    dmc_dir = tmp_path / DPCM_ROOT_DIRNAME
+    dmc_dir.mkdir()
+    (dmc_dir / "Kick.dmc").write_bytes(b"\x00" * 16)
+    index_path = tmp_path / "dpcm_index.json"
+    dpcm_index = {
+        "Kick": {"id": 0, "filename": "Kick.dmc"},
+        "Ghost": {"id": 1, "filename": "DoesNotExist.dmc"},
+    }
+    index_path.write_text(json.dumps(dpcm_index))
+
+    packer = Mock()
+    loaded, skipped = load_dpcm_index_into_packer(packer, dpcm_index, str(index_path))
+
+    assert (loaded, skipped) == (1, 1)
+    packer.add_sample.assert_called_once()

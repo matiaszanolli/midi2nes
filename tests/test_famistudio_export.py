@@ -54,12 +54,14 @@ class TestFamiStudioExport(unittest.TestCase):
             copyright="Test Copyright"
         )
         
-        # Verify basic structure
+        # Verify basic structure. No bare assertIn("PATTERNS") here (#339/
+        # REG-20): a section-header-only check would still pass if every note
+        # in the pattern rows were wrong -- TestFamiStudioGoldenBytes below
+        # pins the exact pattern-row content for that emit path instead.
         self.assertIn("# FamiStudio Text Export", output)
         self.assertIn("PROJECT", output)
         self.assertIn("INSTRUMENTS", output)
-        self.assertIn("PATTERNS", output)
-        
+
         # Verify project metadata
         self.assertIn("Test Project", output)
         self.assertIn("Test Author", output)

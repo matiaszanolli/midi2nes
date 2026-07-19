@@ -1045,11 +1045,13 @@ class TestDetectorScoringConsistency(unittest.TestCase):
         from tracker import pattern_detector as pd
         from tracker import pattern_detector_parallel as pdp
         # The sequential scoring lives in the base PatternDetector.detect_patterns;
-        # the parallel path scores in _collect_length_candidates. Both must call
-        # the shared module-level score_pattern.
+        # the parallel path scores in _select_candidates_from_groups (#332/PERF-12
+        # split the old _collect_length_candidates into a window-grouping half
+        # and this scoring half so grouping can also run sub-chunked). Both
+        # must call the shared module-level score_pattern.
         seq_src = inspect.getsource(pd.PatternDetector.detect_patterns)
         self.assertIn('score_pattern(', seq_src)
-        collect_src = inspect.getsource(pdp._collect_length_candidates)
+        collect_src = inspect.getsource(pdp._select_candidates_from_groups)
         self.assertIn('score_pattern(', collect_src)
 
     def test_parallel_candidate_score_equals_shared_score_pattern(self):
@@ -1399,9 +1401,14 @@ class TestParallelChunkFailureRecovery(unittest.TestCase):
             tempo_map, min_pattern_length=3, max_pattern_length=6)
 
     def _input(self):
-        # >1 length chunk (3..6) so the parallel path runs; clear repeats so
-        # there are real candidates to lose.
-        seq = [(60 + (i % 3), 100) for i in range(12)]
+        # >1 length chunk (3..6) so the parallel path runs, and above
+        # SERIAL_EVENT_THRESHOLD (#333/PERF-13) so this still reaches the
+        # (mocked) process pool instead of short-circuiting to the direct
+        # serial path before ever exercising per-chunk failure recovery.
+        # Clear repeats so there are real candidates to lose.
+        from tracker.pattern_detector_parallel import SERIAL_EVENT_THRESHOLD
+        n = SERIAL_EVENT_THRESHOLD + 12
+        seq = [(60 + (i % 3), 100) for i in range(n)]
         events = [{'note': a, 'volume': b, 'frame': i}
                   for i, (a, b) in enumerate(seq)]
         return seq, events
@@ -1426,9 +1433,14 @@ class TestParallelChunkFailureRecovery(unittest.TestCase):
             raise RuntimeError("injected serial-retry failure")
 
         buf = io.StringIO()
+        # The in-process retry after a failed future now calls
+        # _collect_window_groups directly (#332/PERF-12 split the old
+        # _collect_length_candidates into a grouping half + a scoring half so
+        # grouping can run sub-chunked) -- patch that, not the now-unrelated
+        # _collect_length_candidates, to simulate the retry also failing.
         with patch('tracker.pattern_detector_parallel.ProcessPoolExecutor',
                    _AllChunksFailExecutor), \
-             patch('tracker.pattern_detector_parallel._collect_length_candidates',
+             patch('tracker.pattern_detector_parallel._collect_window_groups',
                    _boom), \
              redirect_stdout(buf):
             result = pdp._detect_patterns_parallel(seq, events)
@@ -1436,8 +1448,12 @@ class TestParallelChunkFailureRecovery(unittest.TestCase):
         out = buf.getvalue()
         # Lengths 3..6 all fail AND all in-process retries fail -> a single
         # persistent end-of-run warning naming the count, not just tqdm noise.
+        # At this input size each length is exactly one sub-chunk (#332), so
+        # "chunk" and "length" counts coincide here; the affected lengths are
+        # still named explicitly in the message.
         self.assertIn("Partial pattern detection", out)
-        self.assertIn("4 length(s)", out)
+        self.assertIn("4 chunk(s)", out)
+        self.assertIn("lengths [3, 4, 5, 6]", out)
         self.assertEqual(result, {})  # nothing recovered, but no crash
 
 

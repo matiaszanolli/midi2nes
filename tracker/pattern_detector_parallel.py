@@ -8,6 +8,12 @@ from tracker.pattern_detector import (
     PatternCompressor, sample_events_for_detection, score_pattern, MAX_PATTERN_EVENTS
 )
 
+# Below this many events, a serial run finishes before a process pool would
+# even finish spawning (pronounced under the `spawn` start method on macOS/
+# Windows) -- skip pool construction entirely rather than pay full
+# spawn/teardown overhead for a handful of events (#333/PERF-13).
+SERIAL_EVENT_THRESHOLD = 200
+
 class ParallelPatternDetector:
     """
     High-performance pattern detector using multiprocessing to utilize all CPU cores.
@@ -107,22 +113,62 @@ class ParallelPatternDetector:
                0 <= event.get('volume', 0) <= 127
         ]
     
+    def _build_work_chunks(self, sequence_len: int) -> List[Dict]:
+        """Build (pattern_length, start_range) sub-chunks for the pool.
+
+        The #114 fix made each chunk one whole pattern length, so total task
+        count was exactly `max_pattern_length - min_pattern_length + 1` (10 at
+        the pipeline defaults) regardless of core count or input size --
+        several cores sit idle on a >10-core host (#332/PERF-12). Sub-chunk
+        each length's start range so task count scales toward
+        `self.max_workers`, while staying above `MIN_STARTS_PER_CHUNK` so
+        tiny sub-ranges don't turn into pure per-task overhead."""
+        lengths = list(range(self.min_pattern_length,
+                             min(self.max_pattern_length, sequence_len) + 1))
+        if not lengths:
+            return []
+
+        MIN_STARTS_PER_CHUNK = 2000
+        target_total_chunks = max(len(lengths), self.max_workers * 2)
+        subchunks_per_length = max(1, target_total_chunks // len(lengths))
+
+        work_chunks = []
+        for length in lengths:
+            n_starts = sequence_len - length + 1
+            n_sub = min(subchunks_per_length, max(1, n_starts // MIN_STARTS_PER_CHUNK))
+            starts_per_sub = -(-n_starts // n_sub)  # ceil division
+            for i in range(n_sub):
+                start = i * starts_per_sub
+                end = min(start + starts_per_sub, n_starts)
+                if start >= end:
+                    break
+                work_chunks.append({'pattern_length': length, 'start_range': (start, end)})
+        return work_chunks
+
     def _detect_patterns_parallel(self, sequence: List[Tuple], valid_events: List[Dict]) -> Dict:
         """Detect patterns using parallel processing.
 
-        Each worker handles ONE pattern length over the whole sequence using the
-        O(n) hash-grouping pass in `_collect_length_candidates`, so total work is
-        O(n·L) instead of the old per-start O(n²·L) rescan. The sequence and
-        events are shipped to each worker process ONCE via the pool `initializer`
-        rather than embedded in every chunk dict — the previous code pickled the
-        full sequence ~(lengths × workers) times per detection run (#114)."""
+        Each worker buckets window start positions for one (pattern_length,
+        start-range) sub-chunk via the O(n) hash-grouping pass in
+        `_collect_window_groups`, so total work is O(n·L) instead of the old
+        per-start O(n²·L) rescan. Sub-chunks for the same length are merged
+        (in start-range order, so position lists stay ascending) and scored
+        once via `_select_candidates_from_groups` -- identical to what a
+        single un-chunked pass over that length would produce (#332/PERF-12).
+        The sequence and events are shipped to each worker process ONCE via
+        the pool `initializer` rather than embedded in every chunk dict — the
+        previous code pickled the full sequence ~(lengths × workers) times
+        per detection run (#114)."""
 
-        # One chunk per pattern length; the heavy data travels via initargs below.
-        work_chunks = [
-            {'pattern_length': length}
-            for length in range(self.min_pattern_length,
-                                min(self.max_pattern_length, len(sequence)) + 1)
-        ]
+        # Below this, a serial run finishes before a process pool would even
+        # spawn (pronounced under the `spawn` start method), so skip pool
+        # construction and the sub-chunk machinery entirely (#333/PERF-13).
+        if len(sequence) < SERIAL_EVENT_THRESHOLD:
+            print(f"🔄 Sequence below the {SERIAL_EVENT_THRESHOLD}-event serial "
+                  f"threshold; skipping process pool")
+            return self._detect_patterns_serial(sequence, valid_events)
+
+        work_chunks = self._build_work_chunks(len(sequence))
         if not work_chunks:
             return {}
 
@@ -142,9 +188,11 @@ class ParallelPatternDetector:
         # process count (#218).
         pool_workers = min(self.max_workers, len(work_chunks))
 
-        # Process chunks in parallel
-        all_candidate_patterns = []
-        failed_lengths = []  # lengths whose chunk failed AND couldn't be recovered
+        # Partial window-groups collected per length, as (start, groups) pairs
+        # -- merged in start-range order once all of a length's sub-chunks are
+        # in, so the merged position lists stay ascending (#332).
+        length_group_parts: Dict[int, List[Tuple[int, Dict[Tuple, List[int]]]]] = {}
+        failed_subchunks = []  # (length, start_range) that failed AND couldn't be recovered
 
         try:
             with ProcessPoolExecutor(
@@ -154,46 +202,64 @@ class ParallelPatternDetector:
             ) as executor:
                 # Submit all work chunks
                 future_to_chunk = {
-                    executor.submit(_detect_patterns_worker, chunk): chunk
+                    executor.submit(_detect_window_groups_worker, chunk): chunk
                     for chunk in work_chunks
                 }
 
                 # Collect results as they complete with progress bar
                 with tqdm(total=len(work_chunks), desc="Processing pattern chunks", unit="chunk") as pbar:
                     for future in as_completed(future_to_chunk):
-                        length = future_to_chunk[future]['pattern_length']
+                        chunk = future_to_chunk[future]
+                        length = chunk['pattern_length']
+                        start_range = chunk['start_range']
                         try:
-                            chunk_patterns = future.result(timeout=30)  # 30s timeout per chunk
-                            all_candidate_patterns.extend(chunk_patterns)
+                            groups = future.result(timeout=30)  # 30s timeout per chunk
                         except Exception as e:
-                            # A chunk covers exactly one pattern length. Instead of
-                            # silently dropping that length's candidates (degrading
-                            # compression with only a transient tqdm line), recover
-                            # it in-process with the same helper the serial path
-                            # uses. Only if that also fails is the length truly lost
-                            # — recorded and surfaced durably after the loop (#106).
-                            pbar.write(f"  ⚠️  Chunk for length {length} failed: {e} — retrying serially")
+                            # Instead of silently dropping this sub-chunk's window
+                            # groups (degrading compression with only a transient
+                            # tqdm line), recover it in-process with the same
+                            # helper the workers use. Only if that also fails is
+                            # this slice truly lost — recorded and surfaced
+                            # durably after the loop (#106).
+                            pbar.write(f"  ⚠️  Chunk for length {length} {start_range} "
+                                       f"failed: {e} — retrying serially")
                             try:
-                                all_candidate_patterns.extend(
-                                    _collect_length_candidates(sequence, valid_events, length)
-                                )
+                                groups = _collect_window_groups(sequence, length, *start_range)
                             except Exception as e2:
-                                failed_lengths.append(length)
-                                pbar.write(f"  ❌ Serial retry for length {length} also failed: {e2}")
+                                failed_subchunks.append((length, start_range))
+                                groups = None
+                                pbar.write(f"  ❌ Serial retry for length {length} {start_range} "
+                                           f"also failed: {e2}")
+                        if groups is not None:
+                            length_group_parts.setdefault(length, []).append((start_range[0], groups))
                         pbar.update(1)
-                        pbar.set_postfix(patterns=len(all_candidate_patterns))
 
         except Exception as e:
             print(f"  ❌ Parallel processing failed, falling back to serial: {e}")
             # Fallback to serial processing
             return self._detect_patterns_serial(sequence, valid_events)
 
+        # Merge each length's sub-chunk groups (in start-range order) and score
+        # once per length -- identical result to an un-chunked pass.
+        all_candidate_patterns = []
+        for length in sorted(length_group_parts):
+            parts = sorted(length_group_parts[length], key=lambda p: p[0])
+            merged: Dict[Tuple, List[int]] = {}
+            for _, groups in parts:
+                for window, positions in groups.items():
+                    merged.setdefault(window, []).extend(positions)
+            all_candidate_patterns.extend(
+                _select_candidates_from_groups(merged, valid_events, length)
+            )
+
         # A transient stderr line vanishes with the tqdm bar; emit a persistent
-        # end-of-run warning naming the lost lengths so a partial detection run
+        # end-of-run warning naming the lost slices so a partial detection run
         # stays visible (#106).
-        if failed_lengths:
-            print(f"  ⚠️  Partial pattern detection: {len(failed_lengths)} length(s) "
-                  f"could not be analyzed ({sorted(failed_lengths)}); compression may be suboptimal")
+        if failed_subchunks:
+            affected_lengths = sorted({length for length, _ in failed_subchunks})
+            print(f"  ⚠️  Partial pattern detection: {len(failed_subchunks)} chunk(s) "
+                  f"could not be analyzed (lengths {affected_lengths}); "
+                  f"compression may be suboptimal")
 
         print(f"📈 Found {len(all_candidate_patterns)} candidate patterns")
         
@@ -302,36 +368,32 @@ def _init_pattern_worker(sequence: List[Tuple], events: List[Dict]) -> None:
     _WORKER_EVENTS = events
 
 
-def _collect_length_candidates(sequence: List[Tuple], events: List[Dict],
-                               pattern_length: int) -> List[Dict]:
-    """Find every repeated pattern of `pattern_length` in O(n) instead of O(n²).
+def _collect_window_groups(sequence: List[Tuple], pattern_length: int,
+                           start: int, end: int) -> Dict[Tuple, List[int]]:
+    """Bucket each window start position in `[start, end)` by window value.
 
-    A single linear pass buckets each window's start position by window value.
-    For each bucket the greedy non-overlapping match list is derived directly
-    from the ascending positions — equivalent to the old "scan from pos 0, jump
-    pattern_len on a match" rescan, but without re-scanning the whole sequence
-    for every start.
-
-    NOT fully equivalent to the old per-start output, though (#171/PAT-05):
-    emitting a single candidate per distinct window, anchored at its first
-    occurrence, means `_select_best_patterns` rejects or accepts that
-    candidate's positions as one unit. If a higher-scoring pattern overlaps
-    only this window's first occurrence, the whole candidate -- including its
-    later, non-conflicting occurrences -- is rejected here. The per-start
-    sequential detector can still recover those later occurrences via a
-    separate candidate anchored past the contested region. So the two
-    detectors' selected pattern sets can differ (metrics only today, #4) when
-    the anchor occurrence of a window is itself contested."""
-    n = len(sequence)
-    if pattern_length > n:
-        return []
-
-    # Single linear pass: bucket each window's start position by window value.
+    This is the O(n) grouping half of `_collect_length_candidates`, split out
+    so it can run over an arbitrary start-range slice instead of always the
+    whole sequence (#332/PERF-12) -- `_detect_patterns_parallel` runs one of
+    these per (length, start-range) sub-chunk and merges the partial dicts
+    before handing them to `_select_candidates_from_groups`, so splitting
+    this pass changes nothing about the result: it's the same total set of
+    (window -> ascending start positions) entries, just computed in pieces.
+    `end` may exceed `len(sequence) - pattern_length + 1`; callers clamp it.
+    """
     groups: Dict[Tuple, List[int]] = {}
-    for start in range(n - pattern_length + 1):
-        window = tuple(sequence[start:start + pattern_length])
-        groups.setdefault(window, []).append(start)
+    for pos in range(start, end):
+        window = tuple(sequence[pos:pos + pattern_length])
+        groups.setdefault(window, []).append(pos)
+    return groups
 
+
+def _select_candidates_from_groups(groups: Dict[Tuple, List[int]], events: List[Dict],
+                                   pattern_length: int) -> List[Dict]:
+    """Turn a window->positions grouping into scored, non-overlapping-match
+    candidates. `positions` for each window must already be in ascending
+    order (true both for a single un-chunked `_collect_window_groups` call
+    and for sub-chunk results merged in ascending start-range order)."""
     candidate_patterns = []
     for window, positions in groups.items():
         # Fewer than 3 occurrences can never yield 3 non-overlapping matches.
@@ -372,15 +434,42 @@ def _collect_length_candidates(sequence: List[Tuple], events: List[Dict],
     return candidate_patterns
 
 
-def _detect_patterns_worker(work_chunk: Dict) -> List[Dict]:
-    """Worker entry point: detect all patterns of one length over the shared
-    sequence stashed by `_init_pattern_worker`. Runs in a separate process."""
-    sequence = _WORKER_SEQUENCE
-    events = _WORKER_EVENTS
-    if sequence is None or events is None:
-        # Defensive: only happens if invoked outside the initialised pool.
+def _collect_length_candidates(sequence: List[Tuple], events: List[Dict],
+                               pattern_length: int) -> List[Dict]:
+    """Find every repeated pattern of `pattern_length` in O(n) instead of O(n²).
+
+    Thin wrapper over `_collect_window_groups` + `_select_candidates_from_groups`
+    (split for #332/PERF-12 so the grouping pass can also run sub-chunked by
+    start-range) -- used as-is by the serial fallback and by the parallel
+    path's per-sub-chunk failure recovery, so their behavior is unchanged.
+
+    NOT fully equivalent to the old per-start output, though (#171/PAT-05):
+    emitting a single candidate per distinct window, anchored at its first
+    occurrence, means `_select_best_patterns` rejects or accepts that
+    candidate's positions as one unit. If a higher-scoring pattern overlaps
+    only this window's first occurrence, the whole candidate -- including its
+    later, non-conflicting occurrences -- is rejected here. The per-start
+    sequential detector can still recover those later occurrences via a
+    separate candidate anchored past the contested region. So the two
+    detectors' selected pattern sets can differ (metrics only today, #4) when
+    the anchor occurrence of a window is itself contested."""
+    n = len(sequence)
+    if pattern_length > n:
         return []
-    return _collect_length_candidates(sequence, events, work_chunk['pattern_length'])
+    groups = _collect_window_groups(sequence, pattern_length, 0, n - pattern_length + 1)
+    return _select_candidates_from_groups(groups, events, pattern_length)
+
+
+def _detect_window_groups_worker(work_chunk: Dict) -> Dict[Tuple, List[int]]:
+    """Worker entry point: bucket window start positions for one
+    (length, start-range) sub-chunk over the shared sequence stashed by
+    `_init_pattern_worker`. Runs in a separate process (#332/PERF-12)."""
+    sequence = _WORKER_SEQUENCE
+    if sequence is None:
+        # Defensive: only happens if invoked outside the initialised pool.
+        return {}
+    start, end = work_chunk['start_range']
+    return _collect_window_groups(sequence, work_chunk['pattern_length'], start, end)
 
 
 if __name__ == "__main__":
