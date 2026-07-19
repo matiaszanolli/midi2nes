@@ -115,13 +115,57 @@ class TestLoopManager(unittest.TestCase):
         # Convert 120 BPM to microseconds per quarter note (60000000 / BPM)
         tempo_us = int(60000000 / 120)
         self.tempo_map.add_tempo_change(16, tempo_us)
-        
-        loops = self.enhanced_loop_manager.detect_loops([], {
+
+        # `events` must be a real, index-addressable list matching the
+        # positions in pattern_info: detect_loops now reads each loop
+        # boundary's tempo straight off the event at that index (#345/
+        # TEMPO-16), so an empty/mismatched events list would IndexError.
+        events = [{'frame': i, 'note': 60, 'volume': 100, 'tempo': 500000}
+                  for i in range(48)]
+        loops = self.enhanced_loop_manager.detect_loops(events, {
             'pattern1': {
                 'positions': [0, 16, 32],
                 'length': 16
             }
         })
+
+    def test_multi_tempo_loop_boundary_reads_the_events_own_tempo(self):
+        """Regression (#345/TEMPO-16): loop_info['start']/['end'] are indices
+        into `events` (positions in the note-on sequence), not MIDI ticks.
+        The old code fed them straight into get_tempo_at_tick, which for a
+        multi-tempo song reads the wrong point in the tempo timeline (an
+        event-index of, say, 20 has nothing to do with tick 20). Each event
+        already carries the tempo that was really active at ITS tick, so the
+        loop's recorded tempo_state must match that, not a tick-20 lookup."""
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        # A tempo change far past any event-index value this test uses, so a
+        # wrong "index treated as tick" lookup would never see it.
+        tempo_map.add_tempo_change(100_000, 300000)
+        loop_manager = EnhancedLoopManager(tempo_map)
+
+        # Event at index 20 really occurred (per its own 'tempo' field, as
+        # parser_fast.py/parser.py stamp on every event) after the tempo
+        # change -- its real tick is >= 100_000, just not encoded by its
+        # small list index.
+        events = [{'frame': i, 'note': 60, 'volume': 100, 'tempo': 500000}
+                  for i in range(20)]
+        events.append({'frame': 20, 'note': 60, 'volume': 100, 'tempo': 300000})
+        events += [{'frame': i, 'note': 60, 'volume': 100, 'tempo': 300000}
+                   for i in range(21, 40)]
+
+        loops = loop_manager.detect_loops(events, {
+            'pattern1': {'positions': [0, 20], 'length': 4}
+        })
+
+        self.assertTrue(loops, "fixture should yield at least one loop")
+        tempo_key = next(iter(loop_manager.tempo_map.loop_points))
+        loop_tempo_state = loop_manager.tempo_map.loop_points[tempo_key]
+        # The wrong tick-20 lookup would report the initial tempo (500000,
+        # since the real tempo change is at tick 100_000). The fix must
+        # report the event's own real tempo instead.
+        self.assertEqual(loop_tempo_state['end']['tempo'], 300000)
+        self.assertNotEqual(loop_tempo_state['end']['tempo'],
+                            tempo_map.get_tempo_at_tick(loop_tempo_state['end']['tick']))
 
     def test_invalid_loop_handling(self):
         # Test with invalid loop points

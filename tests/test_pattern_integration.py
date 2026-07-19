@@ -16,20 +16,23 @@ class TestPatternDetectorIntegration(unittest.TestCase):
         self.base_detector = PatternDetector(min_pattern_length=3)
         self.enhanced_detector = EnhancedPatternDetector(self.tempo_map, min_pattern_length=3)
         
-        # Common test events with clear patterns
+        # Common test events with clear patterns. Real parsers stamp a
+        # 'tempo' field on every event; EnhancedLoopManager now reads it
+        # directly for loop tempo_state instead of a wrongly-unit'd tick
+        # lookup (#345/TEMPO-16), so this fixture must carry it too.
         self.test_events = [
             # Pattern A - occurs 3 times
-            {'frame': 0, 'note': 60, 'volume': 100},
-            {'frame': 1, 'note': 64, 'volume': 100},
-            {'frame': 2, 'note': 67, 'volume': 100},
-            
-            {'frame': 3, 'note': 60, 'volume': 100},
-            {'frame': 4, 'note': 64, 'volume': 100},
-            {'frame': 5, 'note': 67, 'volume': 100},
-            
-            {'frame': 6, 'note': 60, 'volume': 100},
-            {'frame': 7, 'note': 64, 'volume': 100},
-            {'frame': 8, 'note': 67, 'volume': 100},
+            {'frame': 0, 'note': 60, 'volume': 100, 'tempo': 500000},
+            {'frame': 1, 'note': 64, 'volume': 100, 'tempo': 500000},
+            {'frame': 2, 'note': 67, 'volume': 100, 'tempo': 500000},
+
+            {'frame': 3, 'note': 60, 'volume': 100, 'tempo': 500000},
+            {'frame': 4, 'note': 64, 'volume': 100, 'tempo': 500000},
+            {'frame': 5, 'note': 67, 'volume': 100, 'tempo': 500000},
+
+            {'frame': 6, 'note': 60, 'volume': 100, 'tempo': 500000},
+            {'frame': 7, 'note': 64, 'volume': 100, 'tempo': 500000},
+            {'frame': 8, 'note': 67, 'volume': 100, 'tempo': 500000},
         ]
 
     def test_pattern_structure_compatibility(self):

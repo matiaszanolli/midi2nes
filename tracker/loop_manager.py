@@ -121,12 +121,23 @@ class EnhancedLoopManager(LoopManager):
     def detect_loops(self, events: List[Dict], pattern_info: Dict) -> Dict:
         """Detect potential loop points based on patterns."""
         loops = super().detect_loops(events, pattern_info)
-        
+
         # Register tempo information for each loop
         for loop_id, loop_info in loops.items():
-            start_tempo = self.tempo_map.get_tempo_at_tick(loop_info['start'])
-            end_tempo = self.tempo_map.get_tempo_at_tick(loop_info['end'])
-            
+            # loop_info['start']/['end'] are indices into `events` (positions
+            # in the note-on sequence pattern detection ran over), not MIDI
+            # ticks -- get_tempo_at_tick previously received them directly, a
+            # unit mismatch harmless for a single-tempo song (one constant
+            # tempo regardless of argument) but silently wrong for a
+            # multi-tempo one (#345/TEMPO-16). Each event already carries the
+            # real tempo active at its own tick (stamped during parsing), so
+            # read it directly instead of a second, wrongly-unit'd lookup.
+            # `end` is an EXCLUSIVE index (one past the loop's last event), so
+            # its tempo comes from the last included event, not `events[end]`
+            # (out of range when the loop reaches the end of the sequence).
+            start_tempo = events[loop_info['start']]['tempo']
+            end_tempo = events[loop_info['end'] - 1]['tempo']
+
             tempo_key = f"loop_{loop_info['end']}_{loop_info['start']}"
             self.tempo_map.loop_points[tempo_key] = {
                 'start': {

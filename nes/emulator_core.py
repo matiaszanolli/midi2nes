@@ -34,8 +34,8 @@ class NESEmulatorCore:
             if kept and kept[-1]['frame'] == e['frame']:
                 dropped += 1
                 prev_vel = kept[-1].get('velocity', kept[-1].get('volume', 0))
-                if vel > prev_vel:
-                    kept[-1] = e  # louder note wins; equal velocity keeps the later one
+                if vel >= prev_vel:
+                    kept[-1] = e  # louder note wins; equal velocity keeps the later one (#344/TEMPO-15)
             else:
                 kept.append(e)
         if dropped:
@@ -209,6 +209,19 @@ class NESEmulatorCore:
                     if e.get('velocity', e.get('volume', 0)) > 0
                 })
                 dense_id_of = {raw_id: i for i, raw_id in enumerate(referenced_ids)}
+
+                # The dense remap above only survives the note=min(255, dense_id+1)
+                # byte ceiling up to 255 distinct samples: dense_id 255 also
+                # encodes to note 255, colliding with dense_id 254, so every
+                # dense_id >= 255 becomes unreachable and silently plays the
+                # dense_id=254 sample instead (#343/DP-DPCM-04). Warn the same
+                # way the same-frame collapse above does, rather than aliasing
+                # silently.
+                if len(referenced_ids) > 255:
+                    print(f"Warning: {len(referenced_ids)} distinct DPCM samples "
+                          f"referenced on {channel_name}, exceeding the 255-sample "
+                          f"dense-id ceiling — samples beyond the 255th will silently "
+                          f"alias onto the 255th sample.")
 
                 for e in events:
                     velocity = e.get('velocity', e.get('volume', 0))

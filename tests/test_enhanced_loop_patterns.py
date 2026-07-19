@@ -65,6 +65,19 @@ class TestEnhancedLoopManager(unittest.TestCase):
             except ValueError as e:
                 print(f"Warning: {e}")
 
+        # Real parsers (tracker/parser_fast.py, tracker/parser.py) stamp the
+        # real active tempo onto every event during parsing; EnhancedLoopManager
+        # now reads that field directly instead of a wrongly-unit'd tick
+        # lookup (#345/TEMPO-16), so fixtures must carry it too, computed the
+        # same way parsing does -- after the tempo changes above are registered.
+        self._stamp_tempo(self.note_events)
+
+    def _stamp_tempo(self, events):
+        """Mirror what parser_fast.py/parser.py do at parse time: stamp each
+        event with the tempo actually active at its own tick."""
+        for e in events:
+            e['tempo'] = self.tempo_map.get_tempo_at_tick(e['tick'])
+
     def test_tempo_aware_loop_detection(self):
         """Test that loops are detected with tempo changes"""
         # First detect patterns (using only note events)
@@ -172,7 +185,9 @@ class TestEnhancedLoopManager(unittest.TestCase):
                 )
             except ValueError as e:
                 print(f"Warning: {e}")
-        
+
+        self._stamp_tempo(note_events)
+
         # Detect patterns
         pattern_result = self.pattern_detector.detect_patterns(note_events)
         
@@ -262,10 +277,11 @@ class TestEnhancedLoopManager(unittest.TestCase):
             {'frame': 13, 'note': 64, 'volume': 100, 'tick': 3120},
             {'frame': 14, 'note': 67, 'volume': 100, 'tick': 3360},
         ]
-        
+        self._stamp_tempo(note_events)
+
         # Detect patterns
         pattern_result = self.pattern_detector.detect_patterns(note_events)
-        
+
         # Convert pattern format
         pattern_info = {}
         for pattern_id, pattern in pattern_result['patterns'].items():
@@ -273,7 +289,7 @@ class TestEnhancedLoopManager(unittest.TestCase):
                 'positions': pattern_result['references'][pattern_id],
                 'length': len(pattern['events'])
             }
-        
+
         # Detect loops
         loops = self.loop_manager.detect_loops(note_events, pattern_info)
         
