@@ -205,6 +205,18 @@ class CA65Exporter(BaseExporter):
         # #285/PL-09). Only banked mappers (MMC1) bin-pack; MMC3/NROM don't.
         if mapper is not None and mapper.direct_export_bank_size() is not None:
             lines.append(f"; Direct export bank-packed for {mapper.name}")
+        # A direct-export song with DPCM samples is MMC3-only: play_dpcm writes
+        # MMC3's $8000/$8001 bank-select ports and DpcmPacker (appended to this
+        # music.asm downstream) emits DPCM_NN segments only MMC3's linker config
+        # defines. The in-memory export/full-pipeline paths enforce this via
+        # main.enforce_direct_export_dpcm_mapper, but the split prepare/compile
+        # flow only sees the finished music.asm — stamp a marker so
+        # main.resolve_mapper can re-force MMC3 / reject a non-MMC3 --mapper up
+        # front instead of deferring to a raw ld65 "Missing memory area
+        # assignment for DPCM_00" at link time (#362/MAP-2026-07-19-2). Mirrors
+        # the bank-pack marker above and the "MMC3 Macro Bytecode" bytecode marker.
+        if frames.get('dpcm'):
+            lines.append("; Direct export DPCM (MMC3-only)")
         lines.append("")
 
         # Add header segment if standalone, derived from the selected mapper so

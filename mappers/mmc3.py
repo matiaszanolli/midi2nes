@@ -176,6 +176,20 @@ switch_dpcm_bank:
             "echo \"Done!\"\n"
         )
 
+    def direct_export_capacity(self) -> int:
+        """Real budget for a direct (``--no-patterns``) export.
+
+        MMC3's direct export does NOT bank-pack (``direct_export_bank_size``
+        inherits ``None``), so ``export_direct_frames`` emits every frame table
+        into RODATA, which loads into the single 8 KB fixed bank ``PRG_FIX`` —
+        the same budget ``validate_segment_sizes`` enforces below. This is far
+        smaller than the 512 KB banked ``get_data_capacity`` MMC3 reaches only on
+        the pattern/bytecode path, so ``auto_select(..., direct=True)`` must rank
+        MMC3 by THIS value or it would pick MMC3 for any direct song >112 KB and
+        then reject it at the pre-flight (#361/MAP-2026-07-19-1).
+        """
+        return self.PRG_FIX_SIZE - self.FIXED_BANK_ENGINE_RESERVE
+
     def validate_segment_sizes(self, segment_sizes: Dict[str, int]) -> List[str]:
         """Size each music.asm segment against the MMC3 region it loads into.
 
