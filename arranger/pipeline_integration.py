@@ -83,20 +83,20 @@ def _apply_sustain(notes: List[NoteInfo], max_gap: int) -> List[NoteInfo]:
 
 def analyze_midi_events(
     midi_events: Dict[str, List[Dict]],
-    ticks_per_beat: int = 480,
-    tempo: int = 500000,  # microseconds per beat (120 BPM default)
-    fps: int = 60,
     sustain: bool = True,
     sustain_gap: int = 12,  # Frames to bridge gaps (200ms at 60fps)
 ) -> Tuple[ArrangementPlan, Dict[int, List[NoteInfo]], int]:
     """
     Analyze MIDI events using the arranger.
 
+    Frame numbers arrive pre-computed from parser_fast (``event['frame']``) and
+    note density uses ``VoiceRoleAnalyzer.tempo_fps`` (a fixed 60.0), so this
+    function does no tempo/tick/fps math itself — the former ticks_per_beat/
+    tempo/fps parameters were never referenced and were dropped as misleading
+    dead knobs (#360/ARR-2026-07-19-2). No caller passed them.
+
     Args:
         midi_events: Dict of track_name -> list of event dicts with frame, note, velocity
-        ticks_per_beat: MIDI ticks per beat
-        tempo: Microseconds per beat
-        fps: Frames per second
         sustain: If True, extend notes to fill small gaps (better for arpeggiation)
         sustain_gap: Maximum gap in frames to bridge with sustain
 

@@ -15,6 +15,27 @@ def velocity_to_volume(velocity, clamp=True):
     return max(1, int(15 * math.pow(velocity / 127.0, 1.5)))
 
 
+# ~100 ms software decay simulating a drum strike. Both front-ends force the
+# noise channel to constant-volume + halt ($30 on $400C), so there is no
+# hardware envelope/length-counter decay to lean on (#162/NH-19) — a per-frame
+# volume ramp stands in for it. Shared by the legacy NESEmulatorCore noise path
+# and the --arranger path so both sound alike (#359/ARR-2026-07-19-1).
+NOISE_DECAY_FRAMES = 6
+
+
+def noise_strike_decay_volume(peak_volume, offset, span):
+    """4-bit noise volume `offset` frames into a `span`-frame strike decay.
+
+    Linear ramp from ``peak_volume`` down toward silence, floored at 1 so an
+    audible hit is never truncated to nothing while still active (the caller
+    drops frames past ``span`` to end the strike). Stays in the 0-15 APU range
+    because ``peak_volume`` is already a 4-bit ``velocity_to_volume`` output.
+    """
+    if span <= 0:
+        return max(1, peak_volume)
+    return max(1, round(peak_volume * (span - offset) / span))
+
+
 class EnvelopeProcessor:
     """Engine-driven ADSR/effects model for the pulse channels
     (docs/APU_ENVELOPE_REFERENCE.md §4/§5).
