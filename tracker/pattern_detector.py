@@ -38,6 +38,17 @@ def sample_events_for_detection(events, max_events=MAX_PATTERN_EVENTS):
     return [events[i] for i in indices], True
 
 
+# A pattern must repeat at least this many times to be worth storing. Applied
+# two ways: score_pattern gates on total (exact + variation) occurrences, and
+# the sequential selector additionally requires this many EXACT occurrences
+# before persisting a candidate (#365/PAT-A) — otherwise a window that clears
+# the total gate on variations alone can store a single exact position (0%
+# compression) and block a genuinely-repeating shorter pattern. The parallel
+# detector passes variation_count=0, so it already requires this many exact
+# repeats; the exact-occurrence guard aligns the sequential path with it.
+MIN_PATTERN_OCCURRENCES = 3
+
+
 def score_pattern(length, exact_count, variation_count):
     """NES-optimized benefit score for a candidate pattern (#103).
 
@@ -51,8 +62,8 @@ def score_pattern(length, exact_count, variation_count):
     """
     total_count = exact_count + variation_count
 
-    # Must have at least 3 total occurrences
-    if total_count < 3:
+    # Must have at least MIN_PATTERN_OCCURRENCES total occurrences
+    if total_count < MIN_PATTERN_OCCURRENCES:
         return -1
 
     # Base score: compression benefit (bytes saved)
@@ -298,6 +309,19 @@ class PatternDetector:
         used_positions = set()
         
         for candidate in candidate_patterns:
+            # score_pattern's >=MIN_PATTERN_OCCURRENCES gate counts exact +
+            # variation occurrences, but only exact positions are persisted
+            # (#168/PAT-01). A candidate can therefore clear the gate on its
+            # variations while storing a single exact position — 0% compression —
+            # and then block the genuinely-repeating shorter exact pattern that
+            # overlaps it (#365/PAT-A). Require the persisted EXACT occurrences to
+            # meet the same threshold; skip entirely (do NOT mark its range used)
+            # so a variation-only window can't win a region it can't compress.
+            # The parallel detector passes variation_count=0, so this aligns the
+            # sequential path with what it already enforces.
+            if len(candidate['positions']) < MIN_PATTERN_OCCURRENCES:
+                continue
+
             # Check if this pattern overlaps with already selected patterns.
             # Uses occupied_positions (exact + variations, #168/PAT-01) so a
             # variation window still blocks a different candidate from

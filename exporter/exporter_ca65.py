@@ -28,6 +28,19 @@ APU_DMC_LEN = 0x4013
 
 APU_STATUS = 0x4015
 
+# Triangle control byte ($4008 = CRRR RRRR): bit 7 is the linear-counter
+# control/halt flag, bits 6-0 the linear-counter reload value
+# (docs/APU_TRIANGLE_REFERENCE.md §4). With the control flag set, the reload
+# flag is re-armed every frame, so the counter never gates the note — any
+# non-zero reload plays continuously and the exact reload value is inert. Use a
+# fixed max reload (0xFF = control flag + 0x7F), matching the bytecode engine's
+# $FF write (nes/audio_engine.asm), rather than scaling it by loudness: the
+# triangle has no volume control (§1), so a loudness-derived reload was a
+# meaningless, latent-trap constant (#364/NH-HW-04).
+TRIANGLE_LINEAR_COUNTER_CONTROL = 0x80  # bit 7 (control/halt flag)
+TRIANGLE_LINEAR_COUNTER_MAX = 0x7F      # bits 6-0 max reload
+TRIANGLE_CONTROL_ON = TRIANGLE_LINEAR_COUNTER_CONTROL | TRIANGLE_LINEAR_COUNTER_MAX  # 0xFF
+
 # Pitch timer values come from the single authoritative NES_NOTE_TABLE in
 # nes/pitch_table.py (fCPU/16 formula). The exporter must NOT keep its own
 # divergent table: the bytecode pitch offset is `frame_pitch - base_timer`, and
@@ -348,14 +361,20 @@ class CA65Exporter(BaseExporter):
 
                 # Triangle channel uses different control format
                 if channel_name == 'triangle':
-                    # Triangle: bit 7 = control flag, bits 6-0 = linear counter
-                    # Use volume (if available) to set linear counter
+                    # Triangle $4008: bit 7 = linear-counter control flag, bits
+                    # 6-0 = reload value (docs/APU_TRIANGLE_REFERENCE.md §4). The
+                    # triangle has no volume control (§1), so `volume` here is
+                    # only a gate: 0 -> silent (clear the flag, reload 0), else
+                    # play at a fixed max reload with the flag set (0xFF, like the
+                    # bytecode engine). The old `0x80 | volume*7` scaled a halted
+                    # counter's reload by loudness — inert but a latent trap
+                    # (clearing bit 7 would turn it into a wrong note-length
+                    # knob) (#364/NH-HW-04).
                     volume = frame_data.get('volume', 0)
-                    # FIXED: If volume is 0, control must be 0 (silent), not 0x80!
                     if volume == 0:
                         control = 0x00
                     else:
-                        control = 0x80 | (volume * 7)  # Control flag + linear counter
+                        control = TRIANGLE_CONTROL_ON
                 else:
                     # Pulse channels: use provided control byte
                     control = frame_data.get('control', 0)

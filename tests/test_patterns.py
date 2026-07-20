@@ -201,22 +201,35 @@ class TestPatternDetection(unittest.TestCase):
             self.assertTrue(isinstance(start_pos, int), "Jump table values should be integers")
 
     def test_pattern_with_variations(self):
-        """Test pattern detection with variations"""
+        """Test pattern detection with variations.
+
+        The base pattern must repeat >=3 times EXACTLY (same note+volume) to be
+        selected (#365/PAT-A) — a window that appears once exactly and only
+        clears the occurrence gate on its variations is no longer stored. On top
+        of the 3 exact repeats, a transposed and a volume-scaled copy are still
+        detected and retained as variations.
+        """
         variation_events = [
-            # Original pattern
+            # Original pattern, repeated 3x exactly
             {'frame': 0, 'note': 60, 'volume': 100},
             {'frame': 1, 'note': 64, 'volume': 100},
             {'frame': 2, 'note': 67, 'volume': 100},
+            {'frame': 3, 'note': 60, 'volume': 100},
+            {'frame': 4, 'note': 64, 'volume': 100},
+            {'frame': 5, 'note': 67, 'volume': 100},
+            {'frame': 6, 'note': 60, 'volume': 100},
+            {'frame': 7, 'note': 64, 'volume': 100},
+            {'frame': 8, 'note': 67, 'volume': 100},
             # Transposed variation
-            {'frame': 3, 'note': 62, 'volume': 100},
-            {'frame': 4, 'note': 66, 'volume': 100},
-            {'frame': 5, 'note': 69, 'volume': 100},
+            {'frame': 9, 'note': 62, 'volume': 100},
+            {'frame': 10, 'note': 66, 'volume': 100},
+            {'frame': 11, 'note': 69, 'volume': 100},
             # Volume variation
-            {'frame': 6, 'note': 60, 'volume': 80},
-            {'frame': 7, 'note': 64, 'volume': 80},
-            {'frame': 8, 'note': 67, 'volume': 80},
+            {'frame': 12, 'note': 60, 'volume': 80},
+            {'frame': 13, 'note': 64, 'volume': 80},
+            {'frame': 14, 'note': 67, 'volume': 80},
         ]
-        
+
         patterns = self.pattern_detector.detect_patterns(variation_events)
         self.assertTrue(len(patterns) > 0, "Should detect pattern with variations")
         
@@ -226,22 +239,29 @@ class TestPatternDetection(unittest.TestCase):
                     "Should detect both transposed and volume variations")
 
     def test_pattern_optimization_with_variations(self):
-        """Test pattern optimization considering variations"""
+        """Test pattern optimization considering variations.
+
+        Pattern A repeats 3x exactly (so it clears the >=3-exact gate, #365) and
+        also has a transposed variation; optimization must keep the pattern and
+        retain its variations.
+        """
         events = [
-            # Pattern A
+            # Pattern A, 3x exactly
             {'frame': 0, 'note': 60, 'volume': 100},
             {'frame': 1, 'note': 64, 'volume': 100},
             {'frame': 2, 'note': 67, 'volume': 100},
-            # Pattern B
-            {'frame': 3, 'note': 72, 'volume': 100},
-            {'frame': 4, 'note': 76, 'volume': 100},
-            {'frame': 5, 'note': 79, 'volume': 100},
-            # Pattern A variation
-            {'frame': 6, 'note': 62, 'volume': 100},
-            {'frame': 7, 'note': 66, 'volume': 100},
-            {'frame': 8, 'note': 69, 'volume': 100},
+            {'frame': 3, 'note': 60, 'volume': 100},
+            {'frame': 4, 'note': 64, 'volume': 100},
+            {'frame': 5, 'note': 67, 'volume': 100},
+            {'frame': 6, 'note': 60, 'volume': 100},
+            {'frame': 7, 'note': 64, 'volume': 100},
+            {'frame': 8, 'note': 67, 'volume': 100},
+            # Pattern A variation (transposed +2)
+            {'frame': 9, 'note': 62, 'volume': 100},
+            {'frame': 10, 'note': 66, 'volume': 100},
+            {'frame': 11, 'note': 69, 'volume': 100},
         ]
-        
+
         patterns = self.pattern_detector.detect_patterns(events)
         optimized = self.pattern_detector._optimize_patterns(patterns)
         
@@ -422,22 +442,33 @@ class TestPatternEdgeCases(unittest.TestCase):
         self.assertIn(4, pattern_lengths, "Should detect 4-note patterns")
     
     def test_variation_edge_cases(self):
-        """Test edge cases in pattern variation detection"""
+        """Test edge cases in pattern variation detection.
+
+        Base pattern repeats 3x exactly (clears the >=3-exact gate, #365); the
+        octave transposition and extreme volume drop are still detected as
+        variations on it.
+        """
         events = [
-            # Original pattern
+            # Original pattern, 3x exactly
             {'frame': 0, 'note': 60, 'volume': 100},
             {'frame': 1, 'note': 64, 'volume': 100},
             {'frame': 2, 'note': 67, 'volume': 100},
-            # Extreme transposition
-            {'frame': 3, 'note': 72, 'volume': 100},
-            {'frame': 4, 'note': 76, 'volume': 100},
-            {'frame': 5, 'note': 79, 'volume': 100},
+            {'frame': 3, 'note': 60, 'volume': 100},
+            {'frame': 4, 'note': 64, 'volume': 100},
+            {'frame': 5, 'note': 67, 'volume': 100},
+            {'frame': 6, 'note': 60, 'volume': 100},
+            {'frame': 7, 'note': 64, 'volume': 100},
+            {'frame': 8, 'note': 67, 'volume': 100},
+            # Extreme transposition (octave)
+            {'frame': 9, 'note': 72, 'volume': 100},
+            {'frame': 10, 'note': 76, 'volume': 100},
+            {'frame': 11, 'note': 79, 'volume': 100},
             # Extreme volume variation
-            {'frame': 6, 'note': 60, 'volume': 20},
-            {'frame': 7, 'note': 64, 'volume': 20},
-            {'frame': 8, 'note': 67, 'volume': 20},
+            {'frame': 12, 'note': 60, 'volume': 20},
+            {'frame': 13, 'note': 64, 'volume': 20},
+            {'frame': 14, 'note': 67, 'volume': 20},
         ]
-        
+
         patterns = self.pattern_detector.detect_patterns(events)
         
         # Verify handling of extreme variations

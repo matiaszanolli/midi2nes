@@ -1,7 +1,12 @@
 from collections import defaultdict
 from .pitch_table import PitchProcessor
 from collections import defaultdict
-from .envelope_processor import EnvelopeProcessor, velocity_to_volume
+from .envelope_processor import (
+    EnvelopeProcessor,
+    velocity_to_volume,
+    NOISE_DECAY_FRAMES,
+    noise_strike_decay_volume,
+)
 
 
 class NESEmulatorCore:
@@ -149,7 +154,6 @@ class NESEmulatorCore:
                 # last write silently win.
                 events, _ = self._collapse_same_frame_events(events, 'noise')
                 sorted_events = sorted(events, key=lambda ev: ev['frame'])
-                NOISE_DECAY_FRAMES = 6  # ~100ms decay simulating a drum strike
                 for i, e in enumerate(sorted_events):
                     velocity = e.get('velocity', e.get('volume', 0))
                     if velocity <= 0:
@@ -171,11 +175,10 @@ class NESEmulatorCore:
 
                     span = end_frame - start_frame
                     for offset in range(span):
-                        decayed_volume = max(1, round(peak_volume * (span - offset) / span))
                         noise_frames[start_frame + offset] = {
                             "note": period,
                             "control": mode << 6,
-                            "volume": decayed_volume,
+                            "volume": noise_strike_decay_volume(peak_volume, offset, span),
                         }
                 processed[channel_name] = noise_frames
             elif channel_name == 'dpcm':

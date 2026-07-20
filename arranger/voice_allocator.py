@@ -12,6 +12,7 @@ from collections import defaultdict
 
 from .gm_instruments import NESChannel, DutyCycle, get_drum_mapping
 from .role_analyzer import NoteInfo, TrackAnalysis, ArrangementPlan
+from nes.envelope_processor import NOISE_DECAY_FRAMES, noise_strike_decay_volume
 
 
 @dataclass
@@ -464,7 +465,50 @@ class FrameByFrameAllocator:
                     "sample": allocation.dpcm,
                 }
 
+        # The per-frame loop above emits one flat volume for every frame a
+        # noise/percussion hit is active, so a drum note plays as a sustained
+        # hiss instead of a crisp strike. Reshape each hit into a short decay,
+        # matching the legacy NESEmulatorCore noise path (#359/ARR-2026-07-19-1).
+        frames["noise"] = self._apply_noise_strike_decay(frames["noise"])
+
         return frames
+
+    @staticmethod
+    def _apply_noise_strike_decay(noise_frames: Dict[int, dict]) -> Dict[int, dict]:
+        """Turn flat-volume noise runs into short decaying strikes.
+
+        Each strike — a contiguous run of frames sharing a period, i.e. one
+        percussion hit — is ramped down over NOISE_DECAY_FRAMES via the shared
+        noise_strike_decay_volume helper (so both front-ends sound alike) and
+        truncated to that length; frames past the decay are dropped so the hit
+        ends instead of hissing on. Period/control are untouched (noise has no
+        pitch table); volume stays in the 4-bit range because the ramp only
+        scales the existing per-frame volume down. A new run (a gap, or a period
+        change) starts a fresh strike (#359/ARR-2026-07-19-1).
+        """
+        if not noise_frames:
+            return noise_frames
+        ordered = sorted(noise_frames)
+        decayed: Dict[int, dict] = {}
+        i, n = 0, len(ordered)
+        while i < n:
+            start = ordered[i]
+            period = noise_frames[start].get("period")
+            peak = noise_frames[start].get("volume", 1)
+            # Extend the strike while frames stay contiguous and same-period.
+            j = i
+            while (j + 1 < n and ordered[j + 1] == ordered[j] + 1
+                   and noise_frames[ordered[j + 1]].get("period") == period):
+                j += 1
+            run_len = ordered[j] - start + 1
+            span = min(run_len, NOISE_DECAY_FRAMES)
+            for offset in range(span):
+                entry = dict(noise_frames[start + offset])
+                entry["volume"] = noise_strike_decay_volume(peak, offset, span)
+                decayed[start + offset] = entry
+            # Frames start+span .. end-of-run are dropped: the strike has decayed.
+            i = j + 1
+        return decayed
 
 
 def allocate_with_arpeggiation(
