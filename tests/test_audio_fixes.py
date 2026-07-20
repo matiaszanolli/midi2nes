@@ -383,13 +383,19 @@ class TestTriangleControlByte(unittest.TestCase):
         self.assertLessEqual(frame2_value, 0xFF)
 
     def test_triangle_control_formula(self):
-        """Test the control byte formula for various volumes"""
+        """Triangle control byte: 0 -> $00 (silent), any nonzero volume -> $FF.
+
+        The triangle has no volume control, so the control byte is a pure gate:
+        the old `0x80 | volume*7` scaled a halted linear counter's reload by
+        loudness (inert, but a latent trap). It now writes a fixed max reload
+        with the control flag set (0xFF, like the bytecode engine) (#364/NH-HW-04).
+        """
         test_cases = [
             (0, 0x00),      # Silent - CRITICAL FIX
-            (1, 0x87),      # 0x80 | (1 * 7) = 0x87
-            (5, 0xA3),      # 0x80 | (5 * 7) = 0x80 | 35 = 0xA3
-            (10, 0xC6),     # 0x80 | (10 * 7) = 0x80 | 70 = 0xC6
-            (15, 0xE9),     # 0x80 | (15 * 7) = 0x80 | 105 = 0xE9
+            (1, 0xFF),      # control flag + max reload
+            (5, 0xFF),
+            (10, 0xFF),
+            (15, 0xFF),
         ]
 
         for volume, expected_control in test_cases:
