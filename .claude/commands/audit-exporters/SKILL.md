@@ -70,9 +70,12 @@ constants `APU_PULSE1_CTRL`…`APU_STATUS` at the top of `exporter/exporter_ca65
 (`:6-29`) define $4000–$4015. Check:
 - Each channel writes its own register block, not another channel's (off-by-$4 bugs).
 - The triangle path never writes a duty/volume-shaped control byte — triangle has no
-  volume or duty (`docs/APU_TRIANGLE_REFERENCE.md`). Note `export_direct_frames` builds
-  triangle `control` as `0x80 | (volume * 7)` (`:346`); confirm that targets the
-  linear-counter semantics ($4008) and is not treated as a pulse volume nibble.
+  volume or duty (`docs/APU_TRIANGLE_REFERENCE.md`). `export_direct_frames` builds
+  triangle `control` as `0x00` when silent, else the named `TRIANGLE_CONTROL_ON`
+  constant (`0x80` control/halt flag `| 0x7F` max reload = `0xFF`, `:40-42`, `:373-377`)
+  — confirm that targets the linear-counter semantics ($4008) and is not treated as a
+  pulse volume nibble. The old `0x80 | (volume * 7)` loudness-scaled formula (inert but
+  an opaque latent trap — see `/audit-nes-hardware` Dimension 2) is **fixed** (#364).
 - `ora #$08` (`:625`) before the timer-hi store sets the length-counter reload bit —
   confirm that is the intended $4003/$4007/$400B bit per
   `docs/APU_LENGTH_COUNTER_REFERENCE.md`.

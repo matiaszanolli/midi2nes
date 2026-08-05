@@ -15,7 +15,8 @@ Every audit referenced below is a live skill at `.claude/commands/audit-<name>/S
 invoked as `/audit-<name>`. The full subsystem + meta set (12):
 pipeline, nes-hardware, patterns, exporters, dpcm, arranger, mappers, tempo,
 performance, safety, tech-debt, regression. (`/audit-incremental` is the delta meta-audit;
-`/audit-publish` is post-processing, never part of a preset.)
+`/audit-publish` is post-processing; `/audit-sync` retires stale prose in these very
+skill files after a fix lands — none of the three are ever part of a preset.)
 
 ## Preset Index
 

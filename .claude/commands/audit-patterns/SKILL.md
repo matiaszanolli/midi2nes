@@ -246,6 +246,22 @@ Sampling must not silently change the song. The old "three inconsistent limits" 
   `_collect_length_candidates` (`pattern_detector_parallel.py:340-345`). PAT-05 (#171, closed,
   see Dimension 5) documents the residual case where the parallel path's whole-candidate
   rejection can still lose valid later occurrences the sequential scan would recover.
+- **#365 (PAT-A) is CLOSED**: `score_pattern`'s `>=MIN_PATTERN_OCCURRENCES` gate counts exact +
+  variation occurrences together, but only exact positions are persisted into `references`
+  (`positions`, PAT-01 above) — so a candidate could clear the gate almost entirely on
+  variations while storing a **single** exact position (0% compression for that window), and
+  its `occupied_positions` (exact + variations) would still block a genuinely-repeating shorter
+  exact pattern that overlapped it. Symptom: `detect-patterns` reporting `compression_ratio 0.0`
+  on songs with obvious repeats. The sequential selection loop
+  (`pattern_detector.py:305-323`) now also requires `len(candidate['positions']) >=
+  MIN_PATTERN_OCCURRENCES` (`:322`, the same named constant `score_pattern` gates on) and
+  `continue`s — skipping the candidate entirely, **not** marking its range used — when a
+  variation-inflated candidate fails that check. This aligns the sequential detector with the
+  parallel one, which already requires `>=3` exact repeats (it always passes
+  `variation_count=0`). Verify-the-fix: confirm a skipped candidate's `occupied_positions` are
+  never added to `used_positions`, so the shorter exact pattern it used to block is free to win;
+  confirm round-trip is unaffected (only degenerate, non-compressing candidates are dropped —
+  the exporter derives every byte from `frames`, not `references`, #4).
 - PAT-07 (#173) is now **fixed & closed**: `PatternCompressor._hash_pattern`
   (`pattern_detector.py:831-841`) returns the exact `Tuple[Tuple[int, int], ...]` of `(note,
   volume)` events (matching an updated type hint), NOT `hash()` of it. Used as the sole dedup

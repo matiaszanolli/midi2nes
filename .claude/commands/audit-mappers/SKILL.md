@@ -106,11 +106,21 @@ verify this still holds and check for paths that might bypass it:
 ### Dimension 4: PRG capacity / overrun detection (the central risk)
 This is now a wired pre-flight, not an open question — verify completeness and look for
 gaps it doesn't cover (#11, #126, #127, all fixed).
-- `main.py:check_mapper_capacity()` (~lines 145-163) calls
+- `check_mapper_capacity()` (`mappers/capacity.py:84-102`, re-exported from `main.py` for
+  existing `from main import check_mapper_capacity` callers — #363/MAP-2026-07-19-3) calls
   `mapper.validate_segment_sizes(estimate_segment_sizes(music_asm_path))` and raises
-  `ValueError` (caught and turned into a clean exit) before any project files are
-  written. It is invoked from `run_prepare()` (~line 246) and from the full pipeline
-  (~line 690), in both cases *before* `NESProjectBuilder.prepare_project()` runs.
+  `ValueError` (caught and turned into a clean exit at the CLI layer) before any project
+  files are written. It is invoked from `run_prepare()`/the full pipeline in `main.py`
+  (`main.py:491`, `:1070`) AND, independently, from `NESProjectBuilder.prepare_project()`
+  (`nes/project_builder.py:140`) — so a library consumer calling
+  `NESProjectBuilder(...).prepare_project(...)` directly now gets the same pre-flight the
+  CLI gets, not just an eventual raw `ld65` overflow (closes the gap noted below).
+  Separately, `ROMCompiler.compile()` (`compiler/compiler.py:188-194`) recovers the mapper
+  from the `nes.cfg` marker via `_recover_mapper_from_cfg` when none is passed, and uses it
+  for the **post-link exact-size check** (`:242-252`, `rom_size == mapper.prg_rom_size +
+  header`) instead of the flat `MIN_ROM_SIZE` floor — a different check than
+  `check_mapper_capacity`, but the same "library caller gets CLI-quality diagnostics"
+  motivation.
 - `BaseMapper.validate_segment_sizes()` (`mappers/base.py:161-178`) is a flat
   total-vs-`get_data_capacity()` check — correct for NROM/MMC1, which don't distribute
   data across banks. `MMC3Mapper.validate_segment_sizes()` (`mappers/mmc3.py:171-222`)
@@ -127,12 +137,16 @@ gaps it doesn't cover (#11, #126, #127, all fixed).
     oversized song pass the pre-flight and hit a raw `ld65` region-overflow instead —
     `ld65` remains the correctness backstop, but a misleading pre-flight message is at
     least MEDIUM.
-  - The capacity gate lives entirely in `main.py` (the CLI layer). Confirm
-    `NESProjectBuilder.prepare_project()` itself (`nes/project_builder.py`) does **not**
-    call `validate_segment_sizes`/`check_mapper_capacity` — a caller using
-    `NESProjectBuilder` as a library directly (bypassing `main.py`) gets no pre-flight
-    and relies solely on `ld65` erroring at link time. Flag as a defense-in-depth gap
-    (MEDIUM) rather than a silent-overrun risk, since `ld65` still errors on overflow.
+  - **#363 (MAP-2026-07-19-3) is CLOSED**: the capacity gate used to live entirely in
+    `main.py` (the CLI layer), so a caller using `NESProjectBuilder` as a library directly
+    (bypassing `main.py`) got no pre-flight and relied solely on `ld65` erroring at link
+    time — flagged as a defense-in-depth gap. `check_mapper_capacity` is now
+    `NESProjectBuilder.prepare_project()`'s own call (`nes/project_builder.py:140`), not
+    something only the CLI does on its behalf. Verify-the-fix: confirm the call still runs
+    on the *source* `music.asm` before any of `prepare_project`'s own transforms (matching
+    what the CLI sizes), and that it fires unconditionally (not just when invoked via
+    `main.py`) — e.g. by constructing `NESProjectBuilder` directly in a test and confirming
+    an oversized song raises there too, not just through the CLI.
   - Sanity-check the capacity numbers themselves: NROM `get_data_capacity()`
     (`mappers/nrom.py:67-69`) returns 30KB against a 32KB ROM; `BaseMapper`'s default
     (`mappers/base.py:140-147`) subtracts a flat 2048 bytes for code+vectors. Flag a
@@ -165,20 +179,34 @@ Re-derive the bank-switch sequences against the reference docs:
   how the engine swaps and reads.
 
 ### Dimension 6: MapperFactory auto-selection
-In `mappers/factory.py`, `auto_select(data_size)` (lines 83-114) walks `_default_mappers`
-(`nrom`→`mmc1`→`mmc3`) and returns the first whose `can_fit_data()` is true; the
-module-level `get_mapper("auto", data_size=0)` (lines 161-177) falls back to MMC3 when
-no size is given, deliberately matching the pipeline's hardcoded default (fixed by #25,
-commit `573890e`; remaining doc-rot cleaned up by #43/#44, commit `ab6f95d`).
+In `mappers/factory.py`, `auto_select(data_size, direct=False)` (lines 84-114) walks
+`_default_mappers` (`nrom`→`mmc1`→`mmc3`) and returns the first whose capacity check is
+true; the module-level `get_mapper("auto", data_size=0)` falls back to MMC3 when no size
+is given, deliberately matching the pipeline's hardcoded default (fixed by #25, commit
+`573890e`; remaining doc-rot cleaned up by #43/#44, commit `ab6f95d`).
 Check on each audit:
 - The ordering is genuinely smallest-first by capacity; the "nothing fits" branch
   raises with the largest mapper's capacity.
 - `auto_select()` **is** now reached from the CLI (#217/MAP-6). `resolve_mapper()`
   (`main.py:239`) — called from `run_prepare()`, `run_compile()`, and the full pipeline —
-  maps `--mapper auto` to `MapperFactory.auto_select(estimate_music_data_size(...))`,
-  picking the smallest mapper that fits. The size-based auto-selection machinery is no
-  longer test-only, so verify `auto_select`'s ordering and the forced-mapper overrides
-  below actually agree with what links.
+  maps `--mapper auto` to `MapperFactory.auto_select(estimate_music_data_size(...),
+  direct=...)`, picking the smallest mapper that fits. The size-based auto-selection
+  machinery is no longer test-only, so verify `auto_select`'s ordering and the
+  forced-mapper overrides below actually agree with what links.
+- **#361 (MAP-2026-07-19-1) is CLOSED**: `auto_select` used to rank every mapper by the
+  flat banked `get_data_capacity()` (NROM 30K < MMC1 112K < MMC3 522K) even for a direct
+  (`--no-patterns`) export — but MMC3's direct export cannot bank-pack (every frame table
+  lands in the single ~6K `PRG_FIX` bank), so for a direct song over ~112K, auto "picked"
+  MMC3 and the direct pre-flight then immediately rejected it — a contradictory pick, not
+  an overrun. `BaseMapper.direct_export_capacity()` (`mappers/base.py:171-184`, default =
+  `get_data_capacity()`; `MMC3Mapper` overrides to the `PRG_FIX` budget,
+  `mappers/mmc3.py`) and `auto_select(direct=True)` (ranks by `direct_export_capacity()`
+  instead — `mappers/factory.py:108`) now exist, and all three direct-export call sites
+  (`resolve_mapper`, `run_export`, `run_full_pipeline` in `main.py`) pass `direct=True`.
+  MMC3 is now effectively excluded from direct-export auto-selection; an oversized direct
+  song raises a clear "enable pattern compression" error. Verify-the-fix: confirm every
+  direct-export call site still passes `direct=True` and that the bytecode (patterns-on)
+  call sites do **not** (they should keep ranking by the full banked capacity).
 - Beyond size, `--mapper` resolution enforces engine/mapper compatibility (verify each
   raises a clean `ValueError`, not a raw `ld65` failure): `resolve_mapper()` forces MMC3
   for a music.asm built by the MMC3 macro-bytecode (pattern) exporter; a direct
@@ -187,6 +215,18 @@ Check on each audit:
   mismatch (#283/#285); and `enforce_direct_export_dpcm_mapper()` forces MMC3 (or rejects
   an explicit `mmc1`/`nrom`) when a `--no-patterns` song has a DPCM channel, because the
   direct-export DPCM trigger and `DPCM_NN` segments are MMC3-only (#281/#282).
+- **#362 (MAP-2026-07-19-2) is CLOSED**: unlike the bytecode and MMC1 bank-pack paths, a
+  direct-export DPCM `music.asm` (necessarily MMC3, since `play_dpcm` writes MMC3's
+  `$8000`/`$8001` ports and `DpcmPacker` emits MMC3-only `DPCM_NN` segments) carried no
+  marker — so the split prepare/compile flow, which only sees the finished `music.asm`,
+  would honor a stray `--mapper nrom` and fail at `ld65` with a cryptic "Missing memory
+  area assignment for DPCM_00" instead of a clean error. `export_direct_frames`
+  (`exporter/exporter_ca65.py`) now stamps a `"; Direct export DPCM (MMC3-only)"` marker
+  when a DPCM channel is present, and `resolve_mapper()` forces MMC3 for `auto` / rejects
+  a non-MMC3 explicit `--mapper` on that marker, mirroring the existing bytecode and
+  bank-pack markers above. Verify-the-fix: confirm the marker is present in every
+  direct-export music.asm that has a DPCM channel, and that `resolve_mapper` checks for it
+  before the bank-pack marker (a song can't be both).
 - A threshold that picks a mapper too small for the data (so it overruns) ties back to
   Dimension 4 and is CRITICAL, and is now reachable via `--mapper auto` — confirm the
   capacity pre-flight (Dimension 4) still catches any such pick before `ld65`.

@@ -99,10 +99,16 @@ volume and no duty** (`docs/APU_TRIANGLE_REFERENCE.md` §1; `docs/NES_APU_REFERE
   Any path that writes a duty or 4-bit volume into a triangle register ($4008/$400B)
   is **HIGH** per the Special Rules table.
 - In `exporter/exporter_ca65.py`'s `export_direct_frames`, the triangle control byte
-  is derived independently from `volume` (`0x80 | (volume * 7)` when nonzero, `0x00`
-  when silent) — this is a real linear-counter reload
-  (`docs/APU_TRIANGLE_REFERENCE.md` §4), not a borrowed pulse control byte. Confirm
-  no `$30`-style "duty + constant volume" constant leaks into the triangle path.
+  is derived independently from `volume`: `0x00` when silent, else the named
+  `TRIANGLE_CONTROL_ON` constant (`0x80` control/halt flag `| 0x7F` max reload =
+  `0xFF`) — this is a real linear-counter reload (`docs/APU_TRIANGLE_REFERENCE.md`
+  §4), matching the bytecode engine's fixed `$FF` write in `nes/audio_engine.asm`.
+  The old formula, `0x80 | (volume * 7)`, scaled the reload by loudness even though
+  the control flag stayed set (re-arming the reload every frame, so it never gated
+  the note) — inert in practice but an opaque latent trap: clearing bit 7 in a future
+  edit would have silently turned it into a wrong note-length knob. Fixed in #364
+  (NH-HW-04); confirm no re-introduction of a loudness-derived reload and that no
+  `$30`-style "duty + constant volume" constant leaks into the triangle path.
 - Note-off: `nes/audio_engine.asm`'s `@silence_tri` writes `$80` (halt bit set, zero
   reload — "Linear Counter Halt", per `docs/APU_TRIANGLE_REFERENCE.md` §5) and the
   direct-export `@silence` label writes `$00` to `$4008`; the "new note" fallthrough
@@ -126,12 +132,18 @@ verify it holds:
   (`e.get('noise_mode', 0) & 1`) instead of hardcoding mode 0 — confirm the mode bit
   is still reachable end-to-end (does any producer ever set `noise_mode: 1`, or is
   it dead-but-correct plumbing?).
-- NH-19 (#162, noise decay) is fixed: `process_all_tracks` now bakes a
-  `NOISE_DECAY_FRAMES = 6` software volume ramp per hit (`peak_volume * (span -
-  offset) / span`, floored at 1), cut short by a re-trigger. Verify the ramp still
-  reaches audible decay (not all frames rounding to the same value) and that a
-  rapid re-trigger correctly truncates the previous hit's tail rather than
-  overlapping it.
+- NH-19 (#162, noise decay) is fixed: `process_all_tracks` bakes a software volume
+  ramp per hit, cut short by a re-trigger. `NOISE_DECAY_FRAMES = 6` and the ramp
+  formula (`noise_strike_decay_volume`: `peak_volume * (span - offset) / span`,
+  floored at 1) now live in `nes/envelope_processor.py` rather than inline in
+  `emulator_core.py` — extracted so the `--arranger` path's noise post-processing
+  (`FrameByFrameAllocator._apply_noise_strike_decay`, `arranger/voice_allocator.py`)
+  shares the exact same decay instead of drifting from it (#359/ARR-2026-07-19-1;
+  see `/audit-arranger` Dimension 7 for that side). Verify both `process_all_tracks`
+  and `_apply_noise_strike_decay` still import from `nes/envelope_processor.py`
+  rather than either re-defining its own copy, that the ramp still reaches audible
+  decay (not all frames rounding to the same value), and that a rapid re-trigger
+  correctly truncates the previous hit's tail rather than overlapping it.
 
 ### Dimension 4: DPCM / DMC — level handling
 DMC is at `$4010–$4013`; direct level load is `$4011` (7-bit, `docs/APU_DMC_REFERENCE.md`

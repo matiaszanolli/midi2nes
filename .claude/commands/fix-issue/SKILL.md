@@ -82,6 +82,11 @@ Before committing, verify the rows that apply (mirrors `/audit-publish` step 7):
 - [ ] **SIBLING**: same pattern checked in related files
 - [ ] **TESTS**: regression test added
 - [ ] **DOC**: any contradicted `docs/*.md` corrected
+- [ ] **SKILL-DOC**: if the Phase 2 domain's `audit-<domain>/SKILL.md` describes the bug
+  just fixed (a formula, invariant, or "known gap") as current, update that prose in
+  the same commit — grep the dimension for the function/constant names touched, or
+  for the issue number. For a fix spanning several domains or several issues at once,
+  run `/audit-sync --issues <N,...>` instead of doing it by hand per file.
 
 ## Phase 8: Commit & Close
 Branch off `master` if you are on it. Commit with a conventional message referencing the

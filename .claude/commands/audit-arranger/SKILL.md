@@ -107,6 +107,12 @@ checklist:
 - Velocity threshold `> 100` / `< 60` operate on raw MIDI velocity (0–127); confirm the
   values flowing in are velocity, not an already-scaled volume (events use
   `velocity = event.get('velocity', event.get('volume', 100))`).
+- **#360 (ARR-2026-07-19-2) is CLOSED**: `analyze_midi_events`
+  (`arranger/pipeline_integration.py:84-88`) dropped its unused `ticks_per_beat`/`tempo`/`fps`
+  parameters — frame numbers arrive pre-computed from `parser_fast` and density uses a fixed
+  `VoiceRoleAnalyzer.tempo_fps` (60.0), so no caller ever needed them. Verify-the-fix: confirm
+  no call site still passes them (would now raise `TypeError`) and no reintroduced parameter
+  goes unused again.
 
 ### Dimension 3: Voice Allocation, Priority & Overflow
 Two allocation layers: `VoiceRoleAnalyzer._assign_channels` (track→channel, build time) and
@@ -257,6 +263,19 @@ Checklist:
   `15 if vel > 0 else 0`). Confirm the result is always within the 4-bit APU volume range and
   that `vel // 8` of 127 = 15 (it is); flag the ad-hoc curve vs `nes/envelope_processor.py`
   used by the legacy path.
+- **#359 (ARR-2026-07-19-1) is CLOSED**: the per-frame loop above used to emit this same flat
+  `vel // 8` volume for every frame a noise/percussion hit was active, so a drum note played as
+  a sustained hiss burst instead of a crisp strike — unlike the legacy `NESEmulatorCore` path,
+  which ramps each hit down over ~100ms (both front-ends force constant-volume+halt on `$400C`,
+  so there is no hardware envelope to lean on). `FrameByFrameAllocator.process_song`
+  (`arranger/voice_allocator.py:472`) now post-processes `frames["noise"]` through
+  `_apply_noise_strike_decay` (`:477-511`), which finds each contiguous same-period run (one
+  strike), ramps it down over `NOISE_DECAY_FRAMES` via the shared
+  `nes/envelope_processor.noise_strike_decay_volume` helper — so both front-ends sound alike —
+  and truncates it to that length. Verify-the-fix: confirm period/control are untouched (only
+  volume is scaled, and only downward, so it can't leave the 4-bit range), that a gap or a
+  period change starts a fresh strike, and that `allocate_with_arpeggiation` (the live entry
+  point) is what actually calls `process_song` — not a dead/parallel code path.
 - `control = (duty << 6) | 0x30 | volume` for pulse — verify the byte stays in 0–255 and the
   duty bits land in bits 6–7 per `docs/APU_PULSE_REFERENCE.md`.
 
