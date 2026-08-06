@@ -34,6 +34,10 @@ class BenchmarkResult:
     duration_ms: float
     memory_peak_mb: float
     memory_delta_mb: float
+    # % of one core used during this stage, from cpu_times() deltas / wall
+    # time (#374/PERF-A-04) -- a real per-stage figure, not the interval-less
+    # cpu_percent() reading this field used to hold (which measured CPU since
+    # the previous unrelated cpu_percent() call, not since this stage began).
     cpu_percent: float
     success: bool
     error_message: str = ""
@@ -72,7 +76,7 @@ class PerformanceProfiler:
         self.process = psutil.Process()
         self._start_time = None
         self._start_memory = None
-        self._start_cpu = None
+        self._start_cpu_times = None
         self._peak_memory = 0
 
     @contextmanager
@@ -103,16 +107,28 @@ class PerformanceProfiler:
         # Record initial state
         self._start_time = time.perf_counter()
         self._start_memory = self.process.memory_info().rss / 1024 / 1024  # MB
-        self._start_cpu = self.process.cpu_percent()
+        # cpu_times() (cumulative process CPU seconds) instead of cpu_percent()
+        # (#374/PERF-A-04): psutil's cpu_percent() with no interval= returns
+        # 0.0 on a process's first-ever call and, on every later call,
+        # measures CPU used since the *previous* cpu_percent() call -- not
+        # since _start_profiling() -- so it was advisory noise, not a
+        # per-stage figure. cpu_times() deltas divided by wall time below
+        # give a real, non-blocking utilization percentage for exactly this
+        # profiled interval.
+        self._start_cpu_times = self.process.cpu_times()
         self._peak_memory = self._start_memory
 
     def _end_profiling(self, stage_name: str, success: bool, error_msg: str = "") -> BenchmarkResult:
         """End profiling and create result."""
         # Calculate metrics
-        duration = (time.perf_counter() - self._start_time) * 1000  # ms
+        elapsed_seconds = time.perf_counter() - self._start_time
+        duration = elapsed_seconds * 1000  # ms
         current_memory = self.process.memory_info().rss / 1024 / 1024  # MB
         memory_delta = current_memory - self._start_memory
-        cpu_percent = self.process.cpu_percent()
+        end_cpu_times = self.process.cpu_times()
+        cpu_seconds = ((end_cpu_times.user - self._start_cpu_times.user)
+                        + (end_cpu_times.system - self._start_cpu_times.system))
+        cpu_percent = (cpu_seconds / elapsed_seconds) * 100 if elapsed_seconds > 0 else 0.0
 
         # Get memory tracing info
         try:

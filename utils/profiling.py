@@ -52,6 +52,9 @@ class ProfileResult:
     memory_after_mb: float
     memory_peak_mb: float
     memory_delta_mb: float
+    # % of one core used during the profiled call, from cpu_times() deltas /
+    # wall time (#374/PERF-A-04) -- a real per-call figure, not the
+    # interval-less cpu_percent() reading this field used to hold.
     cpu_percent: float
     success: bool
     error_message: str = ""
@@ -209,12 +212,18 @@ def profile_memory_usage(
             
             # Start monitoring
             memory_before = process.memory_info().rss / 1024 / 1024  # MB
-            # cpu_percent() with no interval= is a non-blocking, advisory-only
-            # reading (returns 0.0 on the process's first call ever, per
-            # psutil's docs) rather than a precise delta over this call — an
-            # interval= would add real blocking latency to every profiled
-            # call, which is worse than an advisory number here (#118).
-            cpu_before = process.cpu_percent() if include_cpu else 0
+            # cpu_times() (cumulative process CPU seconds), not cpu_percent()
+            # (#374/PERF-A-04): cpu_percent() with no interval= returns 0.0
+            # on a process's first-ever call and, on every later call,
+            # measures CPU used since the *previous* cpu_percent() call --
+            # not since this profiled call began -- so it was advisory noise,
+            # not a real per-call figure. cpu_times() deltas divided by wall
+            # time below give a real utilization percentage for exactly this
+            # call, still with no blocking latency (an interval= would add
+            # real blocking latency to every profiled call — the concern
+            # #118 originally traded off; cpu_times() avoids that trade-off
+            # entirely rather than accepting the noise).
+            cpu_times_before = process.cpu_times() if include_cpu else None
             
             if monitor:
                 monitor.start_monitoring()
@@ -235,11 +244,18 @@ def profile_memory_usage(
                 raise
             finally:
                 # Calculate metrics
-                duration = (time.perf_counter() - start_time) * 1000  # ms
+                elapsed_seconds = time.perf_counter() - start_time
+                duration = elapsed_seconds * 1000  # ms
                 memory_after = process.memory_info().rss / 1024 / 1024  # MB
                 memory_delta = memory_after - memory_before
-                cpu_after = process.cpu_percent() if include_cpu else 0
-                
+                if include_cpu:
+                    cpu_times_after = process.cpu_times()
+                    cpu_seconds = ((cpu_times_after.user - cpu_times_before.user)
+                                    + (cpu_times_after.system - cpu_times_before.system))
+                    cpu_percent_value = (cpu_seconds / elapsed_seconds) * 100 if elapsed_seconds > 0 else 0.0
+                else:
+                    cpu_percent_value = 0
+
                 # Get peak memory from tracemalloc
                 try:
                     current_trace, peak_trace = tracemalloc.get_traced_memory()
@@ -267,7 +283,7 @@ def profile_memory_usage(
                     memory_after_mb=memory_after,
                     memory_peak_mb=peak_memory,
                     memory_delta_mb=memory_delta,
-                    cpu_percent=cpu_after - cpu_before if include_cpu else 0,
+                    cpu_percent=cpu_percent_value,
                     success=success,
                     error_message=error_message,
                     metadata=metadata or {}

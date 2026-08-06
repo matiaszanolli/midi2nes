@@ -91,7 +91,7 @@ class TestPerformanceProfiler:
         assert profiler.process is not None
         assert profiler._start_time is None
         assert profiler._start_memory is None
-        assert profiler._start_cpu is None
+        assert profiler._start_cpu_times is None  # renamed from _start_cpu (#374/PERF-A-04)
         assert profiler._peak_memory == 0
     
     @patch('utils.profiling.tracemalloc')
@@ -137,6 +137,49 @@ class TestPerformanceProfiler:
 
         mock_tracemalloc.start.assert_called_once()
         mock_tracemalloc.stop.assert_called_once()
+
+    @patch('utils.profiling.tracemalloc')
+    @patch('benchmarks.performance_suite.time.perf_counter')
+    def test_cpu_percent_computed_from_cpu_times_delta(self, mock_time, mock_tracemalloc):
+        """Regression (#374/PERF-A-04): cpu_percent must come from cpu_times()
+        deltas / wall time, not the interval-less cpu_percent() reading that
+        used to measure CPU since an unrelated previous call rather than
+        since this stage began."""
+        import utils.profiling as profiling_module
+        profiling_module._tracemalloc_depth = 0  # isolate from other tests (#118)
+        mock_tracemalloc.is_tracing.side_effect = [False, True]
+        mock_tracemalloc.get_traced_memory.return_value = (1024 * 1024, 2 * 1024 * 1024)
+
+        profiler = PerformanceProfiler()
+        mock_time.side_effect = [0.0, 2.0]  # 2s wall time
+        profiler.process.memory_info = Mock(return_value=Mock(rss=50 * 1024 * 1024))
+        # 1.0s of combined user+system CPU over the 2s wall time -> 50%.
+        profiler.process.cpu_times = Mock(side_effect=[
+            Mock(user=1.0, system=0.5),
+            Mock(user=1.6, system=0.9),
+        ])
+
+        with profiler.profile("test_stage") as handle:
+            pass
+
+        assert handle.result.cpu_percent == pytest.approx(50.0)
+
+    def test_cpu_percent_zero_when_elapsed_time_is_zero(self):
+        """Guards the elapsed_seconds > 0 branch: a zero-duration stage must
+        report 0.0 rather than raising ZeroDivisionError."""
+        profiler = PerformanceProfiler()
+        profiler._start_time = 5.0
+        profiler._start_memory = 10.0
+        profiler._start_cpu_times = Mock(user=1.0, system=0.5)
+        profiler.process.memory_info = Mock(return_value=Mock(rss=10 * 1024 * 1024))
+        profiler.process.cpu_times = Mock(return_value=Mock(user=1.0, system=0.5))
+
+        with patch('benchmarks.performance_suite.time.perf_counter', return_value=5.0):
+            with patch('benchmarks.performance_suite.tracemalloc.get_traced_memory',
+                        return_value=(0, 0)):
+                result = profiler._end_profiling("zero_duration", True)
+
+        assert result.cpu_percent == 0.0
 
 
 class TestPerformanceBenchmark:

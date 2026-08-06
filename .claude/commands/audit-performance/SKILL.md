@@ -245,10 +245,16 @@ worth re-confirming, not open defects:
   `@profile_memory_usage` function inside a `PerformanceContext` no longer blinds the
   outer profiler's `get_traced_memory()`. Re-verify this if either profiler stops
   routing through the shared acquire/release.
-- `process.cpu_percent()` is called once at start and once at end with no interval —
-  the first call after process start returns `0.0` and the second measures since the
-  first, so `cpu_percent` deltas are unreliable. MEDIUM/LOW (a misleading metric, not a
-  crash).
+- **#374 (PERF-A-04) is CLOSED**: `process.cpu_percent()` used to be called once at start
+  and once at end with no interval — the first call after process start returns `0.0` and
+  every later call measures since the *previous* `cpu_percent()` call, not since the
+  profiled stage/call began, so the reported delta was advisory noise rather than a
+  per-stage figure. Both call sites (`benchmarks/performance_suite.py`'s
+  `PerformanceProfiler`, `utils/profiling.py`'s `profile_memory_usage`) now compute
+  `cpu_percent` from `process.cpu_times()` deltas (`user + system` seconds) divided by wall
+  time — non-blocking (no `interval=`), and accurate for exactly the profiled window.
+  Verify-the-fix: confirm neither call site regresses back to `cpu_percent()`, and that a
+  zero-duration stage reports `0.0` rather than raising `ZeroDivisionError`.
 - `MemoryMonitor._monitor_loop` swallows all exceptions with bare `except: break` and
   samples on a daemon thread; verify `stop_monitoring`'s `join(timeout=1.0)` cannot lose
   samples or report `{"peak_mb": 0}` when the work is shorter than `interval_ms`.

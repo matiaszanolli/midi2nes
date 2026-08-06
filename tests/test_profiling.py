@@ -285,9 +285,15 @@ class TestProfileMemoryUsage:
 
         mock_process = Mock()
         mock_process.memory_info.return_value.rss = 50 * 1024 * 1024  # 50MB
-        mock_process.cpu_percent.return_value = 10.0
+        # cpu_percent (#374/PERF-A-04) is now computed from cpu_times()
+        # deltas, not cpu_percent() -- two calls (before/after), 0.05s of
+        # combined user+system CPU used over the 0.1s mocked wall time.
+        mock_process.cpu_times.side_effect = [
+            Mock(user=1.0, system=0.5),
+            Mock(user=1.03, system=0.52),
+        ]
         mock_process_class.return_value = mock_process
-        
+
         @profile_memory_usage(save_to_registry=False)
         def test_function():
             return "success"
@@ -310,9 +316,12 @@ class TestProfileMemoryUsage:
         
         mock_process = Mock()
         mock_process.memory_info.return_value.rss = 50 * 1024 * 1024
-        mock_process.cpu_percent.return_value = 10.0
+        mock_process.cpu_times.side_effect = [
+            Mock(user=1.0, system=0.5),
+            Mock(user=1.03, system=0.52),
+        ]
         mock_process_class.return_value = mock_process
-        
+
         @profile_memory_usage(save_to_registry=False)
         def failing_function():
             raise ValueError("Test error")
