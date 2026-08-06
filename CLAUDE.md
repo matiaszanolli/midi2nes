@@ -50,6 +50,14 @@ python -m pytest --cov=.
 python -m debug.rom_tester
 ```
 
+Always scope `pytest` invocations to specific files rather than running the whole suite
+during iterative work — some individual tests are legitimately slow (`PatternDetector`'s
+candidate-generation loop is self-documented "O(n^2)-ish"; worst-case inputs can run
+20-100s standalone) so a small ad-hoc timeout on a multi-file/whole-suite run reads as a
+hang even though nothing is deadlocked (#355/REG-22, root-caused in #394/REG-24). Slow
+tests carry `@pytest.mark.slow`; pass `-m "not slow"` to skip them for a fast pass. Run the
+full suite (`python -m pytest`, no `-m` filter) once as a final gate, not per iteration.
+
 ### Debug & Validation
 
 ```bash

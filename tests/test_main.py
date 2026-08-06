@@ -1027,6 +1027,43 @@ class TestRunExport:
             os.chdir(cwd)
             shutil.rmtree(tmp, ignore_errors=True)
 
+    @patch('main.CA65Exporter')
+    def test_run_export_partial_dpcm_miss_labeled_distinctly(self, mock_exporter_class):
+        """Regression (#367/DP-DPCM-05): a partial DPCM miss (some, not all,
+        referenced samples resolve) must not be mislabeled "NO DRUMS" --
+        that wording describes the all-missing case and would misdescribe a
+        song that still has drums, just fewer than it referenced."""
+        import shutil
+        mock_exporter_class.return_value = Mock()
+        cwd = os.getcwd()
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            dmc_dir = tmp / "dmc"
+            dmc_dir.mkdir()
+            (dmc_dir / "kick.dmc").write_bytes(b"\x00" * 16)
+            (tmp / "dpcm_index.json").write_text(json.dumps({
+                "kick": {"id": 0, "filename": "kick.dmc"},
+                "ghost": {"id": 1, "filename": "missing.dmc"},
+            }))
+            frames_data = {"dpcm": {"0": {"note": 1, "volume": 15},
+                                    "1": {"note": 2, "volume": 15}}}
+            test_input = tmp / "frames.json"
+            test_input.write_text(json.dumps(frames_data))
+            test_output = tmp / "output.asm"
+            os.chdir(tmp)
+            args = Namespace(input=str(test_input), output=str(test_output),
+                              format="ca65", patterns=None)
+            with patch('builtins.print') as mock_print:
+                run_export(args)
+            messages = [str(c.args[0]) for c in mock_print.call_args_list if c.args]
+            assert not any("NO DRUMS" in m for m in messages), \
+                "a partial miss must not use the all-missing wording"
+            warning_idx = next(i for i, m in enumerate(messages) if "PARTIAL DPCM MISS" in m)
+            assert "1 of 2" in messages[warning_idx]
+        finally:
+            os.chdir(cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_run_export_rerun_on_same_output_does_not_duplicate_dpcm_block(self):
         """Regression (#23/F-10): run_export appends the packed DPCM assembly
         with open(args.output, 'a'). Re-running export onto the same
@@ -1140,6 +1177,48 @@ class TestPackDpcmIntoAsm:
             mock_load.return_value = (0, {})
             pack_dpcm_into_asm({"pulse1": {}}, str(self.asm_path), verbose=True)
             assert mock_load.call_args.kwargs.get('verbose') is True
+
+    def test_partial_miss_warns_and_names_the_dropped_drums(self):
+        """Regression (#367/DP-DPCM-05): when SOME (not all) referenced DPCM
+        samples fail to resolve, the old code discarded `skipped` entirely
+        (`loaded_samples, _ = ...`) so a partial miss produced no warning at
+        all -- only the all-missing case (loaded_samples == 0) did. A
+        partial miss must warn too, and name which drums were dropped."""
+        from main import pack_dpcm_into_asm
+        dmc_dir = self.tmp / "dmc"
+        dmc_dir.mkdir()
+        (dmc_dir / "kick.dmc").write_bytes(b"\x00" * 16)
+        (self.tmp / "dpcm_index.json").write_text(json.dumps({
+            "kick": {"id": 0, "filename": "kick.dmc"},
+            "ghost": {"id": 1, "filename": "missing.dmc"},
+        }))
+        frames = {"dpcm": {"0": {"note": 1, "volume": 15},
+                           "1": {"note": 2, "volume": 15}}}
+        result = pack_dpcm_into_asm(frames, str(self.asm_path))
+
+        assert result.loaded_samples == 1
+        assert result.skipped_samples == 1
+        assert result.warning is not None
+        assert "1 of 2" in result.warning
+        assert "missing.dmc" in result.warning
+        # The all-missing wording must not fire for a partial miss.
+        assert "NO drums" not in result.warning
+
+    def test_total_miss_still_uses_the_no_drums_wording(self):
+        """SIBLING: the pre-existing all-missing branch (loaded_samples == 0)
+        must still win over the new partial-miss branch when every sample is
+        missing, not get superseded by it."""
+        from main import pack_dpcm_into_asm
+        (self.tmp / "dpcm_index.json").write_text(json.dumps({
+            "ghost": {"id": 0, "filename": "missing.dmc"},
+        }))
+        frames = {"dpcm": {"0": {"note": 1, "volume": 15}}}
+        result = pack_dpcm_into_asm(frames, str(self.asm_path))
+
+        assert result.loaded_samples == 0
+        assert result.skipped_samples == 1
+        assert result.warning is not None
+        assert "NO drums" in result.warning
 
 
 class TestRunDetectPatterns:

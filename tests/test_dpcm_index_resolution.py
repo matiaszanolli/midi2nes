@@ -183,3 +183,47 @@ def test_load_dpcm_index_into_packer_loads_present_sample(tmp_path):
 
     assert (loaded, skipped) == (1, 1)
     packer.add_sample.assert_called_once()
+
+
+def test_load_dpcm_index_into_packer_names_skipped_samples(tmp_path):
+    """Regression (#367/DP-DPCM-05): a caller that wants to warn on a
+    partial miss needs to know WHICH samples were dropped, not just the
+    count -- skipped_details is populated with each one's pack id
+    (dense id when sample_ids is a dense->catalog map, else the catalog id)
+    and filename."""
+    dmc_dir = tmp_path / DPCM_ROOT_DIRNAME
+    dmc_dir.mkdir()
+    (dmc_dir / "Kick.dmc").write_bytes(b"\x00" * 16)
+    index_path = tmp_path / "dpcm_index.json"
+    dpcm_index = {
+        "Kick": {"id": 5, "filename": "Kick.dmc"},
+        "Ghost": {"id": 9, "filename": "DoesNotExist.dmc"},
+    }
+    index_path.write_text(json.dumps(dpcm_index))
+
+    packer = Mock()
+    skipped_details = []
+    loaded, skipped = load_dpcm_index_into_packer(
+        packer, dpcm_index, str(index_path), skipped_details=skipped_details)
+
+    assert (loaded, skipped) == (1, 1)
+    assert skipped_details == [{'pack_id': 9, 'filename': 'DoesNotExist.dmc'}]
+
+
+def test_load_dpcm_index_into_packer_names_skipped_by_dense_id(tmp_path):
+    """Sibling: when sample_ids is the {dense_id: catalog_id} map shape
+    (#200/D-14), a skipped entry's pack_id must be its dense id -- the id
+    the exported frame's note actually indexes -- not its (potentially
+    huge) catalog id."""
+    index_path = tmp_path / "dpcm_index.json"
+    dpcm_index = {"Ghost": {"id": 1318, "filename": "DoesNotExist.dmc"}}
+    index_path.write_text(json.dumps(dpcm_index))
+
+    packer = Mock()
+    skipped_details = []
+    loaded, skipped = load_dpcm_index_into_packer(
+        packer, dpcm_index, str(index_path),
+        sample_ids={0: 1318}, skipped_details=skipped_details)
+
+    assert (loaded, skipped) == (0, 1)
+    assert skipped_details == [{'pack_id': 0, 'filename': 'DoesNotExist.dmc'}]

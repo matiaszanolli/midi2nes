@@ -139,6 +139,23 @@ class TestCA65Export(unittest.TestCase):
         self.assertIn('sta last_written_hi, x', is_note,
                       "a new note must force the timer-high write even if the period repeats")
 
+    def test_write_dpcm_skips_unpacked_slots(self):
+        # Regression (#367/DP-DPCM-05): a dense id whose .dmc file was
+        # missing at pack time gets a $00 dpcm_len_table placeholder (the
+        # tables are positional). Without a guard, @write_dpcm still
+        # triggers DMC playback for it -- $4013=0 reads a 1-byte fragment of
+        # bank 0 / $C000 (a click/garbage sample) instead of skipping the
+        # drum. The trigger must check dpcm_len_table,y and branch away
+        # before the DMC enable write ($4015) when it's zero.
+        engine_path = Path(__file__).parent.parent / "nes" / "audio_engine.asm"
+        text = engine_path.read_text()
+        write_dpcm = text.split('@write_dpcm:', 1)[1].split('@silence:', 1)[0]
+        len_check_pos = write_dpcm.index('dpcm_len_table, y')
+        enable_pos = write_dpcm.index('sta $4015')
+        self.assertLess(len_check_pos, enable_pos,
+                        "dpcm_len_table must be checked before the DMC "
+                        "enable write ($4015)")
+
     def test_standalone_header_tracks_selected_mapper(self):
         # Regression (NH-09 / #36): the standalone iNES header must come from the
         # selected mapper, not a hardcoded MMC1 byte. Default is MMC3.
@@ -410,6 +427,35 @@ class TestCA65Export(unittest.TestCase):
             if out.exists():
                 out.unlink()
 
+    def test_direct_export_dpcm_trigger_skips_unpacked_slots(self):
+        # Regression (#367/DP-DPCM-05): a dense id whose .dmc file was
+        # missing at pack time gets a $00 dpcm_len_table placeholder (the
+        # tables are positional). Without a guard, play_dpcm still triggers
+        # DMC playback for it -- $4013=0 reads a 1-byte fragment of bank 0 /
+        # $C000 (a click/garbage sample) instead of skipping the drum. The
+        # trigger must check dpcm_len_table,y and branch past the trigger
+        # when it's zero, mirroring nes/audio_engine.asm's @write_dpcm.
+        frames = {'pulse1': {'0': {'note': 60, 'volume': 15}},
+                  'dpcm': {'0': {'note': 1, 'volume': 15}}}
+        out = Path("test_dpcm_unpacked_guard.asm")
+        try:
+            self.exporter.export_direct_frames(frames, str(out), standalone=False)
+            content = out.read_text()
+            self.assertIn('play_dpcm', content)
+            # The length check must happen before the DMC is triggered
+            # (before $4015 is written with the enable bit).
+            proc_start = content.index('.proc play_dpcm')
+            proc_end = content.index('.endproc', proc_start)
+            proc_body = content[proc_start:proc_end]
+            len_check = proc_body.index('dpcm_len_table,y')
+            trigger = proc_body.index('sta $4015', len_check)
+            self.assertGreater(trigger, len_check,
+                               "dpcm_len_table must be checked before the "
+                               "DMC enable write")
+        finally:
+            if out.exists():
+                out.unlink()
+
     def test_dmc_level_command_path_removed(self):
         # Regression (#72 / D-09): no stage ever produces `dmc_level`, so the
         # CMD_DMC_LEVEL ($87) plumbing was unreachable and has been removed. Even
@@ -506,6 +552,24 @@ class TestCA65Export(unittest.TestCase):
                               f"standalone={standalone}: pulse1 sweep ($4001) not disabled")
                 self.assertIn("sta $4005", asm,
                               f"standalone={standalone}: pulse2 sweep ($4005) not disabled")
+            finally:
+                if out.exists():
+                    out.unlink()
+
+    def test_dmc_dac_zeroed_in_direct_init_paths(self):
+        # Regression (#348): both direct-export init paths must zero the DMC
+        # output level ($4011) so a soft reset can't leave it at a stale
+        # nonzero value that would muffle Triangle/Noise via the non-linear
+        # mixer (docs/APU_DMC_REFERENCE.md §5). Standalone emits a reset
+        # proc; non-standalone emits init_music for the project builder.
+        for standalone in (True, False):
+            out = Path(f"test_dmc_dac_{int(standalone)}.asm")
+            try:
+                self.exporter.export_tables_with_patterns(
+                    self.test_frames, {}, {}, out, standalone=standalone)
+                asm = out.read_text()
+                self.assertIn("sta $4011", asm,
+                              f"standalone={standalone}: DMC DAC ($4011) not zeroed")
             finally:
                 if out.exists():
                     out.unlink()

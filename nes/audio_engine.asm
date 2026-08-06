@@ -516,6 +516,19 @@ audio_update:
     sbc #1
     tay
 
+    ; A $00 length_reg means this dense id was never packed (its .dmc file
+    ; was missing at pack time, docs/APU_DMC_REFERENCE.md, #367/DP-DPCM-05)
+    ; -- skip the trigger entirely so we don't read a stray 1-byte fragment
+    ; of bank 0 / $C000 (a click/garbage sample) in place of the drum the
+    ; song intended, and don't disturb whatever else is currently playing.
+    ; @next_channel is out of `beq`'s +-127-byte range from here, so branch
+    ; over an absolute `jmp` instead (same idiom as exporter_ca65.py's
+    ; _emit_safe_beq for the equivalent direct-export trigger).
+    lda dpcm_len_table, y
+    bne @sample_ready
+    jmp @next_channel
+@sample_ready:
+
     ; Stop any playing DPCM first to reset the byte counter
     lda #$0F
     sta $4015

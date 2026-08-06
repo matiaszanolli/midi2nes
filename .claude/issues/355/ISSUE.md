@@ -1,5 +1,8 @@
 # REG-22: test_parser_fast.py + test_patterns.py together hang in pytest (each passes alone)
 
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/355
+**Labels:** bug, low, regression
+
 **Severity:** LOW · **Domain:** regression · **Source:** discovered while verifying fix-issue batch #343/#344/#345 (2026-07-18)
 
 ## Description

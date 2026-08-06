@@ -1,5 +1,7 @@
-# NH-HW-2026-07-18-1: Direct-export APU init never zeroes the DMC DAC ($4011)
-**Filed as:** #348
+# NH-HW-2026-07-18-1: Direct-export APU init (init_music/reset) never zeroes the DMC DAC ($4011), unlike the bytecode engine
+
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/348
+**Labels:** bug, low, nes-hardware
 
 **Severity:** LOW · **Domain:** nes-hardware · **Source:** AUDIT_NES_HARDWARE_2026-07-18.md
 
@@ -32,3 +34,4 @@ Add `lda #$00` / `sta $4011` to `init_music` (and the standalone `reset` APU-ini
 - [ ] **CC65**: the added init assembles and links on the direct-export (`--no-patterns`) path
 - [ ] **TESTS**: a test asserts the direct-export init emits `sta $4011`
 - [ ] **DOC**: `docs/APU_DMC_REFERENCE.md` §5 remains accurate for both engines after the fix
+
