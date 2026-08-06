@@ -415,6 +415,47 @@ class TestRunFullPipeline:
     @patch('main.NESEmulatorCore')
     @patch('main.assign_tracks_to_nes_channels')
     @patch('tracker.parser_fast.parse_midi_to_frames')
+    def test_run_full_pipeline_calls_shared_dpcm_pack_helper(
+        self, mock_parse, mock_assign, mock_emulator_class,
+        mock_exporter_class, mock_builder_class, mock_compile
+    ):
+        """Regression (#380/TD-28): run_full_pipeline must route DPCM
+        packing through the shared pack_dpcm_into_asm helper (not a
+        re-inlined copy) so a fix to the packing logic can't silently
+        miss this path -- the SIBLING half of the same check on run_export."""
+        mock_parse.return_value = {"events": {"0": [{"frame": 0, "note": 60}]}, "metadata": {}}
+        mock_assign.return_value = {"pulse1": [{"frame": 0, "note": 60}]}
+        mock_emulator = Mock()
+        mock_emulator.process_all_tracks.return_value = {"pulse1": {"0": {"note": 60, "volume": 15}}}
+        mock_emulator_class.return_value = mock_emulator
+        mock_exporter_class.return_value = Mock()
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        def create_rom(project_path, rom_path, **kwargs):
+            rom_path.write_bytes(b'NES\x1a' + b'\x00' * 131000)
+            return True
+        mock_compile.side_effect = create_rom
+
+        args = Namespace(
+            input=str(self.test_midi), output=str(self.output_rom),
+            verbose=False, no_patterns=True, skip_validation=True
+        )
+
+        from main import DpcmPackResult
+        with patch('main.pack_dpcm_into_asm') as mock_pack:
+            mock_pack.return_value = DpcmPackResult(index_found=False)
+            run_full_pipeline(args)
+            mock_pack.assert_called_once()
+            assert mock_pack.call_args.kwargs.get('verbose') == args.verbose
+
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('main.CA65Exporter')
+    @patch('main.NESEmulatorCore')
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
     def test_run_full_pipeline_no_patterns_flag(
         self, mock_parse, mock_assign, mock_emulator_class,
         mock_exporter_class, mock_builder_class, mock_compile

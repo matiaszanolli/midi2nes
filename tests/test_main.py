@@ -1057,6 +1057,20 @@ class TestRunExport:
             os.chdir(cwd)
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_run_export_calls_shared_dpcm_pack_helper(self):
+        """Regression (#380/TD-28): run_export must route DPCM packing
+        through the shared pack_dpcm_into_asm helper (not a re-inlined copy)
+        so a fix to the packing logic can't silently miss this path."""
+        with patch('main.pack_dpcm_into_asm') as mock_pack:
+            from main import DpcmPackResult
+            mock_pack.return_value = DpcmPackResult(index_found=False)
+            args = Namespace(input=str(self.test_input), output=str(self.test_output),
+                              format="ca65", patterns=None)
+            run_export(args)
+            mock_pack.assert_called_once()
+            call_args = mock_pack.call_args
+            assert call_args.args[1] == str(self.test_output) or call_args.kwargs.get('asm_path') == str(self.test_output)
+
     def test_export_rejects_nsf_format(self):
         """Regression (#79): `--format nsf` used to be accepted by argparse but
         dispatched on the impossible string "nsftxt", so it silently wrote
@@ -1067,6 +1081,65 @@ class TestRunExport:
                                  '--format', 'nsf']):
             with pytest.raises(SystemExit):
                 main_entry()
+
+
+class TestPackDpcmIntoAsm:
+    """Regression tests for #380/TD-28: pack_dpcm_into_asm, extracted from
+    the identical copy-pasted DPCM-packing sequence run_export and
+    run_full_pipeline used to each carry separately (and had already
+    drifted -- verbose= passthrough, status-line printing)."""
+
+    def setup_method(self):
+        self.cwd = os.getcwd()
+        self.tmp = Path(tempfile.mkdtemp())
+        os.chdir(self.tmp)
+        self.asm_path = self.tmp / "music.asm"
+        self.asm_path.write_text(".segment \"CODE\"\n")
+
+    def teardown_method(self):
+        import shutil
+        os.chdir(self.cwd)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_no_index_file_returns_index_found_false(self):
+        from main import pack_dpcm_into_asm
+        result = pack_dpcm_into_asm({"pulse1": {}}, str(self.asm_path))
+        assert result.index_found is False
+        assert result.warning is None
+        assert result.loaded_samples == 0
+
+    def test_no_samples_referenced_returns_no_warning(self):
+        from main import pack_dpcm_into_asm
+        (self.tmp / "dpcm_index.json").write_text(json.dumps({
+            "test_kick": {"id": 0, "filename": "test_kick.dmc"}
+        }))
+        result = pack_dpcm_into_asm({"pulse1": {"0": {"note": 60}}}, str(self.asm_path))
+        assert result.index_found is True
+        assert result.sample_ids == {}
+        assert result.loaded_samples == 0
+        assert result.warning is None
+
+    def test_corrupt_index_returns_warning_and_traceback(self):
+        from main import pack_dpcm_into_asm
+        (self.tmp / "dpcm_index.json").write_text("not valid json")
+        result = pack_dpcm_into_asm({"dpcm": {"0": {"sample_id": 0}}}, str(self.asm_path))
+        assert result.index_found is True
+        assert result.warning is not None
+        assert "DPCM packing failed" in result.warning
+        assert result.traceback_text is not None
+
+    def test_verbose_flag_reaches_load_dpcm_index_into_packer(self):
+        """SIBLING: run_full_pipeline's copy passed verbose=args.verbose;
+        run_export's copy did not -- the shared helper must actually forward
+        the flag when a caller opts in, closing that specific divergence."""
+        from main import pack_dpcm_into_asm
+        (self.tmp / "dpcm_index.json").write_text(json.dumps({
+            "test_kick": {"id": 0, "filename": "test_kick.dmc"}
+        }))
+        with patch('dpcm_sampler.generate_dpcm_index.load_dpcm_index_into_packer') as mock_load:
+            mock_load.return_value = (0, {})
+            pack_dpcm_into_asm({"pulse1": {}}, str(self.asm_path), verbose=True)
+            assert mock_load.call_args.kwargs.get('verbose') is True
 
 
 class TestRunDetectPatterns:
