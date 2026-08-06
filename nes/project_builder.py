@@ -129,16 +129,6 @@ class NESProjectBuilder:
 
         print(f"  Using {self.mapper.name} with {self.mapper.prg_rom_size // 1024}KB PRG-ROM")
 
-        # Capacity pre-flight (#363/MAP-2026-07-19-3): the CLI runs
-        # check_mapper_capacity before calling us, but a library consumer that
-        # builds NESProjectBuilder(...).prepare_project(...) directly would
-        # otherwise get no clean overflow message and rely entirely on ld65
-        # erroring at link time. Gate here too so both entry points fail the
-        # same way, with the region-naming budget message. ld65 stays the exact
-        # backstop. Runs on the source music.asm (before any transforms below),
-        # matching what the CLI check sizes.
-        check_mapper_capacity(music_asm_path, self.mapper)
-
         if self.debug_mode:
             print(f"  Debug mode enabled - adding on-screen diagnostics")
             from nes.debug_overlay import NESDebugOverlay
@@ -220,7 +210,23 @@ fetch_sequence_byte:
                 )
 
         # Write music.asm
-        (self.project_path / "music.asm").write_text(music_content)
+        music_asm_out = self.project_path / "music.asm"
+        music_asm_out.write_text(music_content)
+
+        # Capacity pre-flight (#363/MAP-2026-07-19-3, #389/MAP-2026-08-05-2):
+        # the CLI runs check_mapper_capacity before calling us too, but a
+        # library consumer that builds NESProjectBuilder(...).prepare_project(...)
+        # directly would otherwise get no clean overflow message and rely
+        # entirely on ld65 erroring at link time. Gate here so both entry
+        # points fail the same way, with the region-naming budget message.
+        # Runs on the *final* written music.asm -- after the --debug overlay,
+        # fetch_sequence_byte, and DPCM-stub content above are all folded in
+        # -- rather than the pre-transform source file, so a song that only
+        # overflows once that ~800+ bytes of extra content is added is still
+        # caught here instead of surfacing as a raw ld65 region overflow (or,
+        # on a mapper with a switchable direct-export bank, not failing
+        # cleanly at all). ld65 stays the exact backstop.
+        check_mapper_capacity(str(music_asm_out), self.mapper)
         
         # Audio Engine
         engine_src = Path(__file__).parent / "audio_engine.asm"
