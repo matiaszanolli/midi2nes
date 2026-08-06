@@ -1,5 +1,8 @@
 # NH-25: Direct-path pulse control bytes omit the length-counter halt flag the docs mandate
 
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/167
+**Labels:** bug, low, nes-hardware
+
 **Severity:** LOW · **Domain:** nes-hardware · **Source:** AUDIT_NES_HARDWARE_2026-07-01.md
 
 ## Description

@@ -197,6 +197,409 @@ class CA65Exporter(BaseExporter):
             f'{skip_label}:',
         ]
 
+    # ------------------------------------------------------------------
+    # Direct-export per-channel emitters (#136/TD-11). Extracted verbatim
+    # from export_direct_frames -- same lines, same order, same asymmetric
+    # comments where pulse1/pulse2 historically diverged -- so the emitted
+    # music.asm is byte-for-byte unchanged (verified via golden-file diff
+    # across standalone/non-standalone, all three mappers, and with/without
+    # noise/dpcm). Splitting these into independently callable/testable
+    # methods was the issue's explicit ask (cf. REG-05/#45's testability
+    # gap). ensure_segment/emit_byte_table are the closures export_direct_
+    # frames defines over its local `lines`/`current_segment`/`table_bank`
+    # -- passed in rather than duplicated so bank-packed segment interleaving
+    # across channels still works exactly as before.
+
+    def _emit_pulse_or_triangle_table(self, lines, channel_name, channel_data,
+                                        max_frame, ensure_segment):
+        """Emit the note/control/timer_lo/timer_hi frame tables for a pulse1,
+        pulse2, or triangle channel. Triangle's control byte has no volume/
+        duty (docs/APU_TRIANGLE_REFERENCE.md §1) -- see #364/NH-HW-04."""
+        ensure_segment(f'{channel_name}_note')
+        lines.append(f'; {channel_name.upper()} Frame Data Tables')
+
+        # Create arrays that are indexed by frame number
+        # We use $00 for empty frames (silent)
+        note_table = []
+        control_table = []
+        timer_lo_table = []
+        timer_hi_table = []
+
+        for frame_num in range(max_frame + 1):
+            # Check if this frame has data (keys can be int or str)
+            if frame_num in channel_data:
+                frame_data = channel_data[frame_num]
+            elif str(frame_num) in channel_data:
+                frame_data = channel_data[str(frame_num)]
+            else:
+                # Empty frame - silence
+                note_table.append("$00")
+                control_table.append("$00")
+                timer_lo_table.append("$00")
+                timer_hi_table.append("$00")
+                continue
+
+            # Frame has data - process it
+            pitch = frame_data.get('pitch', 0)
+            note = frame_data.get('note', 0)
+
+            # Triangle channel uses different control format
+            if channel_name == 'triangle':
+                # Triangle $4008: bit 7 = linear-counter control flag, bits
+                # 6-0 = reload value (docs/APU_TRIANGLE_REFERENCE.md §4). The
+                # triangle has no volume control (§1), so `volume` here is
+                # only a gate: 0 -> silent (clear the flag, reload 0), else
+                # play at a fixed max reload with the flag set (0xFF, like the
+                # bytecode engine). The old `0x80 | volume*7` scaled a halted
+                # counter's reload by loudness — inert but a latent trap
+                # (clearing bit 7 would turn it into a wrong note-length
+                # knob) (#364/NH-HW-04).
+                volume = frame_data.get('volume', 0)
+                if volume == 0:
+                    control = 0x00
+                else:
+                    control = TRIANGLE_CONTROL_ON
+            else:
+                # Pulse channels: use provided control byte
+                control = frame_data.get('control', 0)
+
+            # Re-assert the audible 11-bit timer range before the byte split.
+            # t < 8 silences pulse/triangle (APU_PULSE_REFERENCE §3/§7), so a
+            # nonzero pitch is floored at 8; a true rest (pitch 0) stays 0.
+            if pitch:
+                pitch = max(8, min(pitch, 0x07FF))
+
+            note_table.append(f"${note:02X}")
+            control_table.append(f"${control:02X}")
+            timer_lo_table.append(f"${pitch & 0xFF:02X}")
+            timer_hi_table.append(f"${((pitch >> 8) & 0x07):02X}")
+
+        # Write tables in chunks of 16 bytes per line
+        ensure_segment(f'{channel_name}_note')
+        lines.append(f'{channel_name}_note:')
+        for i in range(0, len(note_table), 16):
+            chunk = note_table[i:i+16]
+            lines.append(f'    .byte {", ".join(chunk)}')
+
+        ensure_segment(f'{channel_name}_control')
+        lines.append(f'{channel_name}_control:')
+        for i in range(0, len(control_table), 16):
+            chunk = control_table[i:i+16]
+            lines.append(f'    .byte {", ".join(chunk)}')
+
+        ensure_segment(f'{channel_name}_timer_lo')
+        lines.append(f'{channel_name}_timer_lo:')
+        for i in range(0, len(timer_lo_table), 16):
+            chunk = timer_lo_table[i:i+16]
+            lines.append(f'    .byte {", ".join(chunk)}')
+
+        ensure_segment(f'{channel_name}_timer_hi')
+        lines.append(f'{channel_name}_timer_hi:')
+        for i in range(0, len(timer_hi_table), 16):
+            chunk = timer_hi_table[i:i+16]
+            lines.append(f'    .byte {", ".join(chunk)}')
+        lines.append('')
+
+    def _emit_noise_table(self, lines, channel_data, max_frame, emit_byte_table):
+        """Emit noise frame tables (#9). note = 4-bit period index (0 =
+        rest/change sentinel); ctrl = $400C byte ($30 | volume); reg =
+        $400E byte (mode bit 7 | period). Drum hits are sparse, so empty
+        frames are rests."""
+        n_note, n_ctrl, n_reg = [], [], []
+        for frame_num in range(max_frame + 1):
+            fd = channel_data.get(frame_num, channel_data.get(str(frame_num)))
+            if not fd or fd.get('volume', 0) == 0:
+                n_note.append('$00'); n_ctrl.append('$00'); n_reg.append('$00')
+                continue
+            period = fd.get('note', 0) & 0x0F
+            mode = (fd.get('control', 0) >> 6) & 0x01
+            vol = fd.get('volume', 0) & 0x0F
+            n_note.append(f'${period:02X}')
+            n_ctrl.append(f'${0x30 | vol:02X}')
+            n_reg.append(f'${(mode << 7) | period:02X}')
+        lines.append('; NOISE Frame Data Tables')
+        emit_byte_table('noise_note', n_note)
+        emit_byte_table('noise_ctrl', n_ctrl)
+        emit_byte_table('noise_reg', n_reg)
+        lines.append('')
+
+    def _emit_dpcm_table(self, lines, channel_data, max_frame, emit_byte_table):
+        """Emit DPCM frame tables (#9). note = sample_id + 1 (0 = rest/change
+        sentinel). The trigger reuses the packer/engine sample tables
+        (dpcm_*_table)."""
+        d_note = []
+        for frame_num in range(max_frame + 1):
+            fd = channel_data.get(frame_num, channel_data.get(str(frame_num)))
+            if not fd or fd.get('volume', 0) == 0:
+                d_note.append('$00')
+                continue
+            d_note.append(f'${fd.get("note", 0) & 0xFF:02X}')
+        lines.append('; DPCM Frame Data Tables')
+        emit_byte_table('dpcm_note', d_note)
+        lines.append('')
+
+    def _emit_pulse1_proc(self, lines, mapper, table_bank, bank_size):
+        """Emit the play_pulse1 playback subroutine."""
+        lines.extend([
+            '.proc play_pulse1',
+            '    ; Get note number for this frame',
+        ])
+        lines.extend(self._emit_table_read_lines('pulse1_note', mapper, table_bank))
+        lines.extend([
+            '    ',
+            '    ; Check if note changed',
+            '    cmp last_pulse1_note',
+        ])
+        lines.extend(self._emit_safe_beq('@sustain', 'p1_sustain', bank_size,
+                                          "; Same note - sustain, don't retrigger"))
+        lines.extend([
+            '    sta last_pulse1_note   ; NB: STA does not affect Z',
+            '    cmp #0                 ; re-test the note (A still holds it); STA left the stale CMP flags (#66/#107)',
+            '    ',
+            '    ; Note changed - check if new note is silence',
+        ])
+        lines.extend(self._emit_safe_beq('@silence', 'p1_silence', bank_size,
+                                          '; If note is 0, silence the channel'))
+        lines.extend([
+            '    ',
+            '    ; New note - write full channel state',
+            '    ; Get and write control byte',
+        ])
+        lines.extend(self._emit_table_read_lines('pulse1_control', mapper, table_bank))
+        lines.extend([
+            '    sta $4000',
+            '    ',
+            '    ; Get and write timer low',
+        ])
+        lines.extend(self._emit_table_read_lines('pulse1_timer_lo', mapper, table_bank))
+        lines.extend([
+            '    sta $4002',
+            '    ',
+            '    ; Get and write timer high with length counter reload',
+        ])
+        lines.extend(self._emit_table_read_lines('pulse1_timer_hi', mapper, table_bank))
+        lines.extend([
+            '    ora #$08               ; Set length reload for new notes',
+            '    sta $4003',
+            '    rts',
+            '    ',
+            '@silence:',
+            '    ; Silence the channel',
+            '    lda #$30               ; Zero volume, duty 0',
+            '    sta $4000',
+            '    rts',
+            '    ',
+            '@sustain:',
+            '    ; Note is sustaining - do nothing to avoid phase reset',
+            '    rts',
+            '.endproc',
+            ''
+        ])
+
+    def _emit_pulse2_proc(self, lines, mapper, table_bank, bank_size):
+        """Emit the play_pulse2 playback subroutine."""
+        lines.extend([
+            '.proc play_pulse2',
+            '    ; Get note number for this frame',
+        ])
+        lines.extend(self._emit_table_read_lines('pulse2_note', mapper, table_bank))
+        lines.extend([
+            '    ',
+            '    ; Check if note changed',
+            '    cmp last_pulse2_note',
+        ])
+        lines.extend(self._emit_safe_beq('@sustain', 'p2_sustain', bank_size))
+        lines.extend([
+            '    sta last_pulse2_note   ; NB: STA does not affect Z',
+            '    cmp #0                 ; re-test the note (A still holds it); STA left the stale CMP flags (#66/#107)',
+            '    ',
+            '    ; Note changed - check if silence',
+        ])
+        lines.extend(self._emit_safe_beq('@silence', 'p2_silence', bank_size))
+        lines.extend([
+            '    ',
+            '    ; New note - write full channel state',
+            '    ; Get and write control byte',
+        ])
+        lines.extend(self._emit_table_read_lines('pulse2_control', mapper, table_bank))
+        lines.extend([
+            '    sta $4004',
+            '    ',
+            '    ; Get and write timer low',
+        ])
+        lines.extend(self._emit_table_read_lines('pulse2_timer_lo', mapper, table_bank))
+        lines.extend([
+            '    sta $4006',
+            '    ',
+            '    ; Get and write timer high',
+        ])
+        lines.extend(self._emit_table_read_lines('pulse2_timer_hi', mapper, table_bank))
+        lines.extend([
+            '    ora #$08',
+            '    sta $4007',
+            '    rts',
+            '    ',
+            '@silence:',
+            '    lda #$30',
+            '    sta $4004',
+            '    rts',
+            '    ',
+            '@sustain:',
+            '    rts',
+            '.endproc',
+            ''
+        ])
+
+    def _emit_triangle_proc(self, lines, mapper, table_bank, bank_size):
+        """Emit the play_triangle playback subroutine."""
+        lines.extend([
+            '.proc play_triangle',
+            '    ; Get note number for this frame',
+        ])
+        lines.extend(self._emit_table_read_lines('triangle_note', mapper, table_bank))
+        lines.extend([
+            '    ',
+            '    ; Check if note changed',
+            '    cmp last_triangle_note',
+        ])
+        lines.extend(self._emit_safe_beq('@sustain', 'tri_sustain', bank_size))
+        lines.extend([
+            '    sta last_triangle_note ; NB: STA does not affect Z',
+            '    cmp #0                 ; re-test the note (A still holds it); STA left the stale CMP flags (#66/#107)',
+            '    ',
+            '    ; Note changed - check if silence',
+        ])
+        lines.extend(self._emit_safe_beq('@silence', 'tri_silence', bank_size))
+        lines.extend([
+            '    ',
+            '    ; New note - write full channel state',
+            '    ; Get and write control byte',
+        ])
+        lines.extend(self._emit_table_read_lines('triangle_control', mapper, table_bank))
+        lines.extend([
+            '    sta $4008',
+            '    ',
+            '    ; Get and write timer low',
+        ])
+        lines.extend(self._emit_table_read_lines('triangle_timer_lo', mapper, table_bank))
+        lines.extend([
+            '    sta $400A',
+            '    ',
+            '    ; Get and write timer high',
+        ])
+        lines.extend(self._emit_table_read_lines('triangle_timer_hi', mapper, table_bank))
+        lines.extend([
+            '    ora #$08',
+            '    sta $400B',
+            '    rts',
+            '    ',
+            '@silence:',
+            '    lda #$00',
+            '    sta $4008',
+            '    rts',
+            '    ',
+            '@sustain:',
+            '    rts',
+            '.endproc',
+            ''
+        ])
+
+    def _emit_noise_proc(self, lines, mapper, table_bank, bank_size):
+        """Emit the play_noise playback subroutine."""
+        lines.extend([
+            '.proc play_noise',
+            '    ; Index noise_note[frame_counter]',
+        ])
+        lines.extend(self._emit_table_read_lines('noise_note', mapper, table_bank))
+        lines.extend(self._emit_safe_beq('@silence', 'noise_silence', bank_size,
+                                          '; note 0 -> silence'))
+        lines.extend([
+            '    ; Active hit -- rewrite $400C/$400E/$400F every frame from',
+            '    ; the tables, even while the period is unchanged from the',
+            '    ; last frame. The length counter is always halted and constant',
+            '    ; volume always set (#162/NH-19), so there is no hardware',
+            '    ; decay to lean on -- emulator_core.py bakes a software volume',
+            '    ; ramp into noise_ctrl per frame, and $400E/$400F writes never',
+            '    ; reset the noise phase (docs/APU_NOISE_REFERENCE.md section 6),',
+            '    ; so writing unconditionally is both safe and required.',
+        ])
+        lines.extend(self._emit_table_read_lines('noise_ctrl', mapper, table_bank))
+        lines.extend([
+            '    sta $400C',
+            '    ; $400E from noise_reg (mode bit 7 | period)',
+        ])
+        lines.extend(self._emit_table_read_lines('noise_reg', mapper, table_bank))
+        lines.extend([
+            '    sta $400E',
+            '    lda #$08             ; length counter load (harmless: halted)',
+            '    sta $400F',
+            '    rts',
+            '@silence:',
+            '    lda #$30             ; constant volume 0 - silence noise',
+            '    sta $400C',
+            '    rts',
+            '.endproc',
+            ''
+        ])
+
+    def _emit_dpcm_proc(self, lines, mapper, table_bank, bank_size):
+        """Emit the play_dpcm playback subroutine. Mirrors audio_engine.asm
+        @write_dpcm: trigger a one-shot sample on a new note
+        (sample_id = note-1), reusing the packer sample tables."""
+        lines.extend([
+            '.proc play_dpcm',
+            '    ; Index dpcm_note[frame_counter]',
+        ])
+        lines.extend(self._emit_table_read_lines('dpcm_note', mapper, table_bank))
+        lines.extend([
+            '    cmp last_dpcm_note',
+        ])
+        lines.extend(self._emit_safe_beq('@done', 'dpcm_unchanged', bank_size,
+                                          '; unchanged - sample already triggered'))
+        lines.extend([
+            '    sta last_dpcm_note   ; NB: STA does not affect Z',
+            '    cmp #0               ; re-test the note (A still holds it); STA left the stale CMP flags (#66)',
+        ])
+        lines.extend(self._emit_safe_beq('@done', 'dpcm_rest', bank_size,
+                                          '; note 0 (rest) -> nothing to trigger, no dpcm_*_table[$FF] over-read'))
+        lines.extend([
+            '    ; New sample: sample_id = note - 1',
+            '    sec',
+            '    sbc #1',
+            '    tay',
+            '    ; A $00 length_reg means this dense id was never packed',
+            '    ; (its .dmc file was missing at pack time, #367/DP-DPCM-05)',
+            '    ; -- skip the trigger so we don\'t read a stray 1-byte',
+            '    ; fragment of bank 0 / $C000 in place of the intended drum.',
+            '    lda dpcm_len_table,y',
+        ])
+        lines.extend(self._emit_safe_beq('@done', 'dpcm_unpacked', bank_size,
+                                          '; sample was never packed (missing .dmc)'))
+        lines.extend([
+            '    ; Stop DPCM to reset the byte counter',
+            '    lda #$0F',
+            '    sta $4015',
+            '    ; MMC3: swap DPCM sample bank into $C000 (R6)',
+            '    lda #$46',
+            '    sta $8000',
+            '    lda dpcm_bank_table,y',
+            '    sta $8001',
+            '    ; Load sample parameters',
+            '    lda dpcm_pitch_table,y',
+            '    sta $4010',
+            '    lda dpcm_addr_table,y',
+            '    sta $4012',
+            '    lda dpcm_len_table,y',
+            '    sta $4013',
+            '    ; Trigger playback (enable DMC, bit 4)',
+            '    lda #$1F',
+            '    sta $4015',
+            '@done:',
+            '    rts',
+            '.endproc',
+            ''
+        ])
+
     def export_direct_frames(self, frames, output_path, standalone=True, mapper=None):
         """Export frames data directly using efficient lookup tables.
 
@@ -324,141 +727,27 @@ class CA65Exporter(BaseExporter):
             lines.append('')
             current_segment[0] = 'RODATA'
 
-        # Create sparse frame lookup tables for each channel
-        # Format: For each active frame, store (note, control_byte, timer_lo, timer_hi)
-        for channel_name in ['pulse1', 'pulse2', 'triangle']:
-            if channel_name not in all_channels:
-                continue
-
-            channel_data = all_channels[channel_name]
-            _ensure_segment(f'{channel_name}_note')
-            lines.append(f'; {channel_name.upper()} Frame Data Tables')
-
-            # Create arrays that are indexed by frame number
-            # We use $00 for empty frames (silent)
-            note_table = []
-            control_table = []
-            timer_lo_table = []
-            timer_hi_table = []
-
-            for frame_num in range(max_frame + 1):
-                # Check if this frame has data (keys can be int or str)
-                if frame_num in channel_data:
-                    frame_data = channel_data[frame_num]
-                elif str(frame_num) in channel_data:
-                    frame_data = channel_data[str(frame_num)]
-                else:
-                    # Empty frame - silence
-                    note_table.append("$00")
-                    control_table.append("$00")
-                    timer_lo_table.append("$00")
-                    timer_hi_table.append("$00")
-                    continue
-
-                # Frame has data - process it
-                pitch = frame_data.get('pitch', 0)
-                note = frame_data.get('note', 0)
-
-                # Triangle channel uses different control format
-                if channel_name == 'triangle':
-                    # Triangle $4008: bit 7 = linear-counter control flag, bits
-                    # 6-0 = reload value (docs/APU_TRIANGLE_REFERENCE.md §4). The
-                    # triangle has no volume control (§1), so `volume` here is
-                    # only a gate: 0 -> silent (clear the flag, reload 0), else
-                    # play at a fixed max reload with the flag set (0xFF, like the
-                    # bytecode engine). The old `0x80 | volume*7` scaled a halted
-                    # counter's reload by loudness — inert but a latent trap
-                    # (clearing bit 7 would turn it into a wrong note-length
-                    # knob) (#364/NH-HW-04).
-                    volume = frame_data.get('volume', 0)
-                    if volume == 0:
-                        control = 0x00
-                    else:
-                        control = TRIANGLE_CONTROL_ON
-                else:
-                    # Pulse channels: use provided control byte
-                    control = frame_data.get('control', 0)
-
-                # Re-assert the audible 11-bit timer range before the byte split.
-                # t < 8 silences pulse/triangle (APU_PULSE_REFERENCE §3/§7), so a
-                # nonzero pitch is floored at 8; a true rest (pitch 0) stays 0.
-                if pitch:
-                    pitch = max(8, min(pitch, 0x07FF))
-
-                note_table.append(f"${note:02X}")
-                control_table.append(f"${control:02X}")
-                timer_lo_table.append(f"${pitch & 0xFF:02X}")
-                timer_hi_table.append(f"${((pitch >> 8) & 0x07):02X}")
-
-            # Write tables in chunks of 16 bytes per line
-            _ensure_segment(f'{channel_name}_note')
-            lines.append(f'{channel_name}_note:')
-            for i in range(0, len(note_table), 16):
-                chunk = note_table[i:i+16]
-                lines.append(f'    .byte {", ".join(chunk)}')
-
-            _ensure_segment(f'{channel_name}_control')
-            lines.append(f'{channel_name}_control:')
-            for i in range(0, len(control_table), 16):
-                chunk = control_table[i:i+16]
-                lines.append(f'    .byte {", ".join(chunk)}')
-
-            _ensure_segment(f'{channel_name}_timer_lo')
-            lines.append(f'{channel_name}_timer_lo:')
-            for i in range(0, len(timer_lo_table), 16):
-                chunk = timer_lo_table[i:i+16]
-                lines.append(f'    .byte {", ".join(chunk)}')
-
-            _ensure_segment(f'{channel_name}_timer_hi')
-            lines.append(f'{channel_name}_timer_hi:')
-            for i in range(0, len(timer_hi_table), 16):
-                chunk = timer_hi_table[i:i+16]
-                lines.append(f'    .byte {", ".join(chunk)}')
-            lines.append('')
-
         def _emit_byte_table(label, values):
             _ensure_segment(label)
             lines.append(f'{label}:')
             for i in range(0, len(values), 16):
                 lines.append(f'    .byte {", ".join(values[i:i+16])}')
 
-        # Noise frame tables (#9). note = 4-bit period index (0 = rest/change
-        # sentinel); ctrl = $400C byte ($30 | volume); reg = $400E byte
-        # (mode bit 7 | period). Drum hits are sparse, so empty frames are rests.
-        if has_noise:
-            channel_data = all_channels['noise']
-            n_note, n_ctrl, n_reg = [], [], []
-            for frame_num in range(max_frame + 1):
-                fd = channel_data.get(frame_num, channel_data.get(str(frame_num)))
-                if not fd or fd.get('volume', 0) == 0:
-                    n_note.append('$00'); n_ctrl.append('$00'); n_reg.append('$00')
-                    continue
-                period = fd.get('note', 0) & 0x0F
-                mode = (fd.get('control', 0) >> 6) & 0x01
-                vol = fd.get('volume', 0) & 0x0F
-                n_note.append(f'${period:02X}')
-                n_ctrl.append(f'${0x30 | vol:02X}')
-                n_reg.append(f'${(mode << 7) | period:02X}')
-            lines.append('; NOISE Frame Data Tables')
-            _emit_byte_table('noise_note', n_note)
-            _emit_byte_table('noise_ctrl', n_ctrl)
-            _emit_byte_table('noise_reg', n_reg)
-            lines.append('')
+        # Create sparse frame lookup tables for each channel (#136/TD-11:
+        # extracted to _emit_pulse_or_triangle_table/_emit_noise_table/
+        # _emit_dpcm_table -- see the comment above those methods).
+        # Format: For each active frame, store (note, control_byte, timer_lo, timer_hi)
+        for channel_name in ['pulse1', 'pulse2', 'triangle']:
+            if channel_name not in all_channels:
+                continue
+            self._emit_pulse_or_triangle_table(
+                lines, channel_name, all_channels[channel_name], max_frame, _ensure_segment)
 
-        # DPCM frame tables (#9). note = sample_id + 1 (0 = rest/change sentinel).
-        # The trigger reuses the packer/engine sample tables (dpcm_*_table).
+        if has_noise:
+            self._emit_noise_table(lines, all_channels['noise'], max_frame, _emit_byte_table)
+
         if has_dpcm:
-            channel_data = all_channels['dpcm']
-            d_note = []
-            for frame_num in range(max_frame + 1):
-                fd = channel_data.get(frame_num, channel_data.get(str(frame_num)))
-                if not fd or fd.get('volume', 0) == 0:
-                    d_note.append('$00')
-                    continue
-                d_note.append(f'${fd.get("note", 0) & 0xFF:02X}')
-            lines.append('; DPCM Frame Data Tables')
-            _emit_byte_table('dpcm_note', d_note)
-            lines.append('')
+            self._emit_dpcm_table(lines, all_channels['dpcm'], max_frame, _emit_byte_table)
 
         # Code segment with efficient playback routine
         lines.append('.segment "CODE"')
@@ -617,263 +906,25 @@ class CA65Exporter(BaseExporter):
             ''
         ])
 
-        # Add channel-specific playback subroutines
+        # Add channel-specific playback subroutines (#136/TD-11: extracted
+        # to _emit_pulse1_proc/_emit_pulse2_proc/_emit_triangle_proc/
+        # _emit_noise_proc/_emit_dpcm_proc -- see the comment above those
+        # methods; pulse1/pulse2 keep their historical comment asymmetry
+        # verbatim so the emitted bytes are unchanged).
         if 'pulse1' in all_channels:
-            lines.extend([
-                '.proc play_pulse1',
-                '    ; Get note number for this frame',
-            ])
-            lines.extend(self._emit_table_read_lines('pulse1_note', mapper, table_bank))
-            lines.extend([
-                '    ',
-                '    ; Check if note changed',
-                '    cmp last_pulse1_note',
-            ])
-            lines.extend(self._emit_safe_beq('@sustain', 'p1_sustain', bank_size,
-                                              "; Same note - sustain, don't retrigger"))
-            lines.extend([
-                '    sta last_pulse1_note   ; NB: STA does not affect Z',
-                '    cmp #0                 ; re-test the note (A still holds it); STA left the stale CMP flags (#66/#107)',
-                '    ',
-                '    ; Note changed - check if new note is silence',
-            ])
-            lines.extend(self._emit_safe_beq('@silence', 'p1_silence', bank_size,
-                                              '; If note is 0, silence the channel'))
-            lines.extend([
-                '    ',
-                '    ; New note - write full channel state',
-                '    ; Get and write control byte',
-            ])
-            lines.extend(self._emit_table_read_lines('pulse1_control', mapper, table_bank))
-            lines.extend([
-                '    sta $4000',
-                '    ',
-                '    ; Get and write timer low',
-            ])
-            lines.extend(self._emit_table_read_lines('pulse1_timer_lo', mapper, table_bank))
-            lines.extend([
-                '    sta $4002',
-                '    ',
-                '    ; Get and write timer high with length counter reload',
-            ])
-            lines.extend(self._emit_table_read_lines('pulse1_timer_hi', mapper, table_bank))
-            lines.extend([
-                '    ora #$08               ; Set length reload for new notes',
-                '    sta $4003',
-                '    rts',
-                '    ',
-                '@silence:',
-                '    ; Silence the channel',
-                '    lda #$30               ; Zero volume, duty 0',
-                '    sta $4000',
-                '    rts',
-                '    ',
-                '@sustain:',
-                '    ; Note is sustaining - do nothing to avoid phase reset',
-                '    rts',
-                '.endproc',
-                ''
-            ])
+            self._emit_pulse1_proc(lines, mapper, table_bank, bank_size)
 
         if 'pulse2' in all_channels:
-            lines.extend([
-                '.proc play_pulse2',
-                '    ; Get note number for this frame',
-            ])
-            lines.extend(self._emit_table_read_lines('pulse2_note', mapper, table_bank))
-            lines.extend([
-                '    ',
-                '    ; Check if note changed',
-                '    cmp last_pulse2_note',
-            ])
-            lines.extend(self._emit_safe_beq('@sustain', 'p2_sustain', bank_size))
-            lines.extend([
-                '    sta last_pulse2_note   ; NB: STA does not affect Z',
-                '    cmp #0                 ; re-test the note (A still holds it); STA left the stale CMP flags (#66/#107)',
-                '    ',
-                '    ; Note changed - check if silence',
-            ])
-            lines.extend(self._emit_safe_beq('@silence', 'p2_silence', bank_size))
-            lines.extend([
-                '    ',
-                '    ; New note - write full channel state',
-                '    ; Get and write control byte',
-            ])
-            lines.extend(self._emit_table_read_lines('pulse2_control', mapper, table_bank))
-            lines.extend([
-                '    sta $4004',
-                '    ',
-                '    ; Get and write timer low',
-            ])
-            lines.extend(self._emit_table_read_lines('pulse2_timer_lo', mapper, table_bank))
-            lines.extend([
-                '    sta $4006',
-                '    ',
-                '    ; Get and write timer high',
-            ])
-            lines.extend(self._emit_table_read_lines('pulse2_timer_hi', mapper, table_bank))
-            lines.extend([
-                '    ora #$08',
-                '    sta $4007',
-                '    rts',
-                '    ',
-                '@silence:',
-                '    lda #$30',
-                '    sta $4004',
-                '    rts',
-                '    ',
-                '@sustain:',
-                '    rts',
-                '.endproc',
-                ''
-            ])
+            self._emit_pulse2_proc(lines, mapper, table_bank, bank_size)
 
         if 'triangle' in all_channels:
-            lines.extend([
-                '.proc play_triangle',
-                '    ; Get note number for this frame',
-            ])
-            lines.extend(self._emit_table_read_lines('triangle_note', mapper, table_bank))
-            lines.extend([
-                '    ',
-                '    ; Check if note changed',
-                '    cmp last_triangle_note',
-            ])
-            lines.extend(self._emit_safe_beq('@sustain', 'tri_sustain', bank_size))
-            lines.extend([
-                '    sta last_triangle_note ; NB: STA does not affect Z',
-                '    cmp #0                 ; re-test the note (A still holds it); STA left the stale CMP flags (#66/#107)',
-                '    ',
-                '    ; Note changed - check if silence',
-            ])
-            lines.extend(self._emit_safe_beq('@silence', 'tri_silence', bank_size))
-            lines.extend([
-                '    ',
-                '    ; New note - write full channel state',
-                '    ; Get and write control byte',
-            ])
-            lines.extend(self._emit_table_read_lines('triangle_control', mapper, table_bank))
-            lines.extend([
-                '    sta $4008',
-                '    ',
-                '    ; Get and write timer low',
-            ])
-            lines.extend(self._emit_table_read_lines('triangle_timer_lo', mapper, table_bank))
-            lines.extend([
-                '    sta $400A',
-                '    ',
-                '    ; Get and write timer high',
-            ])
-            lines.extend(self._emit_table_read_lines('triangle_timer_hi', mapper, table_bank))
-            lines.extend([
-                '    ora #$08',
-                '    sta $400B',
-                '    rts',
-                '    ',
-                '@silence:',
-                '    lda #$00',
-                '    sta $4008',
-                '    rts',
-                '    ',
-                '@sustain:',
-                '    rts',
-                '.endproc',
-                ''
-            ])
+            self._emit_triangle_proc(lines, mapper, table_bank, bank_size)
 
         if has_noise:
-            lines.extend([
-                '.proc play_noise',
-                '    ; Index noise_note[frame_counter]',
-            ])
-            lines.extend(self._emit_table_read_lines('noise_note', mapper, table_bank))
-            lines.extend(self._emit_safe_beq('@silence', 'noise_silence', bank_size,
-                                              '; note 0 -> silence'))
-            lines.extend([
-                '    ; Active hit -- rewrite $400C/$400E/$400F every frame from',
-                '    ; the tables, even while the period is unchanged from the',
-                '    ; last frame. The length counter is always halted and constant',
-                '    ; volume always set (#162/NH-19), so there is no hardware',
-                '    ; decay to lean on -- emulator_core.py bakes a software volume',
-                '    ; ramp into noise_ctrl per frame, and $400E/$400F writes never',
-                '    ; reset the noise phase (docs/APU_NOISE_REFERENCE.md section 6),',
-                '    ; so writing unconditionally is both safe and required.',
-            ])
-            lines.extend(self._emit_table_read_lines('noise_ctrl', mapper, table_bank))
-            lines.extend([
-                '    sta $400C',
-                '    ; $400E from noise_reg (mode bit 7 | period)',
-            ])
-            lines.extend(self._emit_table_read_lines('noise_reg', mapper, table_bank))
-            lines.extend([
-                '    sta $400E',
-                '    lda #$08             ; length counter load (harmless: halted)',
-                '    sta $400F',
-                '    rts',
-                '@silence:',
-                '    lda #$30             ; constant volume 0 - silence noise',
-                '    sta $400C',
-                '    rts',
-                '.endproc',
-                ''
-            ])
+            self._emit_noise_proc(lines, mapper, table_bank, bank_size)
 
         if has_dpcm:
-            # Mirrors audio_engine.asm @write_dpcm: trigger a one-shot sample on
-            # a new note (sample_id = note-1), reusing the packer sample tables.
-            lines.extend([
-                '.proc play_dpcm',
-                '    ; Index dpcm_note[frame_counter]',
-            ])
-            lines.extend(self._emit_table_read_lines('dpcm_note', mapper, table_bank))
-            lines.extend([
-                '    cmp last_dpcm_note',
-            ])
-            lines.extend(self._emit_safe_beq('@done', 'dpcm_unchanged', bank_size,
-                                              '; unchanged - sample already triggered'))
-            lines.extend([
-                '    sta last_dpcm_note   ; NB: STA does not affect Z',
-                '    cmp #0               ; re-test the note (A still holds it); STA left the stale CMP flags (#66)',
-            ])
-            lines.extend(self._emit_safe_beq('@done', 'dpcm_rest', bank_size,
-                                              '; note 0 (rest) -> nothing to trigger, no dpcm_*_table[$FF] over-read'))
-            lines.extend([
-                '    ; New sample: sample_id = note - 1',
-                '    sec',
-                '    sbc #1',
-                '    tay',
-                '    ; A $00 length_reg means this dense id was never packed',
-                '    ; (its .dmc file was missing at pack time, #367/DP-DPCM-05)',
-                '    ; -- skip the trigger so we don\'t read a stray 1-byte',
-                '    ; fragment of bank 0 / $C000 in place of the intended drum.',
-                '    lda dpcm_len_table,y',
-            ])
-            lines.extend(self._emit_safe_beq('@done', 'dpcm_unpacked', bank_size,
-                                              '; sample was never packed (missing .dmc)'))
-            lines.extend([
-                '    ; Stop DPCM to reset the byte counter',
-                '    lda #$0F',
-                '    sta $4015',
-                '    ; MMC3: swap DPCM sample bank into $C000 (R6)',
-                '    lda #$46',
-                '    sta $8000',
-                '    lda dpcm_bank_table,y',
-                '    sta $8001',
-                '    ; Load sample parameters',
-                '    lda dpcm_pitch_table,y',
-                '    sta $4010',
-                '    lda dpcm_addr_table,y',
-                '    sta $4012',
-                '    lda dpcm_len_table,y',
-                '    sta $4013',
-                '    ; Trigger playback (enable DMC, bit 4)',
-                '    lda #$1F',
-                '    sta $4015',
-                '@done:',
-                '    rts',
-                '.endproc',
-                ''
-            ])
+            self._emit_dpcm_proc(lines, mapper, table_bank, bank_size)
 
         lines.extend([
             '.proc irq',
@@ -1036,7 +1087,12 @@ class CA65Exporter(BaseExporter):
         lines.append('; ---------------------------------------------------------------------------')
         lines.append('.segment "DPCM"')
         lines.append('.align 64')
-        lines.append('; TODO: Insert actual .incbin statements for DPCM files here')
+        # Deliberately left empty (#137/TD-08). DPCM sample data and lookup
+        # tables are packed and appended to this music.asm by DpcmPacker
+        # (dpcm_sampler/dpcm_packer.py) into the swappable DPCM_NN bank
+        # segments -- not this fixed "DPCM" segment (mapped to the $C000/R6
+        # window's default bank, `optional = yes` in the mapper's linker
+        # config, mappers/mmc3.py) -- so there is nothing to .incbin here.
         lines.append('')
         lines.append('; ---------------------------------------------------------------------------')
         lines.append('; Macro & Sequence Data (Mapped to fixed $8000 bank)')

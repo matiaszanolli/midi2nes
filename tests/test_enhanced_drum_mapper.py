@@ -198,6 +198,69 @@ class TestDpcmSampleNameFallback:
         # bug as the non-pattern fallback above.
         assert noise_out[0]["note"] == 90
 
+    def test_pattern_event_honors_use_advanced_false(self, curated_index_path):
+        """Regression (#202/D-16): _handle_pattern_event called
+        _resolve_dpcm_sample_name with no third argument, so it always used
+        the default use_advanced=True regardless of what map_drums's caller
+        passed -- a caller explicitly asking for use_advanced=False still
+        got advanced velocity-split resolution for any pattern-matched hit."""
+        # This index has both the plain role name and the advanced
+        # velocity-split name, so the two modes resolve to different ids.
+        index = json.loads(open(curated_index_path).read())
+        index["kick_soft"] = {"id": 10, "filename": "kick_soft.dmc"}
+        path = curated_index_path.replace("curated_index.json", "curated_index2.json")
+        with open(path, "w") as f:
+            json.dump(index, f)
+        mapper = EnhancedDrumMapper(dpcm_index_path=path)
+
+        pattern_info = {
+            "id": "p0",
+            "info": {"template": [(36, 30)]},  # kick, soft velocity
+            "position": 0,
+        }
+
+        # use_advanced=True (default): resolves via ADVANCED_MIDI_DRUM_MAPPING's
+        # velocity split -> "kick_soft" (id 10).
+        dpcm_out, _ = mapper._handle_pattern_event(
+            pattern_info, midi_note=36, velocity=30, frame=5, use_advanced=True
+        )
+        assert dpcm_out[0]["sample_id"] == 10
+
+        # use_advanced=False must skip the velocity split entirely and
+        # resolve via DEFAULT_MIDI_DRUM_MAPPING's plain "kick" (id 0).
+        dpcm_out, _ = mapper._handle_pattern_event(
+            pattern_info, midi_note=36, velocity=30, frame=5, use_advanced=False
+        )
+        assert dpcm_out[0]["sample_id"] == 0
+
+    def test_map_drums_use_advanced_false_reaches_pattern_path(self, curated_index_path):
+        """End-to-end (#202/D-16): map_drums(..., use_advanced=False) must
+        keep that setting for hits that land inside a detected drum
+        pattern, not just the non-pattern path."""
+        index = json.loads(open(curated_index_path).read())
+        index["kick_soft"] = {"id": 10, "filename": "kick_soft.dmc"}
+        path = curated_index_path.replace("curated_index.json", "curated_index3.json")
+        with open(path, "w") as f:
+            json.dump(index, f)
+        mapper = EnhancedDrumMapper(dpcm_index_path=path)
+
+        # A repeating kick+snare pattern so DrumPatternDetector flags later
+        # occurrences as pattern-matched (exercising _handle_pattern_event).
+        midi_events = {
+            9: [
+                {"frame": i * 4 + off, "note": note, "velocity": 30}
+                for i in range(6)
+                for off, note in ((0, 36), (2, 38))
+            ]
+        }
+        dpcm_events, _ = mapper.map_drums(midi_events, use_advanced=False)
+        kick_ids = {e["sample_id"] for e in dpcm_events
+                    if e["frame"] % 4 == 0}
+        # Every kick hit (pattern-matched or not) must resolve to "kick"
+        # (id 0), never the advanced "kick_soft" (id 10) split.
+        assert 10 not in kick_ids
+        assert kick_ids == {0}
+
 
 class TestDpcmRoleAliasFallback:
     """Regression (#315/DP-07, extended by #340/DP-DPCM-01): DEFAULT_MIDI_
