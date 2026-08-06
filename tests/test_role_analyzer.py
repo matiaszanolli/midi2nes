@@ -101,6 +101,28 @@ class TestChannelAssignment(unittest.TestCase):
         self.assertEqual(plan.dpcm_tracks, [0])
         self.assertEqual(plan.dropped_tracks, [])
 
+    def test_drum_track_also_shares_pulse2(self):
+        """Regression (#330/ARR-NEW-6): a drum track must also land in
+        plan.pulse2_tracks (non-exclusively) so GM_DRUM_MAP's PULSE2-mapped
+        percussion (agogo/cuica/mute+open triangle) can actually reach
+        PULSE2 via _route_note instead of always collapsing onto NOISE."""
+        plan = self._assign(
+            self._track(0, role=MusicalRole.PERCUSSION, is_drum=True)
+        )
+        self.assertEqual(plan.pulse2_tracks, [0])
+
+    def test_drum_track_sharing_pulse2_does_not_block_melodic_track(self):
+        """The drum track's PULSE2 share must not be exclusive: a melodic
+        track preferring PULSE2 must still land there (drum sharing doesn't
+        set pulse2_assigned)."""
+        plan = self._assign(
+            self._track(0, role=MusicalRole.PERCUSSION, is_drum=True),
+            self._track(1, NESChannel.PULSE2, MusicalRole.MELODY),
+        )
+        self.assertIn(0, plan.pulse2_tracks)
+        self.assertIn(1, plan.pulse2_tracks)
+        self.assertEqual(plan.dropped_tracks, [])
+
     def test_second_drum_track_is_dropped_not_silent(self):
         """A second drum track finds noise+DPCM both taken and must land in
         dropped_tracks with a note, not vanish silently (#205)."""
@@ -112,6 +134,10 @@ class TestChannelAssignment(unittest.TestCase):
         self.assertEqual(plan.dpcm_tracks, [0])
         self.assertEqual(plan.dropped_tracks, [1])
         self.assertTrue(any("Dropped" in n for n in plan.notes))
+        # A fully-dropped drum track (won neither noise nor DPCM) must not
+        # still pick up a PULSE2 slot (#330/ARR-NEW-6) -- that would
+        # contradict "dropped" and give it a channel assignment anyway.
+        self.assertNotIn(1, plan.pulse2_tracks)
 
     def test_create_arrangement_plan_accounts_for_every_track(self):
         """Public path: every input track ends up assigned or explicitly

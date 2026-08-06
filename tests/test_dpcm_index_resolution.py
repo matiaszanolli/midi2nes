@@ -86,11 +86,15 @@ def test_shipped_index_covers_most_default_drum_roles():
     not a code bug. 18 more role names were aliased to existing, resolvable
     catalog entries whose filenames clearly matched (e.g. GH-HiTom -> tom_high,
     agogohi/agogolo -> agogo_hi/agogo_lo), each under a fresh id so as not to
-    collide with the id the aliased entry already carries. The remaining 14
-    (side_stick, tambourine, splash, vibraslap, whistle/guiro short-vs-long,
-    woodblock hi/lo, cuica mute/open, triangle mute/open) have no
-    unambiguous match in the catalog and are left on the noise fallback
-    rather than guessed."""
+    collide with the id the aliased entry already carries. Of the remaining
+    14 (side_stick, tambourine, splash, vibraslap, whistle/guiro
+    short-vs-long, woodblock hi/lo, cuica mute/open, triangle mute/open),
+    none has a literal same-name catalog entry, but DPCM_ROLE_ALIASES
+    (dpcm_sampler/drum_engine.py, checked separately by
+    test_enhanced_drum_mapper.py's TestDpcmRoleAliasFallback) now resolves
+    all but vibraslap through EnhancedDrumMapper._resolve_dpcm_sample_name
+    -- this test only checks the DEFAULT_MIDI_DRUM_MAPPING-name-is-a-literal-
+    key case, so it doesn't move when an alias is added."""
     from dpcm_sampler.drum_engine import DEFAULT_MIDI_DRUM_MAPPING
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -1,9 +1,11 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 import json
+import os
 from tracker.pattern_detector import DrumPatternDetector
 from .dpcm_sample_manager import DPCMSampleManager
 from .drum_engine import DEFAULT_MIDI_DRUM_MAPPING, ADVANCED_MIDI_DRUM_MAPPING, DPCM_ROLE_ALIASES
+from .generate_dpcm_index import resolve_dpcm_sample_path
 
 
 @dataclass
@@ -217,6 +219,46 @@ class EnhancedDrumMapper:
         
         self.dpcm_index_path = dpcm_index_path
         self.sample_index = self._load_sample_index()
+        # Real on-disk sizes for allocate_sample (#341/DP-DPCM-02), keyed by
+        # sample name so a drum reused many times in one song only costs one
+        # os.path.getsize call.
+        self._sample_size_cache: Dict[str, int] = {}
+
+    def _real_sample_size(self, sample_name: str, sample_data: Dict) -> Optional[int]:
+        """Real on-disk size (bytes) for a catalog sample, or None if it
+        doesn't resolve to a file.
+
+        Real dpcm_index.json entries carry only 'id' + 'filename' -- no
+        'length' -- so DPCMSampleManager.allocate_sample always fell back to
+        its placeholder default (1024) for every sample, making its
+        memory-limit/eviction accounting operate on identical fictional
+        sizes regardless of what was actually packed (#341/DP-DPCM-02).
+        Resolving the real file size here (mirroring
+        generate_dpcm_index.resolve_dpcm_sample_path, the same resolution
+        the packer itself uses) makes that accounting reflect reality.
+        """
+        if sample_name in self._sample_size_cache:
+            return self._sample_size_cache[sample_name]
+        filename = sample_data.get('filename')
+        if not filename:
+            return None
+        path = resolve_dpcm_sample_path(filename, self.dpcm_index_path)
+        if path is None:
+            return None
+        size = os.path.getsize(path)
+        self._sample_size_cache[sample_name] = size
+        return size
+
+    def _allocate(self, sample_name: str, sample_data: Dict) -> None:
+        """Shared allocate_sample call site (#341/DP-DPCM-02): backfills the
+        real on-disk size, since dpcm_index.json entries never carry one, so
+        both callers (the regular and pattern-reuse paths) get the same
+        accurate accounting instead of one of them silently staying on the
+        placeholder default."""
+        real_size = self._real_sample_size(sample_name, sample_data)
+        if real_size is not None and 'length' not in sample_data:
+            sample_data = {**sample_data, 'length': real_size}
+        self.sample_manager.allocate_sample(sample_name, sample_data)
 
     def _noise_mode_for_note(self, midi_note: int) -> int:
         """Mode bit (0 or 1) for a GM percussion note routed to the noise
@@ -305,7 +347,7 @@ class EnhancedDrumMapper:
                     # (sorted by dpcm_index.json 'id'), so it is the value the
                     # engine uses to index dpcm_*_table. The manager's allocation
                     # counter is a different id space (see issue #65).
-                    self.sample_manager.allocate_sample(sample_name, sample_data)
+                    self._allocate(sample_name, sample_data)
 
                     dpcm_events.append({
                         "frame": frame,
@@ -368,7 +410,7 @@ class EnhancedDrumMapper:
             sample_data = self.sample_index[sample_name]
             # Index id (not the manager's allocation counter) indexes the packer
             # tables — see issue #65.
-            self.sample_manager.allocate_sample(sample_name, sample_data)
+            self._allocate(sample_name, sample_data)
 
             dpcm_out.append({
                 "frame": frame,

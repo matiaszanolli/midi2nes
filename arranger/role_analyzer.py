@@ -319,6 +319,23 @@ class VoiceRoleAnalyzer:
                     plan.dpcm_tracks.append(track.track_id)
                     dpcm_assigned = True
                     assigned = True
+                if assigned:
+                    # Also share PULSE2 (not exclusive -- deliberately
+                    # doesn't touch pulse2_assigned, so it never blocks a
+                    # melodic track from claiming/falling back to PULSE2
+                    # below) so GM_DRUM_MAP's PULSE2-mapped percussion
+                    # (agogo/cuica/mute+open triangle) can actually reach
+                    # PULSE2 instead of always collapsing onto NOISE
+                    # (#330/ARR-NEW-6). Safe because _allocate_pulse's
+                    # arpeggiation already interleaves multiple simultaneous
+                    # notes on one physical pulse channel -- unlike
+                    # TRIANGLE, which stays exclusively bass-owned below
+                    # since _allocate_triangle is monophonic (naive
+                    # lowest-note pick) and has no such collision handling.
+                    # Gated on `assigned` (not unconditional) so a drum
+                    # track that got neither noise nor DPCM -- fully dropped
+                    # (#205/ARR-10) -- doesn't still pick up a PULSE2 slot.
+                    plan.pulse2_tracks.append(track.track_id)
 
             else:
                 # Try preferred channel first

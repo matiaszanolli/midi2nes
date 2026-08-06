@@ -1216,13 +1216,20 @@ GM_DRUM_MAP: Dict[int, DrumMapping] = {
     44: DrumMapping("Pedal Hi-Hat", NESChannel.NOISE, PlayStyle.STACCATO, 5, noise_period=1),
     46: DrumMapping("Open Hi-Hat", NESChannel.NOISE, PlayStyle.SUSTAIN, 6, noise_period=2),
 
-    # Toms - Triangle
-    41: DrumMapping("Low Floor Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5),
-    43: DrumMapping("High Floor Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5),
-    45: DrumMapping("Low Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5),
-    47: DrumMapping("Low-Mid Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5),
-    48: DrumMapping("Hi-Mid Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5),
-    50: DrumMapping("High Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5),
+    # Toms - mapped to Triangle, but triangle is exclusively bass-owned
+    # (role_analyzer._assign_channels never grants it to a drum track --
+    # monophonic min()-pick in _allocate_triangle would otherwise silently
+    # clobber or lose to the real bass line, #330/ARR-NEW-6) so these always
+    # render on NOISE in practice. noise_period gives each tom a distinct,
+    # descending-pitch period (deeper than the hi-hats/cymbals above) instead
+    # of falling to the generic "Unknown Drum" period 5 and sounding
+    # indistinguishable from any other unmapped hit.
+    41: DrumMapping("Low Floor Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5, noise_period=11),
+    43: DrumMapping("High Floor Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5, noise_period=10),
+    45: DrumMapping("Low Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5, noise_period=9),
+    47: DrumMapping("Low-Mid Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5, noise_period=8),
+    48: DrumMapping("Hi-Mid Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5, noise_period=7),
+    50: DrumMapping("High Tom", NESChannel.TRIANGLE, PlayStyle.STACCATO, 5, noise_period=6),
 
     # Cymbals - Noise
     49: DrumMapping("Crash Cymbal 1", NESChannel.NOISE, PlayStyle.SUSTAIN, 4, noise_period=6),
@@ -1247,14 +1254,20 @@ GM_DRUM_MAP: Dict[int, DrumMapping] = {
     64: DrumMapping("Low Conga", NESChannel.NOISE, PlayStyle.STACCATO, 3, noise_period=6),
     65: DrumMapping("High Timbale", NESChannel.NOISE, PlayStyle.STACCATO, 3, noise_period=1),
     66: DrumMapping("Low Timbale", NESChannel.NOISE, PlayStyle.STACCATO, 3, noise_period=3),
+    # Agogo - PULSE2-mapped and (unlike the toms/whistles above) actually
+    # reaches PULSE2: role_analyzer._assign_channels shares it with drum
+    # tracks and _allocate_pulse's existing arpeggiation safely interleaves
+    # it with any melodic PULSE2 use, so it doesn't need a noise_period
+    # fallback (#330/ARR-NEW-6).
     67: DrumMapping("High Agogo", NESChannel.PULSE2, PlayStyle.STACCATO, 2),
     68: DrumMapping("Low Agogo", NESChannel.PULSE2, PlayStyle.STACCATO, 2),
     69: DrumMapping("Cabasa", NESChannel.NOISE, PlayStyle.STACCATO, 2, noise_period=0),
     70: DrumMapping("Maracas", NESChannel.NOISE, PlayStyle.STACCATO, 2, noise_period=0),
 
-    # Whistles
-    71: DrumMapping("Short Whistle", NESChannel.TRIANGLE, PlayStyle.STACCATO, 2),
-    72: DrumMapping("Long Whistle", NESChannel.TRIANGLE, PlayStyle.SUSTAIN, 2),
+    # Whistles - same TRIANGLE-mapped/always-NOISE situation as the toms
+    # above; bright noise_period since a whistle is a high, piercing tone.
+    71: DrumMapping("Short Whistle", NESChannel.TRIANGLE, PlayStyle.STACCATO, 2, noise_period=1),
+    72: DrumMapping("Long Whistle", NESChannel.TRIANGLE, PlayStyle.SUSTAIN, 2, noise_period=1),
 
     # Guiro, claves
     73: DrumMapping("Short Guiro", NESChannel.NOISE, PlayStyle.STACCATO, 2, noise_period=1),
@@ -1263,7 +1276,8 @@ GM_DRUM_MAP: Dict[int, DrumMapping] = {
     76: DrumMapping("Hi Wood Block", NESChannel.NOISE, PlayStyle.STACCATO, 3, noise_period=0),
     77: DrumMapping("Low Wood Block", NESChannel.NOISE, PlayStyle.STACCATO, 3, noise_period=2),
 
-    # Cuica, triangle
+    # Cuica, triangle - PULSE2-mapped and actually reaches PULSE2, same as
+    # the agogo entries above (#330/ARR-NEW-6).
     78: DrumMapping("Mute Cuica", NESChannel.PULSE2, PlayStyle.STACCATO, 2),
     79: DrumMapping("Open Cuica", NESChannel.PULSE2, PlayStyle.SUSTAIN, 2),
     80: DrumMapping("Mute Triangle", NESChannel.PULSE2, PlayStyle.STACCATO, 2),

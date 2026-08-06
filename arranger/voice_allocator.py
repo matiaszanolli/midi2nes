@@ -197,10 +197,12 @@ class VoiceAllocator:
         """Pick which assigned channel a note plays on.
 
         Single-channel tracks route every note to that channel. A drum track
-        claims both NOISE and DPCM, so its notes are dispatched per pitch: the
-        kick/snare that GM_DRUM_MAP flags for sampling go to DPCM, and every
-        other percussion hit (hi-hats, cymbals, toms, ...) goes to NOISE as the
-        catch-all — instead of one channel silently clobbering the other (#251).
+        claims NOISE, DPCM, and a (shared, non-exclusive) slice of PULSE2, so
+        its notes are dispatched per pitch: the kick/snare that GM_DRUM_MAP
+        flags for sampling go to DPCM, agogo/cuica/mute+open-triangle go to
+        PULSE2 (#330/ARR-NEW-6), and every other percussion hit (hi-hats,
+        cymbals, toms, ...) goes to NOISE as the catch-all — instead of one
+        channel silently clobbering the other (#251).
         """
         if len(channels) == 1:
             return channels[0]
@@ -210,12 +212,19 @@ class VoiceAllocator:
                 and mapping.use_sample
                 and mapping.channel == NESChannel.DPCM):
             return NESChannel.DPCM
-        if NESChannel.NOISE in channels:
-            return NESChannel.NOISE
-        # No noise slot for a multi-channel track: honor the mapped channel if
-        # it's one we own, else fall back to the first assigned channel.
+        # Honor the mapped channel before defaulting to NOISE (#330/ARR-NEW-6):
+        # a drum track sharing PULSE2 (role_analyzer._assign_channels) needs
+        # its PULSE2-mapped hits (agogo/cuica/mute+open triangle) to actually
+        # land there instead of always collapsing onto NOISE just because
+        # NOISE happens to be checked first. This is a no-op for every
+        # NOISE-mapped drum (mapping.channel is already NESChannel.NOISE, so
+        # it still returns NOISE here) and for TRIANGLE-mapped toms/whistles
+        # (TRIANGLE is never in a drum track's channels -- see
+        # role_analyzer._assign_channels -- so they still fall through).
         if mapping.channel in channels:
             return mapping.channel
+        if NESChannel.NOISE in channels:
+            return NESChannel.NOISE
         return channels[0]
 
     def _allocate_pulse(

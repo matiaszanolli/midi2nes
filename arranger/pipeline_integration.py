@@ -327,31 +327,3 @@ def midi_note_to_nes_pitch(midi_note: int, channel: str) -> int:
     if channel == 'triangle':
         return NES_TRIANGLE_TABLE[midi_note]
     return NES_NOTE_TABLE[midi_note]
-
-
-def enhanced_track_mapper(
-    midi_events: Dict[str, List[Dict]],
-    dpcm_index_path: str = '',
-    arp_speed: int = 3,
-    verbose: bool = False,
-) -> Dict[str, List[Dict]]:
-    """
-    Enhanced track mapper using the arranger.
-
-    Compatible with existing pipeline but with smarter allocation.
-
-    Returns events in the original format for compatibility.
-    """
-    frames = arrange_for_nes(midi_events, arp_speed=arp_speed, verbose=verbose)
-
-    # Convert back to event list format
-    output = {}
-    for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
-        events = []
-        for frame, data in sorted(frames[channel].items()):
-            event = {'frame': frame}
-            event.update(data)
-            events.append(event)
-        output[channel] = events
-
-    return output
