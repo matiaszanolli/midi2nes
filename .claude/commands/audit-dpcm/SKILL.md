@@ -96,22 +96,37 @@ The index is loaded in the same three places, still against two different shapes
   exactly `id` + `filename`).
 
 ### Dimension 3: DPCM conversion correctness (1-bit delta)
-`dpcm_sampler/dpcm_converter.py` does WAV→PCM→delta→packed-bits. This file has not
-changed in the recent fix sprint — the following are still open, unverified claims:
+`dpcm_sampler/dpcm_converter.py` does WAV→PCM→delta→packed-bits. It remains
+orphaned (nothing in the pipeline calls it; `generate_dpcm_index` scans pre-made
+`.dmc` files directly) but its known assumption bugs were fixed (#342/DP-DPCM-03):
 - `delta_encode` (lines 34-42) walks a ±1 step counter, but `dpcm_compress`
   (lines 45-66) then re-derives the bit purely from `encoded[i] > encoded[i-1]`.
   Check that the two stages agree and that the bit polarity matches hardware: per
   `docs/APU_DMC_REFERENCE.md`, a `1` bit **adds 2** to the output level and `0`
   **subtracts 2** (the engine never sets a level, only nudges ±2). A constant-input
-  run encodes all-zero bits ⇒ the level ramps *down* on playback — verify the
-  start-level assumption (`prev = 0x40`, line 36).
+  run encodes all-zero bits ⇒ the level ramps *down* on playback.
+  **Fixed (#342, verify)**: the start-level assumption was `prev = 0x40`
+  (mid-range); the engine's init routine writes `$00` to `$4011` before any
+  sample plays (docs/APU_DMC_REFERENCE.md §5), so `prev` now starts at `0x00` to
+  match the real hardware level a played-back sample reconstructs from, instead
+  of producing a startup DC ramp/attack transient that doesn't exist on the
+  actual playback path.
 - Bit packing order (line 63): `byte |= (bits[i+j] << j)` packs LSB-first. Confirm
   against the DMC shifter order in `docs/APU_DMC_REFERENCE.md` ("Reader → Buffer →
   Shifter") — wrong bit order plays the sample bit-reversed (audible garbage).
 - Resampling: `convert_wav_to_unsigned_pcm` (line 7) uses `np.interp` linear
-  resampling to a fixed `sample_rate=8000`, independent of the DMC rate index
-  written elsewhere (`pitch`/`$4010`). Flag any mismatch between the conversion
-  rate and the playback rate index that would pitch-shift samples.
+  resampling to `sample_rate`, independent of the DMC rate index written elsewhere
+  (`pitch`/`$4010`). **Fixed (#342, verify)**: the default was a fixed
+  `sample_rate=8000` regardless of the packer's playback rate, so a sample
+  converted then packed at both defaults played ~4x too fast (~2 octaves sharp).
+  Both `dpcm_converter`'s default `sample_rate` and `DpcmPacker.add_sample`'s
+  default `pitch_rate=15` now derive from the same shared constants
+  (`constants.DEFAULT_DMC_RATE_HZ` / `DEFAULT_DMC_PITCH_RATE`, 33144 Hz), so the
+  two defaults can't silently drift apart again — but the module still has no
+  NTSC rate-index table for the other 15 `pitch_rate` values; a caller targeting
+  a different rate must pass a matching `sample_rate` explicitly (documented in
+  `convert_wav_to_dmc`'s docstring). Flag any remaining mismatch between the
+  conversion rate and the playback rate index that would pitch-shift samples.
 
 ### Dimension 4: Sample size / address / DMC range constraints
 `dpcm_sampler/dpcm_packer.py` computes the `$4012`/`$4013` register values:

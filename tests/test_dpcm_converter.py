@@ -1,13 +1,16 @@
+import inspect
 import wave
 import numpy as np
 import pytest
 
+from constants import DEFAULT_DMC_PITCH_RATE, DEFAULT_DMC_RATE_HZ
 from dpcm_sampler.dpcm_converter import (
     convert_wav_to_unsigned_pcm,
     delta_encode,
     dpcm_compress,
     convert_wav_to_dmc,
 )
+from dpcm_sampler.dpcm_packer import DpcmPacker
 
 
 def _write_wav(path, samples, channels=1, sampwidth=1, framerate=8000):
@@ -77,31 +80,43 @@ class TestConvertWavToUnsignedPcm:
 
 class TestDeltaEncode:
     """#337/REG-18: pin the ±1-step delta modulator's exact output and its
-    [0,127] clamp at both ends."""
+    [0,127] clamp at both ends. Start level is 0 (#342/DP-DPCM-03): the
+    engine's init routine writes $00 to $4011 before any sample plays
+    (docs/APU_DMC_REFERENCE.md §5), so the real hardware output level a
+    played-back sample reconstructs from is 0, not the mid-range 0x40 (64)
+    this encoder used to start at -- which produced a startup DC ramp/attack
+    transient that doesn't exist on the actual playback path."""
 
-    def test_starts_at_midrange_and_steps_toward_target(self):
-        # Target (70) is above the 0x40 (64) start on every sample.
-        assert delta_encode([70, 70, 70]) == [65, 66, 67]
-
-    def test_steps_down_toward_a_lower_target(self):
-        assert delta_encode([0, 0, 0]) == [63, 62, 61]
+    def test_starts_at_zero_and_steps_toward_target(self):
+        # Target (70) is above the 0 start on every sample.
+        assert delta_encode([70, 70, 70]) == [1, 2, 3]
 
     def test_zero_delta_holds_steady(self):
-        assert delta_encode([64, 64, 64]) == [64, 64, 64]
+        # Target matches the 0 start -- no movement needed.
+        assert delta_encode([0, 0, 0]) == [0, 0, 0]
+
+    def test_steps_down_toward_a_lower_target_after_climbing(self):
+        """From the 0 start there's nowhere to step down to on the very
+        first sample (already at the floor), so exercise the downward step
+        by climbing first (target 200), then dropping the target to 0."""
+        encoded = delta_encode([200, 200, 200, 0, 0, 0])
+        # Climbs 0->1->2->3, then descends 3->2->1.
+        assert encoded == [1, 2, 3, 2, 1, 0]
 
     def test_clamps_at_upper_bound_127(self):
-        # 63 steps needed to go from 64 to 127; hold there afterward.
-        encoded = delta_encode([200] * 70)
+        # 127 steps needed to go from 0 to 127; hold there afterward.
+        encoded = delta_encode([200] * 140)
         assert max(encoded) == 127
         assert encoded[-1] == 127
         assert encoded[-5:] == [127, 127, 127, 127, 127]
 
     def test_clamps_at_lower_bound_0(self):
-        # 64 steps needed to go from 64 to 0; hold there afterward.
-        encoded = delta_encode([0] * 70)
+        # Climb to 127 first (127 steps), then descend back to 0 (127 more
+        # steps) and hold there.
+        encoded = delta_encode([200] * 130 + [0] * 130)
         assert min(encoded) == 0
         assert encoded[-1] == 0
-        assert encoded[-5:] == [0, 0, 0, 0, 0]
+        assert encoded[-3:] == [0, 0, 0]
 
     def test_never_leaves_7bit_range(self):
         # Alternating extremes should still never over/undershoot [0, 127].
@@ -174,3 +189,37 @@ class TestConvertWavToDmc:
 
         assert written <= 4081
         assert dmc_path.read_bytes() == dmc_path.read_bytes()  # written once, stable
+
+
+class TestDefaultRateMatchesPackerPitchRate:
+    """Regression (#342/DP-DPCM-03): the converter used to resample to a
+    fixed 8kHz independent of the intended DMC playback rate, while the
+    packer defaults new samples to pitch_rate=15 (NTSC rate index 15 ~=
+    33144 Hz) -- so a sample encoded with the converter's old defaults and
+    packed with the packer's defaults played back ~4x too fast (pitched up
+    ~2 octaves). Both modules' defaults must now agree."""
+
+    def test_converter_default_sample_rate_matches_shared_constant(self):
+        sig = inspect.signature(convert_wav_to_dmc)
+        assert sig.parameters['sample_rate'].default == DEFAULT_DMC_RATE_HZ
+
+        sig = inspect.signature(convert_wav_to_unsigned_pcm)
+        assert sig.parameters['sample_rate'].default == DEFAULT_DMC_RATE_HZ
+
+    def test_packer_default_pitch_rate_matches_shared_constant(self):
+        sig = inspect.signature(DpcmPacker.add_sample)
+        assert sig.parameters['pitch_rate'].default == DEFAULT_DMC_PITCH_RATE
+
+    def test_wav_at_default_rate_round_trips_without_resampling(self, tmp_path):
+        """A WAV file already recorded at DEFAULT_DMC_RATE_HZ must pass
+        through convert_wav_to_unsigned_pcm unchanged in length (no
+        downsample/upsample distortion) when the caller relies on the
+        (now-matching) defaults on both sides."""
+        wav_path = tmp_path / "at_default_rate.wav"
+        samples = [int(127 + 100 * np.sin(i / 4)) for i in range(200)]
+        _write_wav(wav_path, samples, channels=1, sampwidth=1,
+                    framerate=DEFAULT_DMC_RATE_HZ)
+
+        data = convert_wav_to_unsigned_pcm(str(wav_path))  # default sample_rate
+
+        assert len(data) == len(samples)

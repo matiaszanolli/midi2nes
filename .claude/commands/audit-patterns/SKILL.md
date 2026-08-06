@@ -46,20 +46,19 @@ THE headline check. Compression must be lossless. Do not take the docstrings' wo
   pattern's `events` (variation positions no longer leak in). Any note/volume mismatch found by
   your own round-trip is still CRITICAL; still flag any change that starts having an exporter
   reconstruct from `references` (#4).
-- The RLE/delta path: `exporter/compression.py` `CompressionEngine.compress_pattern` ↔
-  `decompress_pattern`. Round-trip a pattern that exercises RLE runs, delta runs, and raw
-  events together. Watch the delta decoder (`compression.py:100-107`): it mutates a running
-  event and only sums keys present in the delta — confirm a key that is *absent* from a delta
-  (because its diff was 0) is preserved, not reset. Confirm `_can_delta_compress`
-  (`compression.py:154-177`) and `_create_delta_block` (`compression.py:179-200`) agree on the
-  `numeric_keys` set so no field silently drifts.
-- Existing coverage to check (and distrust if thin): `tests/test_compression.py`,
-  `tests/test_compression_integration.py`,
-  `tests/test_pattern_integration.py`. A round-trip with no asserted frame-by-frame equality
-  is not coverage. `tests/test_pattern_integration.py:120-137` still only asserts positions
-  are ints, never that the referenced window equals the pattern's stored events — with PAT-01
-  now fixed that exact-only invariant holds in code, but no test pins it, so a regression would
-  go unnoticed.
+- The RLE/delta path (`exporter/compression.py` `CompressionEngine`) was **removed as dead code
+  (#302/EXP-09)**: no exporter or `main.py` ever called it — the CA65 paths do their own inline
+  compression (macro-bytecode serializer / direct frame tables). Do not audit it; if you see a
+  reference to `compression.py`/`CompressionEngine` in a stale report, it no longer exists.
+- Existing coverage to check (and distrust if thin): `tests/test_pattern_integration.py`. A
+  round-trip with no asserted frame-by-frame equality is not coverage. **Fixed (#311/PAT-10)**:
+  `test_pattern_positions_format` now asserts `sequence[pos:pos+length] == stored events` for
+  every position, not just that positions are ints, and a sibling test
+  (`test_pattern_positions_exclude_transposed_decoy`) adds a transposed-decoy fixture so the
+  assertion has teeth against the #168/#170 defect class — mirrors
+  `tests/test_patterns.py::TestPositionsAreExactOnly`, which already covered this via
+  `EnhancedPatternDetector`'s `references`; the integration-test file now covers the bare
+  `PatternDetector` class directly too.
 
 ### Dimension 2: `pattern_result` Schema Integrity
 The detect-patterns contract is a dict with `patterns`, `references`, `stats`, `variations`

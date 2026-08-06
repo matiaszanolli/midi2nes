@@ -1,4 +1,7 @@
-# #302 — EXP-09: exporter/compression.py CompressionEngine + BaseExporter helpers are dead code
+# EXP-09: exporter/compression.py CompressionEngine and BaseExporter compress/decompress helpers are dead code
+
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/302
+**Labels:** enhancement, low, exporters
 
 **Severity:** LOW · **Domain:** exporters · **Source:** AUDIT_EXPORTERS_2026-07-06.md · **Status:** Carried from prior audit reports (2026-07-03 / 07-05), never filed as a GitHub issue — filing now.
 
@@ -25,3 +28,4 @@ Either wire it in (if RLE/delta channel compression is still planned) or remove 
 ## Completeness Checks
 - [ ] **SIBLING**: confirm no exporter or `main.py` path depends on `BaseExporter.compress_channel_data`/`decompress_channel_data` before removal
 - [ ] **TESTS**: the dedicated compression tests are removed or repointed if the code is deleted
+

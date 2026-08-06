@@ -41,6 +41,79 @@ class TestArrangerRoleAnalysis(unittest.TestCase):
         self.assertEqual(roles['high'], MusicalRole.MELODY)
 
 
+class TestType0MultiChannelTrackSplit(unittest.TestCase):
+    """Regression (#329/ARR-NEW-5): parser_fast groups events by MIDI track
+    only, never by channel, so a Type-0 MIDI (one track carrying all 16
+    channels, including channel-9 drums) -- or any multi-channel Type-1
+    track -- used to reach role analysis as a single merged voice: the drum
+    flag was sampled from only the first event with a channel, and one GM
+    program was derived across every mixed channel. analyze_midi_events must
+    now split a track's events by channel before analysis."""
+
+    def _melody_and_drums_in_one_track(self):
+        melody = _held(72, 0, 40, chan=0, program=80)  # program 80: lead
+        kick = _held(36, 0, 10, chan=9, program=0)
+        hihat = _held(42, 0, 5, chan=9, program=0)
+        return {'track_0': melody + kick + hihat}
+
+    def test_channel_9_drums_reach_noise_and_dpcm(self):
+        events = self._melody_and_drums_in_one_track()
+        plan, _, _ = analyze_midi_events(events)
+        self.assertTrue(plan.noise_tracks, "channel-9 events must reach NOISE")
+        # A kick (GM_DRUM_MAP use_sample) must reach DPCM too.
+        self.assertTrue(plan.dpcm_tracks, "channel-9 events must reach DPCM")
+
+    def test_drum_track_is_flagged_percussion_not_melody(self):
+        events = self._melody_and_drums_in_one_track()
+        plan, _, _ = analyze_midi_events(events)
+        drum_tracks = [t for t in plan.tracks if t.is_drum_track]
+        self.assertEqual(len(drum_tracks), 1)
+        self.assertEqual(drum_tracks[0].role, MusicalRole.PERCUSSION)
+
+    def test_melodic_channel_program_not_skewed_by_drum_channel(self):
+        """Before the fix, Counter(programs).most_common(1) ran across BOTH
+        channels mixed together -- with equal note counts here, program 0
+        (the drum channel's GM program) could win over the melody's real
+        program 80. Each channel must compute its program hint from only
+        its own events."""
+        events = self._melody_and_drums_in_one_track()
+        plan, _, _ = analyze_midi_events(events)
+        melodic_tracks = [t for t in plan.tracks if not t.is_drum_track]
+        self.assertEqual(len(melodic_tracks), 1)
+        self.assertEqual(melodic_tracks[0].program, 80)
+
+    def test_pitched_channel_does_not_route_to_noise_or_dpcm(self):
+        events = self._melody_and_drums_in_one_track()
+        plan, _, _ = analyze_midi_events(events)
+        melodic_ids = {t.track_id for t in plan.tracks if not t.is_drum_track}
+        self.assertTrue(melodic_ids & set(plan.pulse1_tracks + plan.pulse2_tracks
+                                           + plan.triangle_tracks))
+        self.assertFalse(melodic_ids & set(plan.noise_tracks))
+        self.assertFalse(melodic_ids & set(plan.dpcm_tracks))
+
+    def test_single_channel_track_name_unchanged(self):
+        """A track that carries only one channel (the common Type-1 case)
+        must keep its plain name -- no 'chN' suffix -- so ordinary MIDI
+        input produces byte-for-byte-identical output/logging."""
+        events = {'melody': _held(72, 0, 40, chan=0, program=80)}
+        plan, _, _ = analyze_midi_events(events)
+        self.assertEqual(plan.tracks[0].name, 'melody')
+
+    def test_multi_channel_track_gets_suffixed_names(self):
+        events = self._melody_and_drums_in_one_track()
+        plan, _, _ = analyze_midi_events(events)
+        names = {t.name for t in plan.tracks}
+        self.assertEqual(names, {'track_0 ch0', 'track_0 ch9'})
+
+    def test_end_to_end_frames_have_no_events_on_noise_and_dpcm(self):
+        """Full arrange_for_nes output must actually carry drum content on
+        noise/dpcm, not just the intermediate plan."""
+        from arranger import arrange_for_nes
+        events = self._melody_and_drums_in_one_track()
+        frames = arrange_for_nes(events)
+        self.assertTrue(frames['noise'], "expected noise frames from the drum channel")
+
+
 class TestApplySustainDoesNotMergeFastSequentialNotes(unittest.TestCase):
     """Regression (#296/ARR-NEW-4): _apply_sustain grouped any notes starting
     within chord_tolerance (2 frames) of each other into a "chord" and

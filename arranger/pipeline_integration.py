@@ -81,6 +81,34 @@ def _apply_sustain(notes: List[NoteInfo], max_gap: int) -> List[NoteInfo]:
     return extended_notes
 
 
+def _split_events_by_channel(events: List[Dict]) -> List[Tuple[object, List[Dict]]]:
+    """Split one track's events into per-channel groups, in first-seen order.
+
+    parser_fast groups events by MIDI *track* only, never by channel, so a
+    Type-0 MIDI (one track carrying all 16 channels, including channel-9
+    drums) -- or any multi-channel Type-1 track -- reached role analysis as
+    a single merged voice: the drum flag was sampled from only the first
+    event that had a channel, and one GM program was derived via
+    Counter(programs) across every mixed channel. Splitting here means
+    channel-9 events become their own drum track and each pitched channel
+    gets its own GM program/role instead of one skewed by the others
+    (#329/ARR-NEW-5).
+
+    Events with no channel info at all are kept in a single group keyed by
+    None, so the existing name-heuristic drum fallback still applies
+    unchanged for inputs that carry no channel data whatsoever.
+    """
+    groups: Dict[object, List[Dict]] = {}
+    order: List[object] = []
+    for event in events:
+        channel = event.get('channel')
+        if channel not in groups:
+            groups[channel] = []
+            order.append(channel)
+        groups[channel].append(event)
+    return [(channel, groups[channel]) for channel in order]
+
+
 def analyze_midi_events(
     midi_events: Dict[str, List[Dict]],
     sustain: bool = True,
@@ -106,87 +134,106 @@ def analyze_midi_events(
     analyzer = VoiceRoleAnalyzer()
     notes_by_track: Dict[int, List[NoteInfo]] = {}
 
-    # Convert events to NoteInfo objects
-    for track_idx, (track_name, events) in enumerate(midi_events.items()):
-        analyzer.set_track_name(track_idx, str(track_name))
+    # Convert events to NoteInfo objects. Each (MIDI track, channel) pair
+    # becomes its own analyzer track_id -- see _split_events_by_channel for
+    # why (#329/ARR-NEW-5): a Type-0 MIDI or multi-channel Type-1 track must
+    # not reach role analysis as one merged voice.
+    track_idx = 0
+    for track_name, events in midi_events.items():
+        channel_groups = _split_events_by_channel(events)
+        # A single group means this track carries only one channel (or no
+        # channel info at all) -- the common Type-1 case -- so keep its name
+        # unchanged for byte-for-byte-identical output/logging. Only a real
+        # split gets a "chN" suffix, so debug/verbose output can still tell
+        # the sub-tracks apart.
+        multi = len(channel_groups) > 1
 
-        # Check for drum track. GM percussion lives on MIDI channel 10 (index 9),
-        # which parser_fast now preserves on each event (#85); fall back to the
-        # track-name heuristic only when no event carries channel info -- a
-        # known, non-percussion channel is authoritative and must not be
-        # overridden by a name that merely happens to contain "drum" (e.g. a
-        # reference/scratch track name), which used to reroute a pitched
-        # track's actual content through the drum/noise path (#206/ARR-11).
-        track_channel = next(
-            (e['channel'] for e in events if e.get('channel') is not None), None
-        )
-        if track_channel is not None:
-            is_drum_track = track_channel == 9
-        else:
-            is_drum_track = ('drum' in str(track_name).lower()
-                              or track_name == '9' or track_name == 9)
-        if is_drum_track:
-            analyzer.mark_drum_track(track_idx)
+        for channel, ch_events in channel_groups:
+            sub_track_idx = track_idx
+            track_idx += 1
+            sub_name = (f"{track_name} ch{channel}" if multi and channel is not None
+                        else str(track_name))
+            analyzer.set_track_name(sub_track_idx, sub_name)
 
-        # GM program hint for role/timbre analysis (#86): parser_fast carries
-        # each channel's active program on every note event. Use the most
-        # frequently-occurring program across the track as its representative
-        # instrument rather than the first note's — a program_change that
-        # arrives after the first note-on (e.g. a leading pickup note, common in
-        # DAW exports) would otherwise misidentify the track as program 0 (#308).
-        programs = [e['program'] for e in events if e.get('program') is not None]
-        track_program = Counter(programs).most_common(1)[0][0] if programs else 0
-        analyzer.set_track_program(track_idx, track_program)
-
-        # Group note_on and note_off events
-        # note -> (start_frame, velocity, channel, program)
-        active_notes: Dict[int, Tuple[int, int, int, int]] = {}
-        track_notes: List[NoteInfo] = []
-
-        for event in events:
-            frame = event.get('frame', 0)
-            note = event.get('note', 60)
-            velocity = event.get('velocity', event.get('volume', 100))
-            channel = event.get('channel', 0) or 0
-            program = event.get('program', 0) or 0
-
-            if velocity > 0:
-                # Note on
-                active_notes[note] = (frame, velocity, channel, program)
+            # Check for drum track. GM percussion lives on MIDI channel 10
+            # (index 9), which parser_fast now preserves on each event
+            # (#85); fall back to the track-name heuristic only when no
+            # event in this group carries channel info at all -- a known,
+            # non-percussion channel is authoritative and must not be
+            # overridden by a name that merely happens to contain "drum"
+            # (e.g. a reference/scratch track name), which used to reroute a
+            # pitched track's actual content through the drum/noise path
+            # (#206/ARR-11).
+            if channel is not None:
+                is_drum_track = channel == 9
             else:
-                # Note off
-                if note in active_notes:
-                    start_frame, start_vel, start_chan, start_program = active_notes.pop(note)
-                    note_info = NoteInfo(
-                        pitch=note,
-                        velocity=start_vel,
-                        start_frame=start_frame,
-                        end_frame=frame,
-                        channel=start_chan,
-                        program=start_program,
-                    )
-                    track_notes.append(note_info)
-                    analyzer.add_note(track_idx, note_info)
+                is_drum_track = ('drum' in str(track_name).lower()
+                                  or track_name == '9' or track_name == 9)
+            if is_drum_track:
+                analyzer.mark_drum_track(sub_track_idx)
 
-        # Handle notes that never got a note-off (use default duration)
-        for note, (start_frame, velocity, channel, start_program) in active_notes.items():
-            # Estimate end frame (e.g., 15 frames = 0.25 seconds)
-            note_info = NoteInfo(
-                pitch=note,
-                velocity=velocity,
-                start_frame=start_frame,
-                end_frame=start_frame + 15,
-                channel=channel,
-                program=start_program,
-            )
-            track_notes.append(note_info)
-            analyzer.add_note(track_idx, note_info)
+            # GM program hint for role/timbre analysis (#86), now computed
+            # per-channel instead of across every channel this track mixed
+            # together -- a drum channel's program 0 no longer skews a
+            # pitched channel's representative instrument, and vice versa
+            # (#329/ARR-NEW-5). Use the most frequently-occurring program in
+            # this channel's own events rather than the first note's -- a
+            # program_change that arrives after the first note-on (e.g. a
+            # leading pickup note, common in DAW exports) would otherwise
+            # misidentify the channel as program 0 (#308).
+            programs = [e['program'] for e in ch_events if e.get('program') is not None]
+            track_program = Counter(programs).most_common(1)[0][0] if programs else 0
+            analyzer.set_track_program(sub_track_idx, track_program)
 
-        if track_notes:
-            # Apply sustain if enabled - extend notes to fill gaps
-            if sustain:
-                track_notes = _apply_sustain(track_notes, sustain_gap)
-            notes_by_track[track_idx] = track_notes
+            # Group note_on and note_off events
+            # note -> (start_frame, velocity, channel, program)
+            active_notes: Dict[int, Tuple[int, int, int, int]] = {}
+            track_notes: List[NoteInfo] = []
+
+            for event in ch_events:
+                frame = event.get('frame', 0)
+                note = event.get('note', 60)
+                velocity = event.get('velocity', event.get('volume', 100))
+                ev_channel = event.get('channel', 0) or 0
+                program = event.get('program', 0) or 0
+
+                if velocity > 0:
+                    # Note on
+                    active_notes[note] = (frame, velocity, ev_channel, program)
+                else:
+                    # Note off
+                    if note in active_notes:
+                        start_frame, start_vel, start_chan, start_program = active_notes.pop(note)
+                        note_info = NoteInfo(
+                            pitch=note,
+                            velocity=start_vel,
+                            start_frame=start_frame,
+                            end_frame=frame,
+                            channel=start_chan,
+                            program=start_program,
+                        )
+                        track_notes.append(note_info)
+                        analyzer.add_note(sub_track_idx, note_info)
+
+            # Handle notes that never got a note-off (use default duration)
+            for note, (start_frame, velocity, ev_channel, start_program) in active_notes.items():
+                # Estimate end frame (e.g., 15 frames = 0.25 seconds)
+                note_info = NoteInfo(
+                    pitch=note,
+                    velocity=velocity,
+                    start_frame=start_frame,
+                    end_frame=start_frame + 15,
+                    channel=ev_channel,
+                    program=start_program,
+                )
+                track_notes.append(note_info)
+                analyzer.add_note(sub_track_idx, note_info)
+
+            if track_notes:
+                # Apply sustain if enabled - extend notes to fill gaps
+                if sustain:
+                    track_notes = _apply_sustain(track_notes, sustain_gap)
+                notes_by_track[sub_track_idx] = track_notes
 
     # Get arrangement plan
     plan = analyzer.create_arrangement_plan()
