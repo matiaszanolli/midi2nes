@@ -138,8 +138,21 @@ still ultimately does `json.loads(Path(...).read_text())`) and writes its output
 - Frame data duplication: parsed events → mapped events → frames dict are three full
   in-memory copies of roughly the same data; the frames structure
   (`{channel: {frame_num: {...}}}`) is the largest. On a long song this is the memory
-  high-water mark. No stage `del`s the previous stage's structure while building the
-  next (no streaming) — unchanged.
+  high-water mark.
+  - **#371 (PERF-A-01) is CLOSED for `run_full_pipeline`'s in-process chain**: it now
+    `del`s each stage's input dict right after its successor is built —
+    `del midi_data` once `frames`/`mapped` is built (both the `--arranger` and legacy
+    branches), and `del mapped` once `frames` is built in the legacy branch — so a
+    stage's input no longer outlives its successor (mirroring how `run_detect_patterns`
+    already `del`s `frames` after extracting its own events). This does not shrink a
+    single stage's own peak (the frames stage still holds `mapped` and the `frames`
+    dict it's building simultaneously — inherent to building one structure from
+    another) — it shrinks how long *earlier* stages' data survives into *later* ones.
+    The step-by-step CLI (`run_parse`/`run_map`/`run_frames` as separate subcommand
+    invocations) was never affected by this: each subcommand process exits after
+    writing its JSON output, releasing everything naturally. Verify-the-fix: confirm
+    `midi_data`/`mapped` are `del`d in both branches and nothing downstream in
+    `run_full_pipeline` references them afterward.
 - `ParallelPatternDetector`'s memory shape changed with the #114 fix (Dimension 2): it
   still holds `sequence` and `valid_events` for the duration of detection, plus
   `all_candidate_patterns` accumulated across all per-length results — but the

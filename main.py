@@ -833,16 +833,28 @@ def run_full_pipeline(args):
                     arp_speed=3,  # 20Hz arpeggiation (classic NES)
                     verbose=args.verbose
                 )
+                # midi_data is not referenced again downstream -- release it
+                # instead of holding both it and frames simultaneously
+                # (#371/PERF-A-01; run_detect_patterns already dels frames
+                # the same way after extracting its own events).
+                del midi_data
             else:
                 # Step 2: Map tracks to NES channels (legacy mode)
                 print("[2/7] Mapping tracks to NES channels...")
                 dpcm_index_path = 'dpcm_index.json'
                 mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
+                # midi_data's data is now fully captured in mapped; step 3
+                # below never reads midi_data again (#371/PERF-A-01).
+                del midi_data
 
                 # Step 3: Generate frame data
                 print("[3/7] Generating NES frame data...")
                 emulator = NESEmulatorCore()
                 frames = emulator.process_all_tracks(mapped)
+                # mapped is not referenced again downstream -- the frames
+                # stage's peak used to hold both mapped (its input) and
+                # frames (its output) simultaneously (#371/PERF-A-01).
+                del mapped
             
             # Step 4: Pattern detection or direct export
             # Tracks any lossy event sampling so the success banner can note that

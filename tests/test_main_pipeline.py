@@ -788,6 +788,48 @@ class TestRunFullPipeline:
         assert mock_compile.call_args[0][1] == expected_output
 
 
+class TestRunFullPipelineMemoryOverhead:
+    """Regression (#371/PERF-A-01): run_full_pipeline used to hold three
+    successive full copies of the same musical data simultaneously (parsed
+    midi_data, mapped, and frames) with no stage releasing its input once
+    its successor was built -- the frames stage's peak held both its input
+    and output at once. Each stage's input dict must now be `del`d right
+    after its successor is built, in both the legacy and --arranger
+    branches."""
+
+    def test_legacy_branch_dels_midi_data_and_mapped(self):
+        import inspect
+        import main
+        src = inspect.getsource(main.run_full_pipeline)
+        # Isolate the legacy (non-arranger) branch's source between the two
+        # step markers so this doesn't false-positive on the arranger
+        # branch's own `del midi_data`.
+        legacy_start = src.index('# Step 2: Map tracks to NES channels')
+        legacy_end = src.index('# Step 4: Pattern detection')
+        legacy_branch = src[legacy_start:legacy_end]
+
+        assign_idx = legacy_branch.index('assign_tracks_to_nes_channels(')
+        del_midi_idx = legacy_branch.index('del midi_data')
+        process_idx = legacy_branch.index('process_all_tracks(')
+        del_mapped_idx = legacy_branch.index('del mapped')
+
+        assert assign_idx < del_midi_idx < process_idx < del_mapped_idx, (
+            "expected: assign mapped -> del midi_data -> build frames -> del mapped"
+        )
+
+    def test_arranger_branch_dels_midi_data(self):
+        import inspect
+        import main
+        src = inspect.getsource(main.run_full_pipeline)
+        arranger_start = src.index('if use_arranger:')
+        arranger_end = src.index('else:', arranger_start)
+        arranger_branch = src[arranger_start:arranger_end]
+
+        arrange_idx = arranger_branch.index('arrange_for_nes(')
+        del_idx = arranger_branch.index('del midi_data')
+        assert arrange_idx < del_idx, "expected: build frames -> del midi_data"
+
+
 class TestMainDefaultBehavior:
     """Test main() function default MIDI-to-ROM behavior."""
 
