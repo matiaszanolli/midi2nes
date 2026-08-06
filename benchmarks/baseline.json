@@ -1,0 +1,47 @@
+{
+  "parse": {
+    "average_duration_ms": 1.2199719991864793,
+    "median_duration_ms": 0.8881499998096842,
+    "p95_duration_ms": 2.2141099980217405,
+    "average_memory_mb": 38.611979166666664,
+    "peak_memory_mb": 39.55078125,
+    "success_rate": 1.0,
+    "total_runs": 3
+  },
+  "map": {
+    "average_duration_ms": 6.019176331998703,
+    "median_duration_ms": 2.7422690000094008,
+    "p95_duration_ms": 14.617589997214964,
+    "average_memory_mb": 38.6328125,
+    "peak_memory_mb": 39.55078125,
+    "success_rate": 1.0,
+    "total_runs": 3
+  },
+  "frames": {
+    "average_duration_ms": 4.04032799997367,
+    "median_duration_ms": 3.242445000068983,
+    "p95_duration_ms": 8.091370000329334,
+    "average_memory_mb": 38.688802083333336,
+    "peak_memory_mb": 39.55078125,
+    "success_rate": 1.0,
+    "total_runs": 3
+  },
+  "pattern_detection": {
+    "average_duration_ms": 22.86304200000207,
+    "median_duration_ms": 25.316133996966528,
+    "p95_duration_ms": 42.16109800108825,
+    "average_memory_mb": 39.5390625,
+    "peak_memory_mb": 39.55078125,
+    "success_rate": 1.0,
+    "total_runs": 3
+  },
+  "export": {
+    "average_duration_ms": 10.5991130003531,
+    "median_duration_ms": 8.2127310015494,
+    "p95_duration_ms": 20.385935000376776,
+    "average_memory_mb": 39.55078125,
+    "peak_memory_mb": 39.55078125,
+    "success_rate": 1.0,
+    "total_runs": 3
+  }
+}

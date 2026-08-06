@@ -475,6 +475,68 @@ class PerformanceBenchmark:
         return report
 
 
+# ---------------------------------------------------------------------------
+# Baseline regression gate (#372/PERF-A-02)
+#
+# The benchmark harness used to only *emit* a JSON report with no comparison
+# — a report with nothing to compare against greenlights a 2x slowdown
+# silently. These functions compare a run's per-stage median duration
+# against a checked-in baseline (see benchmarks/baseline.json, generated
+# against the deterministic fixture set in benchmarks/fixtures/ — #373/
+# PERF-A-03) and flag any stage that regressed past a configurable margin.
+# ---------------------------------------------------------------------------
+
+# A stage's median duration failing more than 50% slower than the checked-in
+# baseline is treated as a performance regression by default.
+DEFAULT_BASELINE_REGRESSION_MARGIN = 1.5
+
+
+def load_baseline(baseline_path) -> Dict[str, Dict[str, float]]:
+    """Load the checked-in performance baseline (#372/PERF-A-02).
+
+    Returns {} if the file doesn't exist yet (e.g. before a baseline has
+    ever been generated) rather than raising — callers should treat a
+    missing baseline as "nothing to compare against yet", not a hard error.
+    """
+    path = Path(baseline_path)
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+def compare_to_baseline(
+    summary_stats: Dict[str, Dict[str, Any]],
+    baseline: Dict[str, Dict[str, float]],
+    margin: float = DEFAULT_BASELINE_REGRESSION_MARGIN,
+) -> List[str]:
+    """Compare this run's per-stage median duration against a baseline.
+
+    Returns a list of human-readable regression messages; empty if nothing
+    regressed (including when the baseline is empty). A stage present in
+    `summary_stats` but absent from `baseline` (e.g. a newly added pipeline
+    stage) is not flagged — there is nothing to compare it against yet, and
+    a missing/zero median on either side is skipped rather than raising.
+    """
+    regressions = []
+    for stage, current in summary_stats.items():
+        baseline_stage = baseline.get(stage)
+        if not baseline_stage:
+            continue
+        baseline_median = baseline_stage.get('median_duration_ms')
+        current_median = current.get('median_duration_ms')
+        if not baseline_median or not current_median:
+            continue
+        threshold = baseline_median * margin
+        if current_median > threshold:
+            pct_slower = (current_median / baseline_median - 1) * 100
+            regressions.append(
+                f"{stage}: median {current_median:.1f}ms is {pct_slower:.0f}% slower than "
+                f"baseline {baseline_median:.1f}ms (threshold: {threshold:.1f}ms, "
+                f"margin: {margin}x)"
+            )
+    return regressions
+
+
 if __name__ == "__main__":
     # Example usage
     benchmark = PerformanceBenchmark()

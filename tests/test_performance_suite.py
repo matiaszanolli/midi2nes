@@ -467,5 +467,80 @@ class TestBenchmarkDrumFramesRegression:
         assert profile_result.success
 
 
+class TestBaselineRegressionGate:
+    """Regression tests for #372/PERF-A-02: the benchmark harness used to
+    only emit a JSON report with nothing to compare against -- a benchmark
+    with no comparison can't catch a 2x slowdown."""
+
+    def test_load_baseline_missing_file_returns_empty_dict(self, tmp_path):
+        from benchmarks.performance_suite import load_baseline
+        assert load_baseline(tmp_path / "missing.json") == {}
+
+    def test_load_baseline_reads_checked_in_json(self, tmp_path):
+        from benchmarks.performance_suite import load_baseline
+        baseline_path = tmp_path / "baseline.json"
+        baseline_path.write_text(json.dumps({"parse": {"median_duration_ms": 5.0}}))
+        assert load_baseline(baseline_path) == {"parse": {"median_duration_ms": 5.0}}
+
+    def test_compare_to_baseline_no_regression_within_margin(self):
+        from benchmarks.performance_suite import compare_to_baseline
+        baseline = {"parse": {"median_duration_ms": 10.0}}
+        current = {"parse": {"median_duration_ms": 14.0}}  # 1.4x, under the 1.5x default margin
+        assert compare_to_baseline(current, baseline) == []
+
+    def test_compare_to_baseline_flags_regression_past_margin(self):
+        from benchmarks.performance_suite import compare_to_baseline
+        baseline = {"parse": {"median_duration_ms": 10.0}}
+        current = {"parse": {"median_duration_ms": 20.0}}  # 2x, past the 1.5x default margin
+        regressions = compare_to_baseline(current, baseline)
+        assert len(regressions) == 1
+        assert "parse" in regressions[0]
+
+    def test_compare_to_baseline_respects_custom_margin(self):
+        from benchmarks.performance_suite import compare_to_baseline
+        baseline = {"parse": {"median_duration_ms": 10.0}}
+        current = {"parse": {"median_duration_ms": 25.0}}  # 2.5x
+        assert compare_to_baseline(current, baseline, margin=3.0) == []
+        assert len(compare_to_baseline(current, baseline, margin=2.0)) == 1
+
+    def test_compare_to_baseline_ignores_stage_absent_from_baseline(self):
+        """A newly added pipeline stage has nothing to compare against yet
+        -- must not be flagged as a regression."""
+        from benchmarks.performance_suite import compare_to_baseline
+        baseline = {"parse": {"median_duration_ms": 10.0}}
+        current = {
+            "parse": {"median_duration_ms": 10.0},
+            "new_stage": {"median_duration_ms": 99999.0},
+        }
+        assert compare_to_baseline(current, baseline) == []
+
+    def test_compare_to_baseline_empty_baseline_flags_nothing(self):
+        from benchmarks.performance_suite import compare_to_baseline
+        current = {"parse": {"median_duration_ms": 99999.0}}
+        assert compare_to_baseline(current, {}) == []
+
+
+class TestDeterministicFixtures:
+    """Regression tests for #373/PERF-A-03: the baseline benchmark's input
+    set used to depend on whatever *.mid files happened to exist under
+    test_data/examples/samples/. on the machine running it, making results
+    incomparable across runs/machines."""
+
+    def test_fixtures_directory_has_committed_midi_files(self):
+        from benchmarks.run_benchmarks import FIXTURES_DIR
+        assert FIXTURES_DIR.exists(), f"{FIXTURES_DIR} must exist and be committed"
+        fixture_files = sorted(FIXTURES_DIR.glob("*.mid"))
+        assert len(fixture_files) >= 1, "at least one deterministic fixture .mid must be committed"
+
+    def test_run_baseline_benchmark_uses_fixtures_dir_not_cwd(self, tmp_path, monkeypatch):
+        """The benchmark must find its files via FIXTURES_DIR regardless of
+        the working tree's own *.mid files (or lack thereof) -- run from an
+        empty tmp_path to prove it isn't relying on cwd-relative discovery."""
+        from benchmarks.run_benchmarks import find_test_files, FIXTURES_DIR
+        monkeypatch.chdir(tmp_path)
+        found = find_test_files(str(FIXTURES_DIR), "*.mid")
+        assert len(found) >= 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

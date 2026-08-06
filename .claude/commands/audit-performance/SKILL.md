@@ -208,14 +208,29 @@ PERF-11 (#262, **OPEN**):
   `handle.result` instead of calling `_end_profiling` a *second* time, so the old
   stale/double-counted reading against a stopped tracer is gone. Verify no new call site
   re-introduces a second `_end_profiling` call.
-- Baselines: `benchmark_results/benchmark_results.json` is checked into the repo, but
-  it is a *run output*, not a versioned baseline the harness compares against — there
-  is no regression gate (no "fail if slower than baseline by X%"). Note the absence; a
-  benchmark with no checked-in baseline and no comparison cannot catch a regression —
-  the surviving half of PERF-11 (#262).
-- `run_baseline_benchmark` in `benchmarks/run_benchmarks.py` searches `test_data/`,
-  `examples/`, `samples/`, `.` for `*.mid` and silently runs on whatever it finds (or
-  nothing) — non-deterministic inputs make results incomparable across machines/runs.
+- **#373 (PERF-A-03) is CLOSED**: `run_baseline_benchmark` used to search `test_data/`,
+  `examples/`, `samples/`, `.` for `*.mid` and silently run on whatever it found (or
+  nothing) — non-deterministic inputs made results incomparable across machines/runs,
+  undermining any baseline gate built on top. The default source is now
+  `benchmarks/fixtures/` (`FIXTURES_DIR` in `benchmarks/run_benchmarks.py`), a small set
+  of `.mid` files committed to the repo (carved out of `.gitignore`'s blanket `*.mid`
+  rule alongside `examples/`/`test_data/`) and used unconditionally — no glob-and-hope
+  fallback, no not-implemented synthetic-MIDI generator. `--files`/`--directory` remain
+  for benchmarking a custom set instead. Verify-the-fix: confirm `benchmarks/fixtures/`
+  still has at least one committed `.mid` and that `find_test_files` resolves it
+  independent of the working directory.
+- **#372 (PERF-A-02) is CLOSED**: `generate_report` used to only *emit* a JSON report
+  with nothing to compare against — a benchmark with no comparison greenlights a 2x
+  slowdown silently. `benchmarks/performance_suite.py` now has `load_baseline()` +
+  `compare_to_baseline()` (per-stage median vs. a checked-in `benchmarks/baseline.json`,
+  generated against the #373 fixture set, configurable `margin` — default 1.5x);
+  `run_baseline_benchmark` runs the comparison by default and returns `False` on a
+  detected regression, and `main()` exits non-zero in that case so a regression actually
+  fails a CI/local run instead of only printing a warning. `--update-baseline` records a
+  new baseline (e.g. after an intentional, accepted slowdown); `--no-baseline-check`
+  reverts to report-only. Verify-the-fix: confirm a stage absent from the baseline (a
+  newly added pipeline stage) is not flagged, and an empty/missing baseline is treated as
+  "nothing to compare yet", not a hard error.
 
 ### Dimension 7: Profiling-utility correctness
 `utils/profiling.py` (`get_memory_usage`, `log_memory_usage`, `MemoryMonitor`,
