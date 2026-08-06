@@ -1,5 +1,7 @@
-# ARR-NEW-7: enhanced_track_mapper unused re-exported helper
-**Filed as:** #331
+# ARR-NEW-7: enhanced_track_mapper is an unused, re-exported public helper (dead API surface)
+
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/331
+**Labels:** bug, low, arranger
 
 **Severity:** LOW · **Domain:** arranger · **Source:** AUDIT_ARRANGER_2026-07-18.md
 
@@ -21,3 +23,4 @@ Remove it (and its `__all__`/import entries), or add a test/caller if it is inte
 ## Completeness Checks
 - [ ] **SIBLING**: other `arranger/__init__.py` `__all__` entries checked for the same unused-export status
 - [ ] **TESTS**: if kept as public API, a test exercises it; if removed, no import breaks
+

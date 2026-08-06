@@ -58,7 +58,6 @@ from .pipeline_integration import (
     analyze_midi_events,
     arrange_for_nes,
     midi_note_to_nes_pitch,
-    enhanced_track_mapper,
 )
 
 __all__ = [
@@ -92,5 +91,4 @@ __all__ = [
     "analyze_midi_events",
     "arrange_for_nes",
     "midi_note_to_nes_pitch",
-    "enhanced_track_mapper",
 ]

@@ -1,5 +1,7 @@
-# ARR-NEW-6: Drum-track toms/agogos/cuicas always render as noise
-**Filed as:** #330
+# ARR-NEW-6: Drum-track toms/agogos/cuicas ignore their GM_DRUM_MAP channel and always render as noise
+
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/330
+**Labels:** bug, low, arranger
 
 **Severity:** LOW · **Domain:** arranger · **Source:** AUDIT_ARRANGER_2026-07-18.md
 
@@ -22,3 +24,4 @@ Before defaulting to NOISE, honor `mapping.channel` when that channel is in the 
 - [ ] **CHANNEL**: triangle-routed toms respect that triangle has no volume/duty and use the triangle pitch table
 - [ ] **SIBLING**: same precedence bug checked for DPCM-vs-mapped-channel ordering
 - [ ] **TESTS**: a regression test routes a tom on a NOISE+TRIANGLE drum track and asserts it does not collapse to noise period 5
+

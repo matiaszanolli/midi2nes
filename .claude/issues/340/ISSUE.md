@@ -1,5 +1,7 @@
-# DP-DPCM-01
-**Filed as:** #340
+# DP-DPCM-01: Four GM percussion roles (splash/vibraslap/triangle mute+open) have no sample and no alias, fall to noise
+
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/340
+**Labels:** bug, low, dpcm
 
 **Severity:** LOW · **Domain:** dpcm · **Source:** AUDIT_DPCM_2026-07-18.md
 
@@ -22,3 +24,4 @@ Either add `.dmc` assets + index entries for these four, or extend `DPCM_ROLE_AL
 - [ ] **SIBLING**: any other GM roles checked for the same missing-asset gap
 - [ ] **TESTS**: the regression test for the alias table updated if any of the four gain an alias
 - [ ] **DOC**: the deliberate asset gap documented where users would look
+

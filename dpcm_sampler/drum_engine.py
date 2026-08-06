@@ -56,9 +56,15 @@ DEFAULT_MIDI_DRUM_MAPPING = {
 
 # Role names DEFAULT_MIDI_DRUM_MAPPING produces that have no identically
 # named entry in the shipped dpcm_index.json catalog, but do have a real
-# sample under a different filename (#315/DP-07). Splash, vibraslap, and
-# triangle mute/open have no matching sample anywhere in the catalog and are
-# deliberately left unaliased -- a genuine asset gap, not a naming mismatch.
+# sample under a different filename (#315/DP-07). Extended for #340/DP-DPCM-01:
+# triangle_mute/triangle_open alias to the catalog's one actual triangle
+# instrument sample ("DPCM triangle"; both MIDI states share it -- the DMC
+# is a single-voice channel, so mute vs. open can't be layered differently
+# here anyway), and splash aliases to crash (a splash cymbal is a small,
+# quick crash -- the closest timbre the catalog has). Vibraslap has no
+# reasonably-close sample anywhere in the catalog (a distinctive rattling
+# buzz unlike anything else here) and is deliberately left unaliased -- a
+# genuine remaining asset gap, not a naming mismatch.
 DPCM_ROLE_ALIASES = {
     "tambourine": "tamborin",
     "whistle_short": "whistle1",
@@ -70,6 +76,9 @@ DPCM_ROLE_ALIASES = {
     "woodblock_hi": "mario_2_woodblock",
     "woodblock_lo": "mario_2_woodblock",
     "side_stick": "stickrim",
+    "splash": "crash",
+    "triangle_mute": "DPCM triangle",
+    "triangle_open": "DPCM triangle",
 }
 
 ADVANCED_MIDI_DRUM_MAPPING = {

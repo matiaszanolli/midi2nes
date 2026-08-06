@@ -200,13 +200,15 @@ class TestDpcmSampleNameFallback:
 
 
 class TestDpcmRoleAliasFallback:
-    """Regression (#315/DP-07): DEFAULT_MIDI_DRUM_MAPPING produces 40 distinct
-    role names, but the shipped dpcm_index.json only has 26 of them under an
-    identical key -- 6 of the other 14 have a real sample under a different
-    filename (e.g. "tambourine" -> "tamborin") that _resolve_dpcm_sample_name
-    never tried, so they always fell back to noise despite a usable sample
-    existing. The remaining 4 (splash, vibraslap, triangle mute/open) are a
-    genuine asset gap with no matching sample anywhere in the catalog."""
+    """Regression (#315/DP-07, extended by #340/DP-DPCM-01): DEFAULT_MIDI_
+    DRUM_MAPPING produces 40 distinct role names, but the shipped
+    dpcm_index.json only has 26 of them under an identical key -- 9 of the
+    other 14 have a real (#315) or reasonably-close (#340: splash -> crash,
+    triangle_mute/open -> "DPCM triangle") sample under a different filename
+    that _resolve_dpcm_sample_name never tried, so they always fell back to
+    noise despite a usable sample existing. The remaining 1 (vibraslap) is a
+    genuine asset gap with no matching or close sample anywhere in the
+    catalog."""
 
     @pytest.fixture
     def curated_index_path(self, tmp_path):
@@ -220,6 +222,8 @@ class TestDpcmRoleAliasFallback:
             "cuica2": {"id": 6, "filename": "cuica2.dmc"},
             "mario_2_woodblock": {"id": 7, "filename": "mario_2_woodblock.dmc"},
             "stickrim": {"id": 8, "filename": "stickrim.dmc"},
+            "crash": {"id": 9, "filename": "crash.dmc"},
+            "DPCM triangle": {"id": 10, "filename": "DPCM triangle.dmc"},
         }
         path = tmp_path / "curated_index.json"
         path.write_text(json.dumps(index))
@@ -232,6 +236,7 @@ class TestDpcmRoleAliasFallback:
     @pytest.mark.parametrize("note,expected_sample", [
         (37, "stickrim"),            # side_stick
         (54, "tamborin"),            # tambourine
+        (55, "crash"),               # splash (#340)
         (71, "whistle1"),            # whistle_short
         (72, "whistle2"),            # whistle_long
         (73, "guiro1"),              # guiro_short
@@ -240,17 +245,30 @@ class TestDpcmRoleAliasFallback:
         (77, "mario_2_woodblock"),   # woodblock_lo
         (78, "cuica1"),              # cuica_mute
         (79, "cuica2"),              # cuica_open
+        (80, "DPCM triangle"),       # triangle_mute (#340)
+        (81, "DPCM triangle"),       # triangle_open (#340)
     ])
     def test_aliased_role_resolves_to_catalog_sample(self, mapper, note, expected_sample):
         assert mapper._resolve_dpcm_sample_name(note, 100, use_advanced=False) == expected_sample
 
-    def test_true_asset_gaps_still_fall_back_to_none(self, mapper):
-        # splash, vibraslap, triangle_mute, triangle_open have no sample
-        # anywhere in the catalog -- aliasing must not invent one.
+    def test_true_asset_gap_still_falls_back_to_none(self, mapper):
+        # vibraslap has no sample (or reasonably-close alias target) anywhere
+        # in the catalog -- aliasing must not invent one.
+        assert mapper._resolve_dpcm_sample_name(58, 100, use_advanced=False) is None
+
+    def test_alias_does_not_invent_a_sample_when_its_target_is_also_missing(self, tmp_path):
+        # A catalog that has NEITHER the identical name NOR the alias target
+        # (e.g. no "crash", no "DPCM triangle") must still fall back to None
+        # for splash/triangle -- aliasing only helps when the target sample
+        # genuinely exists.
+        index = {"unrelated": {"id": 0, "filename": "unrelated.dmc"}}
+        path = tmp_path / "sparse_index.json"
+        path.write_text(json.dumps(index))
+        mapper = EnhancedDrumMapper(dpcm_index_path=str(path))
         for note in (55, 58, 80, 81):
             assert mapper._resolve_dpcm_sample_name(note, 100, use_advanced=False) is None
 
-    def test_shipped_catalog_closes_exactly_six_of_fourteen_gaps(self):
+    def test_shipped_catalog_closes_exactly_nine_of_fourteen_gaps(self):
         index_path = REPO_ROOT / "dpcm_index.json"
         if not index_path.exists():
             pytest.skip("shipped dpcm_index.json not present in this checkout")
@@ -260,9 +278,9 @@ class TestDpcmRoleAliasFallback:
             note for note in range(35, 82)
             if mapper._resolve_dpcm_sample_name(note, 100, use_advanced=False) is None
         ]
-        # Only the 4 true asset gaps (splash, vibraslap, triangle mute/open)
-        # should remain unresolved on the real shipped catalog.
-        assert set(missing) == {55, 58, 80, 81}
+        # Only the 1 true asset gap (vibraslap) should remain unresolved on
+        # the real shipped catalog.
+        assert set(missing) == {58}
 
 
 class TestNoiseModeForMetallicPercussion:
@@ -482,3 +500,68 @@ class TestShippedCatalogEndToEnd:
         sample_map = processed['dpcm_sample_map']
         recovered_ids = set(sample_map.values())
         assert recovered_ids == {e['sample_id'] for e in dpcm_events}
+
+
+class TestSampleManagerBackfillsRealSize:
+    """Regression (#341/DP-DPCM-02): real dpcm_index.json entries carry only
+    'id' + 'filename', so DPCMSampleManager.allocate_sample always fell back
+    to its placeholder default (1024 bytes) for every sample -- the
+    memory-limit/eviction machinery operated on identical fictional sizes
+    regardless of what was actually packed. EnhancedDrumMapper now resolves
+    each sample's real on-disk size before allocating."""
+
+    @pytest.fixture
+    def dpcm_index_path(self, tmp_path):
+        dmc_dir = tmp_path / "dmc"
+        dmc_dir.mkdir()
+        # Two very differently-sized samples so a 1024-byte placeholder
+        # couldn't coincidentally match either.
+        (dmc_dir / "kick.dmc").write_bytes(b"\x00" * 200)
+        (dmc_dir / "snare.dmc").write_bytes(b"\x00" * 3000)
+        index = {
+            "kick": {"id": 0, "filename": "kick.dmc"},
+            "snare": {"id": 1, "filename": "snare.dmc"},
+        }
+        path = tmp_path / "dpcm_index.json"
+        path.write_text(json.dumps(index))
+        return str(path)
+
+    def test_allocated_sample_reflects_real_file_size(self, dpcm_index_path):
+        mapper = EnhancedDrumMapper(dpcm_index_path=dpcm_index_path)
+        midi_events = {
+            9: [
+                {"frame": 0, "note": 36, "velocity": 100},   # kick -> 200 bytes
+                {"frame": 10, "note": 38, "velocity": 100},  # snare -> 3000 bytes
+            ]
+        }
+        mapper.map_drums(midi_events)
+
+        kick_info = mapper.sample_manager.active_samples["kick"]
+        snare_info = mapper.sample_manager.active_samples["snare"]
+        assert kick_info['metadata']['size'] == 200
+        assert snare_info['metadata']['size'] == 3000
+        # The two real sizes must differ from each other and from the old
+        # 1024 placeholder -- otherwise this would pass even if the backfill
+        # were a no-op that happened to still read 1024 for both.
+        assert kick_info['metadata']['size'] != snare_info['metadata']['size']
+        assert kick_info['metadata']['size'] != 1024
+        assert snare_info['metadata']['size'] != 1024
+
+    def test_unresolvable_sample_falls_back_to_placeholder(self, tmp_path):
+        # A catalog entry whose file doesn't exist on disk must not raise --
+        # allocate_sample still gets its safe placeholder default.
+        index = {"ghost": {"id": 0, "filename": "missing.dmc"}}
+        path = tmp_path / "dpcm_index.json"
+        path.write_text(json.dumps(index))
+        mapper = EnhancedDrumMapper(dpcm_index_path=str(path))
+        mapper._allocate("ghost", mapper.sample_index["ghost"])
+        assert mapper.sample_manager.active_samples["ghost"]['metadata']['size'] == 1024
+
+    def test_repeated_allocation_reuses_cached_size(self, dpcm_index_path):
+        """The size cache must avoid re-stat'ing the same file on every hit
+        in a song that reuses one drum many times."""
+        mapper = EnhancedDrumMapper(dpcm_index_path=dpcm_index_path)
+        sample_data = mapper.sample_index["kick"]
+        for _ in range(5):
+            mapper._allocate("kick", sample_data)
+        assert mapper._sample_size_cache["kick"] == 200

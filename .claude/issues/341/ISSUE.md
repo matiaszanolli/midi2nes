@@ -1,5 +1,7 @@
-# DP-DPCM-02
-**Filed as:** #341
+# DP-DPCM-02: DPCMSampleManager runs on placeholder sizes and its eviction never affects the packed ROM
+
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/341
+**Labels:** bug, low, dpcm
 
 **Severity:** LOW · **Domain:** dpcm · **Source:** AUDIT_DPCM_2026-07-18.md
 
@@ -21,3 +23,4 @@ Either back-fill real `size`/`rate` from the `.dmc` files at index-generation ti
 ## Completeness Checks
 - [ ] **SIBLING**: all three `allocate_sample` call sites handled consistently if removed
 - [ ] **TESTS**: if back-filled, a test asserts the manager's size reflects the real `.dmc` size
+

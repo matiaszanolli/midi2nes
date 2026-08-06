@@ -163,6 +163,70 @@ class TestDrumTrackDualRouting(unittest.TestCase):
         self.assertIsNotNone(alloc.pulse1)
 
 
+class TestDrumTrackPulse2Routing(unittest.TestCase):
+    """Regression (#330/ARR-NEW-6): GM_DRUM_MAP's PULSE2-mapped percussion
+    (agogo/cuica/mute+open triangle) must actually reach PULSE2 when the
+    drum track owns it, instead of _route_note's NOISE catch-all firing
+    first and collapsing every non-DPCM hit onto NOISE regardless of the
+    mapping table."""
+
+    def _drum_plan_with_pulse2(self, track_id=0):
+        plan = ArrangementPlan()
+        plan.tracks = [TrackAnalysis(track_id=track_id, is_drum_track=True)]
+        # Mirrors the real VoiceRoleAnalyzer._assign_channels output for a
+        # drum track: noise + dpcm + a shared (non-exclusive) pulse2 slot.
+        plan.noise_tracks = [track_id]
+        plan.dpcm_tracks = [track_id]
+        plan.pulse2_tracks = [track_id]
+        return plan
+
+    def test_agogo_routes_to_pulse2_not_noise(self):
+        va = VoiceAllocator()
+        va.set_arrangement(self._drum_plan_with_pulse2())
+        alloc = va.allocate_frame({0: [_note(67)]})  # High Agogo -> PULSE2
+        self.assertIsNotNone(alloc.pulse2, "agogo should play on PULSE2")
+        self.assertIsNone(alloc.noise, "agogo must not also fire NOISE")
+
+    def test_cuica_and_triangle_percussion_route_to_pulse2(self):
+        va = VoiceAllocator()
+        for pitch in (78, 79, 80, 81):  # Mute/Open Cuica, Mute/Open Triangle
+            va.set_arrangement(self._drum_plan_with_pulse2())
+            alloc = va.allocate_frame({0: [_note(pitch)]})
+            self.assertIsNotNone(alloc.pulse2, f"pitch {pitch} should play on PULSE2")
+
+    def test_tom_still_falls_to_noise_with_its_own_period(self):
+        """Toms are TRIANGLE-mapped, but a drum track never owns TRIANGLE
+        (reserved for bass), so they still fall through to NOISE -- now with
+        a curated per-tom noise_period instead of the generic fallback 5."""
+        va = VoiceAllocator()
+        va.set_arrangement(self._drum_plan_with_pulse2())
+        alloc = va.allocate_frame({0: [_note(41)]})  # Low Floor Tom
+        self.assertIsNotNone(alloc.noise)
+        self.assertEqual(alloc.noise[0], 11)
+        self.assertIsNone(alloc.pulse2)
+
+    def test_hi_hat_unaffected_by_reordered_precedence(self):
+        """A plain NOISE-mapped drum (mapping.channel == NESChannel.NOISE)
+        must still route to NOISE -- the reordered mapped-channel check is a
+        no-op for it, not a behavior change."""
+        va = VoiceAllocator()
+        va.set_arrangement(self._drum_plan_with_pulse2())
+        alloc = va.allocate_frame({0: [_note(42)]})  # Closed Hi-Hat
+        self.assertIsNotNone(alloc.noise)
+        self.assertIsNone(alloc.pulse2)
+
+    def test_kick_still_routes_to_dpcm_over_pulse2(self):
+        """DPCM-sample-eligible hits must still win over the mapped-channel
+        check (which precedes it in _route_note is unaffected by this
+        change's reordering, both checks come before the NOISE catch-all)."""
+        va = VoiceAllocator()
+        va.set_arrangement(self._drum_plan_with_pulse2())
+        alloc = va.allocate_frame({0: [_note(36)]})  # Bass Drum 1 -> DPCM
+        self.assertIsNotNone(alloc.dpcm)
+        self.assertIsNone(alloc.pulse2)
+        self.assertIsNone(alloc.noise)
+
+
 class TestPulseVolumeFloor(unittest.TestCase):
     """Regression (#268/NH-30): FrameByFrameAllocator.process_song derived
     pulse volume as a bare `vel // 8` with no floor, so any note with MIDI
