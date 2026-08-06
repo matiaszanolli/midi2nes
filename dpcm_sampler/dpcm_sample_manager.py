@@ -1,5 +1,6 @@
 from typing import Dict
 from collections import defaultdict
+from constants import DEFAULT_DMC_RATE_HZ
 
 class DPCMSampleManager:
     def __init__(self, max_samples=16, memory_limit=4096):  # 4KB default limit
@@ -55,7 +56,7 @@ class DPCMSampleManager:
             'data': sample_data.get('data', []),  # Default to empty list if no data
             'metadata': {
                 'size': sample_size,
-                'frequency': sample_data.get('frequency', 33144),
+                'frequency': sample_data.get('frequency', DEFAULT_DMC_RATE_HZ),
                 'original_name': sample_name
             }
         }

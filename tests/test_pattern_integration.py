@@ -124,20 +124,76 @@ class TestPatternDetectorIntegration(unittest.TestCase):
         """Test that pattern positions are in the correct format for both detectors"""
         base_patterns = self.base_detector.detect_patterns(self.test_events)
         enhanced_result = self.enhanced_detector.detect_patterns(self.test_events)
-        
+        sequence = [(e['note'], e['volume']) for e in self.test_events]
+
         if base_patterns:
             base_pattern = list(base_patterns.values())[0]
             self.assertIn('positions', base_pattern)
             self.assertIsInstance(base_pattern['positions'], list)
+            length = base_pattern['length']
+            stored = [(e['note'], e['volume']) for e in base_pattern['events']]
             for pos in base_pattern['positions']:
                 self.assertIsInstance(pos, int)
-                
+                # Regression (#311/PAT-10): a position must anchor a window
+                # whose content actually equals the pattern's stored events
+                # -- not just be an int -- or a regression re-admitting a
+                # variation/self-overlap position (the #168/#170 defect)
+                # would leave this test green.
+                window = sequence[pos:pos + length]
+                self.assertEqual(list(window), stored,
+                    f"base pattern @ {pos}: window {window} != stored events {stored}")
+
         if enhanced_result.get('patterns'):
             enhanced_pattern = list(enhanced_result['patterns'].values())[0]
             self.assertIn('positions', enhanced_pattern)
             self.assertIsInstance(enhanced_pattern['positions'], list)
+            length = enhanced_pattern['length']
+            stored = [(e['note'], e['volume']) for e in enhanced_pattern['events']]
             for pos in enhanced_pattern['positions']:
                 self.assertIsInstance(pos, int)
+                window = sequence[pos:pos + length]
+                self.assertEqual(list(window), stored,
+                    f"enhanced pattern @ {pos}: window {window} != stored events {stored}")
+
+    def test_pattern_positions_exclude_transposed_decoy(self):
+        """Regression (#311/PAT-10): test_pattern_positions_format's fixture
+        (self.test_events, 3 identical exact repeats) has no near-miss
+        content, so it can't actually catch a regression that re-admits a
+        variation/self-overlap position into `positions` -- the exact
+        #168/#170 defect. Uses a fixture with a transposed decoy (mirrors
+        tests/test_patterns.py::TestPositionsAreExactOnly, but exercises
+        the bare PatternDetector class directly rather than only through
+        EnhancedPatternDetector's compress_patterns wrapping) so the
+        round-trip assertion has teeth."""
+        motif = [(40, 20), (41, 21), (42, 22)]
+        sequence = motif + motif + motif + [(n + 1, v + 1) for n, v in motif]
+        events = [{'frame': i, 'note': n, 'volume': v, 'tempo': 500000}
+                  for i, (n, v) in enumerate(sequence)]
+
+        base_detector = PatternDetector(min_pattern_length=3, max_pattern_length=3)
+        enhanced_detector = EnhancedPatternDetector(
+            self.tempo_map, min_pattern_length=3, max_pattern_length=3)
+
+        base_patterns = base_detector.detect_patterns(events)
+        enhanced_result = enhanced_detector.detect_patterns(events)
+
+        for label, patterns in (
+            ('base', base_patterns),
+            ('enhanced', enhanced_result.get('patterns', {})),
+        ):
+            self.assertTrue(patterns, f"{label} detector found no patterns")
+            for pattern_id, pattern_info in patterns.items():
+                length = pattern_info['length']
+                stored = [(e['note'], e['volume']) for e in pattern_info['events']]
+                # The transposed decoy at position 9 must never appear as a
+                # position -- its window content differs from the exact motif.
+                self.assertNotIn(9, pattern_info['positions'],
+                    f"{label} pattern {pattern_id}: transposed decoy leaked into positions")
+                for pos in pattern_info['positions']:
+                    window = sequence[pos:pos + length]
+                    self.assertEqual(list(window), stored,
+                        f"{label} pattern {pattern_id} @ {pos}: "
+                        f"window {window} != stored events {stored}")
 
     def test_pattern_events_format(self):
         """Test that pattern events are in the correct format for both detectors"""

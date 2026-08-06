@@ -5,7 +5,6 @@ from pathlib import Path
 import tempfile
 import os
 
-from exporter.compression import CompressionEngine
 from exporter.exporter_ca65 import CA65Exporter
 from exporter.exporter_nsf import NSFExporter
 from exporter.exporter_famistudio import FamiStudioExporter
@@ -41,45 +40,12 @@ class TestExporterIntegration(unittest.TestCase):
             os.remove(os.path.join(self.temp_dir, file))
         os.rmdir(self.temp_dir)
     
-    def test_compression_integration(self):
-        """Test that compression works across all exporters"""
-        engine = CompressionEngine()
-        
-        # Create test data that can actually be compressed
-        # RLE test data (repeating events)
-        rle_pattern = [
-            {'note': 60, 'volume': 15},
-            {'note': 60, 'volume': 15},
-            {'note': 60, 'volume': 15}  # 3 identical events for RLE
-        ]
-        
-        # Delta test data (sequential note changes)
-        delta_pattern = [
-            {'note': 60, 'volume': 15},
-            {'note': 62, 'volume': 15},
-            {'note': 64, 'volume': 15},
-            {'note': 66, 'volume': 15}  # Sequential notes for delta compression
-        ]
-        
-        # Test RLE compression
-        compressed, metadata = engine.compress_pattern(rle_pattern)
-        decompressed = engine.decompress_pattern(compressed, metadata)
-        
-        # Verify RLE compression worked
-        self.assertEqual(len(compressed), 1)  # Should compress to 1 RLE block
-        self.assertEqual(len(metadata['rle_blocks']), 1)
-        self.assertEqual(decompressed, rle_pattern)
-        
-        # Test delta compression
-        compressed, metadata = engine.compress_pattern(delta_pattern)
-        decompressed = engine.decompress_pattern(compressed, metadata)
-        
-        # Verify delta compression worked
-        self.assertEqual(len(metadata['delta_blocks']), 1)
-        self.assertEqual(decompressed, delta_pattern)
-    
-    def test_ca65_export_with_compression(self):
-        """Test CA65 export with compression"""
+    def test_ca65_export(self):
+        """Test CA65 export produces the expected assembly tables. (Renamed
+        from test_ca65_export_with_compression, #302/EXP-09: this exporter
+        never used exporter/compression.py's CompressionEngine -- the CA65
+        paths do their own inline compression -- so the old name implied a
+        dependency that didn't exist.)"""
         output_path = os.path.join(self.temp_dir, "test_ca65.s")
         exporter = CA65Exporter()
         
@@ -106,8 +72,10 @@ class TestExporterIntegration(unittest.TestCase):
             exporter.export(self.test_frames, output_path, "Test Song")
         self.assertFalse(os.path.exists(output_path))
     
-    def test_famistudio_export_with_compression(self):
-        """Test FamiStudio export with compression"""
+    def test_famistudio_export(self):
+        """Test FamiStudio export produces the expected pattern data.
+        (Renamed from test_famistudio_export_with_compression, #302/EXP-09:
+        this exporter never used the dead CompressionEngine either.)"""
         output_path = os.path.join(self.temp_dir, "test.txt")
         exporter = FamiStudioExporter()
         

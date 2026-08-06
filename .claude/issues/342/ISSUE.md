@@ -1,5 +1,7 @@
-# DP-DPCM-03
-**Filed as:** #342
+# DP-DPCM-03: dpcm_converter is orphaned; its 8kHz-vs-rate-15 and start-level assumptions would mis-pitch samples if used
+
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/342
+**Labels:** bug, low, dpcm
 
 **Severity:** LOW · **Domain:** dpcm · **Source:** AUDIT_DPCM_2026-07-18.md
 
@@ -22,3 +24,4 @@ If keeping the converter, derive its target sample rate from the intended DMC ra
 - [ ] **RANGE**: encoded output stays within DMC level range and the 4081-byte cap
 - [ ] **TESTS**: if kept, a test pins the rate/start-level assumptions against the packer's rate index (ties to REG-18)
 - [ ] **DOC**: converter marked experimental or its rate contract documented
+

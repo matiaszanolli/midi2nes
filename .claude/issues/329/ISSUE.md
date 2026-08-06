@@ -1,5 +1,7 @@
-# ARR-NEW-5: Multi-channel/Type-0 MIDI tracks mis-arranged
-**Filed as:** #329
+# ARR-NEW-5: Multi-channel/Type-0 MIDI tracks mis-arranged — channel-9 drums misrouted to pulse/triangle, GM hint corrupted
+
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/329
+**Labels:** bug, medium, arranger
 
 **Severity:** MEDIUM · **Domain:** arranger · **Source:** AUDIT_ARRANGER_2026-07-18.md
 
@@ -24,3 +26,4 @@ Split events by `(track, channel)` before role analysis (either in `parser_fast`
 - [ ] **CONTRACT**: if the split changes the frames dict's track granularity, downstream role/allocation consumers updated in lockstep
 - [ ] **SIBLING**: legacy `track_mapper` path checked for the same Type-0 merge behavior
 - [ ] **TESTS**: a regression test feeds a Type-0 MIDI (melody + channel-9 drums in one track) and asserts drums reach NOISE/DPCM
+
