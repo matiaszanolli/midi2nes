@@ -145,7 +145,17 @@ class NESProjectBuilder:
             overlay = NESDebugOverlay(enable_overlay=True)
             music_content += "\n.importzp ptr1, temp1, temp2, frame_counter\n"
             music_content += "\n.global debug_init, debug_update, debug_test_apu\n"
-            music_content += "\n" + overlay.generate_full_debug_system()
+            # Explicit .segment "CODE" (#388/MAP-2026-08-05-1): the overlay
+            # text otherwise inherits whatever segment was last active in
+            # music.asm (in practice "RODATA", from the DPCM packer's stub
+            # tables). On mappers with a switchable direct-export window
+            # (MMC1), RODATA shares that switchable bank while CODE loads
+            # into the always-mapped fixed bank -- without this, debug_init/
+            # debug_update link into the switchable window and the CPU
+            # executes stale table bytes as opcodes the moment a different
+            # bank is selected when the NMI handler calls debug_update.
+            music_content += '\n.segment "CODE"\n'
+            music_content += overlay.generate_full_debug_system()
 
         # fetch_sequence_byte (bytecode runtime only) is .import'ed and called
         # by nes/audio_engine.asm (#314/EXP-12 -- this used to also append a
@@ -318,8 +328,22 @@ read_joypad_once:
     ; Test APU initialization
     jsr debug_test_apu
 """
-            debug_update_call = """
-    ; Update debug overlay
+            # Defense in depth for #388/MAP-2026-08-05-1: debug_init/
+            # debug_update now live in the always-mapped CODE segment (see
+            # the .segment "CODE" fix above), so which switchable bank is
+            # selected no longer affects whether `jsr debug_update` reaches
+            # the right code. But update_music's per-table bank-switching
+            # (MMC1 direct export) leaves an arbitrary bank active on
+            # return, and RODATA (the plain, non-banked segment the DPCM
+            # packer/stub still emit) physically shares bank 0 -- so
+            # reselecting bank 0 here means that even if a future change
+            # reintroduces debug code into an inherited RODATA segment, the
+            # bank left active is the one that content actually lives in.
+            bank_restore = ""
+            if self.mapper.direct_export_bank_size() is not None:
+                bank_restore = "\n" + self.mapper.generate_bank_switch_code(0) + "\n"
+            debug_update_call = f"""
+{bank_restore}    ; Update debug overlay
     jsr debug_update
 """
 
