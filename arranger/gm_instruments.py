@@ -1197,6 +1197,12 @@ class DrumMapping:
     noise_period: Optional[int] = None  # For noise channel (0-15)
     use_sample: bool = False
     notes: str = ""
+    # Noise mode bit ($400E bit 7): True selects periodic/short-LFSR mode
+    # for a harsh, metallic buzzing tone with a discernible pitch
+    # (docs/APU_NOISE_REFERENCE.md §6), matching the legacy front-end's
+    # METALLIC_NOISE_ROLES (dpcm_sampler/enhanced_drum_mapper.py, #204/NH-29)
+    # for hi-hats and cowbell (#392/NH-HW-2026-08-05-1).
+    periodic: bool = False
 
 
 GM_DRUM_MAP: Dict[int, DrumMapping] = {
@@ -1212,9 +1218,12 @@ GM_DRUM_MAP: Dict[int, DrumMapping] = {
     # noise_period=0 asks for the top noise frequency, but 0 is the noise-bytecode
     # rest sentinel and is floored to 1 downstream, so the closed hi-hat actually
     # renders at period 1 (#253).
-    42: DrumMapping("Closed Hi-Hat", NESChannel.NOISE, PlayStyle.STACCATO, 6, noise_period=0),
-    44: DrumMapping("Pedal Hi-Hat", NESChannel.NOISE, PlayStyle.STACCATO, 5, noise_period=1),
-    46: DrumMapping("Open Hi-Hat", NESChannel.NOISE, PlayStyle.SUSTAIN, 6, noise_period=2),
+    # periodic=True selects noise mode 1 (metallic buzz with a discernible pitch),
+    # matching the legacy front-end's METALLIC_NOISE_ROLES for these same GM roles
+    # (#392/NH-HW-2026-08-05-1).
+    42: DrumMapping("Closed Hi-Hat", NESChannel.NOISE, PlayStyle.STACCATO, 6, noise_period=0, periodic=True),
+    44: DrumMapping("Pedal Hi-Hat", NESChannel.NOISE, PlayStyle.STACCATO, 5, noise_period=1, periodic=True),
+    46: DrumMapping("Open Hi-Hat", NESChannel.NOISE, PlayStyle.SUSTAIN, 6, noise_period=2, periodic=True),
 
     # Toms - mapped to Triangle, but triangle is exclusively bass-owned
     # (role_analyzer._assign_channels never grants it to a drum track --
@@ -1244,7 +1253,7 @@ GM_DRUM_MAP: Dict[int, DrumMapping] = {
     37: DrumMapping("Side Stick", NESChannel.NOISE, PlayStyle.STACCATO, 5, noise_period=0),
     39: DrumMapping("Hand Clap", NESChannel.NOISE, PlayStyle.STACCATO, 6, noise_period=3),
     54: DrumMapping("Tambourine", NESChannel.NOISE, PlayStyle.STACCATO, 3, noise_period=1),
-    56: DrumMapping("Cowbell", NESChannel.NOISE, PlayStyle.STACCATO, 4, noise_period=8),
+    56: DrumMapping("Cowbell", NESChannel.NOISE, PlayStyle.STACCATO, 4, noise_period=8, periodic=True),
 
     # Latin percussion
     60: DrumMapping("Hi Bongo", NESChannel.NOISE, PlayStyle.STACCATO, 3, noise_period=1),

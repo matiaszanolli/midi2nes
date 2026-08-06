@@ -87,9 +87,71 @@ class TestNoisePeriodRouting(unittest.TestCase):
         for pitch in range(35, 82):
             result = self.va._allocate_noise(self._candidates(pitch))
             if result is not None:
-                period, _ = result
+                period, _velocity, _mode = result
                 self.assertGreaterEqual(period, 0)
                 self.assertLessEqual(period, 15)
+
+
+class TestNoiseModeBit(unittest.TestCase):
+    """Regression tests for #392/NH-HW-2026-08-05-1: --arranger had no
+    producer for the noise mode bit ($400E bit 7), so hi-hats/cowbell always
+    rendered as generic long-mode noise instead of the metallic/periodic
+    timbre the legacy front-end's METALLIC_NOISE_ROLES produces for the same
+    GM roles."""
+
+    def setUp(self):
+        self.va = VoiceAllocator()
+        self.track_info = TrackAnalysis(track_id=0)
+
+    def _candidates(self, *pitches):
+        return [(0, _note(p), self.track_info) for p in pitches]
+
+    def test_hihats_and_cowbell_get_periodic_mode(self):
+        for pitch in (42, 44, 46, 56):  # closed/pedal/open hi-hat, cowbell
+            result = self.va._allocate_noise(self._candidates(pitch))
+            self.assertIsNotNone(result)
+            _period, _velocity, mode = result
+            self.assertEqual(mode, 1, f"GM note {pitch} should be periodic mode")
+
+    def test_other_percussion_stays_long_mode(self):
+        for pitch in (38, 40, 41, 49, 51, 60):  # snares, tom, cymbals, bongo
+            result = self.va._allocate_noise(self._candidates(pitch))
+            if result is not None:
+                _period, _velocity, mode = result
+                self.assertEqual(mode, 0, f"GM note {pitch} should stay long-mode")
+
+    def test_pipeline_integration_sets_control_bit_6_for_hihat(self):
+        """End-to-end: arrange_for_nes's noise output must carry the mode bit
+        in `control` bit 6 for a closed hi-hat, matching the legacy
+        front-end's $400E bit 7 semantics."""
+        from arranger.pipeline_integration import arrange_for_nes
+        midi_events = {
+            'drums': [
+                {'frame': 0, 'note': 42, 'velocity': 100, 'channel': 9, 'duration': 4},
+            ]
+        }
+        frames = arrange_for_nes(midi_events, arp_speed=3, verbose=False)
+        noise = frames.get('noise', {})
+        self.assertTrue(noise, "expected noise frames for a hi-hat note")
+        self.assertTrue(
+            all(entry['control'] & 0x40 for entry in noise.values()),
+            "closed hi-hat frames must have control bit 6 (mode) set",
+        )
+
+    def test_pipeline_integration_leaves_non_metallic_control_bit_6_clear(self):
+        from arranger.pipeline_integration import arrange_for_nes
+        midi_events = {
+            'drums': [
+                {'frame': 0, 'note': 49, 'velocity': 100, 'channel': 9, 'duration': 4},
+            ]
+        }
+        frames = arrange_for_nes(midi_events, arp_speed=3, verbose=False)
+        noise = frames.get('noise', {})
+        self.assertTrue(noise, "expected noise frames for a crash cymbal note")
+        self.assertTrue(
+            all(not (entry['control'] & 0x40) for entry in noise.values()),
+            "crash cymbal frames must not have control bit 6 (mode) set",
+        )
 
 
 class TestDrumTrackDualRouting(unittest.TestCase):

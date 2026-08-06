@@ -129,8 +129,20 @@ verify it holds:
   period via `self.midi_to_nes_pitch(e['note'], 'noise')` (floored at 1, since 0 is
   the bytecode rest sentinel) and reads `noise_mode` from the event
   (`e.get('noise_mode', 0) & 1`) instead of hardcoding mode 0 — confirm the mode bit
-  is still reachable end-to-end (does any producer ever set `noise_mode: 1`, or is
-  it dead-but-correct plumbing?).
+  is still reachable end-to-end: `dpcm_sampler/enhanced_drum_mapper.py`'s
+  `_noise_mode_for_note`/`METALLIC_NOISE_ROLES` (#204/NH-29) is the live producer on
+  the legacy front-end, deterministically for hi-hats/cowbell, not "rare".
+- **#392 (NH-HW-2026-08-05-1) is CLOSED**: the `--arranger` front-end used to have no
+  equivalent producer at all — its noise frames go through a separate path
+  (`arranger/voice_allocator.py`'s `_allocate_noise` → `arranger/pipeline_integration.py`'s
+  `data.get('mode', 0)`, a distinct key from `emulator_core.py`'s `noise_mode` above — not
+  the same code path), and `DrumMapping` (`arranger/gm_instruments.py`) had no mode field,
+  so every `--arranger` percussion hit rendered as long-mode noise regardless of GM role.
+  `DrumMapping.periodic` now mirrors `METALLIC_NOISE_ROLES` for the same four GM roles
+  (closed/pedal/open hi-hat, cowbell), threaded through `_allocate_noise`'s return
+  (now `(period, velocity, mode)`) into the noise frame dict's `mode` key. Verify-the-fix:
+  a closed hi-hat (GM note 42) through `--arranger` must produce `control & 0x40` set; a
+  non-metallic role (e.g. GM note 49, crash cymbal) must not.
 - NH-19 (#162, noise decay) is fixed: `process_all_tracks` bakes a software volume
   ramp per hit, cut short by a re-trigger. `NOISE_DECAY_FRAMES = 6` and the ramp
   formula (`noise_strike_decay_volume`: `peak_volume * (span - offset) / span`,
