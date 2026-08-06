@@ -1,5 +1,8 @@
 # TD-08: Stale DPCM .incbin TODO in exporter_ca65 — work is done by DpcmPacker elsewhere
 
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/137
+**Labels:** enhancement, low, documentation
+
 **Severity:** LOW · **Domain:** documentation · **Source:** AUDIT_TECH_DEBT_2026-06-29.md
 
 ## Description
@@ -22,3 +25,4 @@ TD-12; mapper/segment findings M-1/M-6 (#22) in `AUDIT_MAPPERS_2026-06-28.md`.
 ## Completeness Checks
 - [ ] **DOC**: The stale marker is corrected to reflect that `DpcmPacker` owns the `.incbin`/tables
 - [ ] **SIBLING**: No other stale "not yet inserted" markers in the exporter
+

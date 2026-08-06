@@ -1,5 +1,8 @@
 # TD-11: export_direct_frames (~723-line method) and run_full_pipeline (~260 lines) are monoliths
 
+**URL:** https://github.com/matiaszanolli/midi2nes/issues/136
+**Labels:** enhancement, low, tech-debt
+
 **Severity:** LOW · **Domain:** tech-debt · **Source:** AUDIT_TECH_DEBT_2026-06-29.md
 
 ## Description
@@ -22,3 +25,4 @@ REG-05 (#45), TD-12.
 ## Completeness Checks
 - [ ] **TESTS**: Extracted per-channel emitters become independently unit-testable (addresses REG-05)
 - [ ] **CONTRACT**: Refactor preserves the exact emitted `music.asm` byte output
+

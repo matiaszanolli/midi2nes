@@ -3,7 +3,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from exporter.exporter_ca65 import CA65Exporter
+from exporter.exporter_ca65 import CA65Exporter, TRIANGLE_CONTROL_ON
 from nes.project_builder import NESProjectBuilder
 from mappers.mmc3 import MMC3Mapper
 from mappers.mmc1 import MMC1Mapper
@@ -1211,6 +1211,136 @@ class TestNoteClampReporting(unittest.TestCase):
     def test_sustained_out_of_range_note_counted_once(self):
         # A single note held across many frames is one re-pitch, not one per frame.
         self.assertEqual(self._export([100, 100, 100, 100]), {'high': 1, 'low': 0})
+
+
+class TestDirectExportPerChannelEmittersIsolated(unittest.TestCase):
+    """Regression (#136/TD-11): export_direct_frames's per-channel table and
+    playback-subroutine emission used to only be reachable through the full
+    ~750-line method. Extracted into independently callable methods so each
+    channel's emission can be pinned/unit-tested in isolation (cf. REG-05
+    / #45's testability gap) without constructing a full frames dict or
+    writing a file. export_direct_frames's own byte-output tests (this file
+    and TestCA65Export) are the CONTRACT check that the extraction didn't
+    change anything -- these are the new isolated-unit-test surface it
+    unlocks."""
+
+    def setUp(self):
+        self.exporter = CA65Exporter()
+
+    def _dummy_ensure_segment(self, table_name):
+        pass  # unbanked: export_direct_frames's own _ensure_segment no-ops too
+
+    def test_emit_pulse_or_triangle_table_pulse1(self):
+        lines = []
+        channel_data = {'0': {'note': 60, 'volume': 15, 'control': 0x80, 'pitch': 428}}
+        self.exporter._emit_pulse_or_triangle_table(
+            lines, 'pulse1', channel_data, max_frame=0,
+            ensure_segment=self._dummy_ensure_segment)
+        text = '\n'.join(lines)
+        self.assertIn('pulse1_note:', text)
+        self.assertIn('pulse1_control:', text)
+        self.assertIn('pulse1_timer_lo:', text)
+        self.assertIn('pulse1_timer_hi:', text)
+        self.assertIn('$3C', text)  # note 60 = 0x3C
+
+    def test_emit_pulse_or_triangle_table_triangle_uses_gate_not_volume(self):
+        """Triangle has no volume/duty (docs/APU_TRIANGLE_REFERENCE.md §1) --
+        control must be the fixed gate value, not a volume-scaled byte."""
+        lines = []
+        channel_data = {'0': {'note': 40, 'volume': 15, 'pitch': 200}}
+        self.exporter._emit_pulse_or_triangle_table(
+            lines, 'triangle', channel_data, max_frame=0,
+            ensure_segment=self._dummy_ensure_segment)
+        text = '\n'.join(lines)
+        control_line = [l for l in lines if l.startswith('triangle_control:')]
+        self.assertTrue(control_line)
+        idx = lines.index(control_line[0])
+        self.assertIn(f'${TRIANGLE_CONTROL_ON:02X}', lines[idx + 1])
+
+    def test_emit_noise_table_silent_frame_is_zero(self):
+        lines = []
+        emitted = {}
+
+        def emit_byte_table(label, values):
+            emitted[label] = values
+
+        self.exporter._emit_noise_table(lines, {}, max_frame=0, emit_byte_table=emit_byte_table)
+        self.assertEqual(emitted['noise_note'], ['$00'])
+        self.assertEqual(emitted['noise_ctrl'], ['$00'])
+        self.assertEqual(emitted['noise_reg'], ['$00'])
+
+    def test_emit_dpcm_table_encodes_note_plus_one_sentinel(self):
+        lines = []
+        emitted = {}
+
+        def emit_byte_table(label, values):
+            emitted[label] = values
+
+        channel_data = {'0': {'note': 5, 'volume': 15}}
+        self.exporter._emit_dpcm_table(lines, channel_data, max_frame=0, emit_byte_table=emit_byte_table)
+        self.assertEqual(emitted['dpcm_note'], ['$05'])
+
+    def test_emit_pulse1_proc_writes_4000_4002_4003(self):
+        lines = []
+        self.exporter._emit_pulse1_proc(lines, mapper=None, table_bank={}, bank_size=None)
+        text = '\n'.join(lines)
+        self.assertIn('.proc play_pulse1', text)
+        self.assertIn('sta $4000', text)
+        self.assertIn('sta $4002', text)
+        self.assertIn('sta $4003', text)
+        self.assertIn('.endproc', text)
+
+    def test_emit_pulse2_proc_writes_4004_4006_4007(self):
+        lines = []
+        self.exporter._emit_pulse2_proc(lines, mapper=None, table_bank={}, bank_size=None)
+        text = '\n'.join(lines)
+        self.assertIn('.proc play_pulse2', text)
+        self.assertIn('sta $4004', text)
+        self.assertIn('sta $4006', text)
+        self.assertIn('sta $4007', text)
+
+    def test_emit_triangle_proc_writes_4008_400a_400b_no_volume(self):
+        lines = []
+        self.exporter._emit_triangle_proc(lines, mapper=None, table_bank={}, bank_size=None)
+        text = '\n'.join(lines)
+        self.assertIn('.proc play_triangle', text)
+        self.assertIn('sta $4008', text)
+        self.assertIn('sta $400A', text)
+        self.assertIn('sta $400B', text)
+
+    def test_emit_noise_proc_halts_and_sets_constant_volume(self):
+        """#162/NH-19: noise must always halt + constant-volume, never rely
+        on hardware decay."""
+        lines = []
+        self.exporter._emit_noise_proc(lines, mapper=None, table_bank={}, bank_size=None)
+        text = '\n'.join(lines)
+        self.assertIn('.proc play_noise', text)
+        self.assertIn('sta $400C', text)
+        self.assertIn('sta $400E', text)
+
+    def test_emit_dpcm_proc_guards_unpacked_slot(self):
+        """#367/DP-DPCM-05: a $00 length_reg (never packed) must skip the
+        trigger, not read a stray byte from bank 0."""
+        lines = []
+        self.exporter._emit_dpcm_proc(lines, mapper=None, table_bank={}, bank_size=None)
+        text = '\n'.join(lines)
+        self.assertIn('.proc play_dpcm', text)
+        self.assertIn('dpcm_len_table,y', text)
+        self.assertIn('sta $4013', text)
+
+    def test_pulse1_pulse2_asymmetric_comments_preserved(self):
+        """The refactor must not silently 'clean up' pulse1's extra inline
+        comments that pulse2 historically lacks -- that would be a real (if
+        cosmetic) change to the emitted music.asm text, which the refactor
+        must not make (CONTRACT check)."""
+        p1_lines, p2_lines = [], []
+        self.exporter._emit_pulse1_proc(p1_lines, mapper=None, table_bank={}, bank_size=None)
+        self.exporter._emit_pulse2_proc(p2_lines, mapper=None, table_bank={}, bank_size=None)
+        p1_text, p2_text = '\n'.join(p1_lines), '\n'.join(p2_lines)
+        self.assertIn("Same note - sustain, don't retrigger", p1_text)
+        self.assertNotIn("Same note - sustain, don't retrigger", p2_text)
+        self.assertIn('; Silence the channel', p1_text)
+        self.assertNotIn('; Silence the channel', p2_text)
 
 
 if __name__ == '__main__':

@@ -320,7 +320,7 @@ class EnhancedDrumMapper:
                 if pattern_info:
                     # Handle pattern-based sample allocation
                     events_list, noise_list = self._handle_pattern_event(
-                        pattern_info, midi_note, velocity, frame
+                        pattern_info, midi_note, velocity, frame, use_advanced
                     )
                     dpcm_events.extend(events_list)
                     noise_events.extend(noise_list)
@@ -385,7 +385,8 @@ class EnhancedDrumMapper:
     def _handle_pattern_event(self, pattern_info: Dict,
                             midi_note: int,
                             velocity: int,
-                            frame: int) -> Tuple[List[Dict], List[Dict]]:
+                            frame: int,
+                            use_advanced: bool = True) -> Tuple[List[Dict], List[Dict]]:
         """Handle sample allocation for pattern-based events.
 
         Returns (dpcm_events, noise_events) -- a resolution miss used to be
@@ -403,8 +404,10 @@ class EnhancedDrumMapper:
 
         # Try to reuse previously allocated samples for this pattern. Raw
         # catalog id emitted as-is -- see the non-pattern path's comment
-        # (#254/D-17) on why no raw-id ceiling belongs here.
-        sample_name = self._resolve_dpcm_sample_name(template_note, velocity)
+        # (#254/D-17) on why no raw-id ceiling belongs here. use_advanced
+        # must thread through from map_drums's caller, not silently default
+        # to True regardless of what was asked for (#202/D-16).
+        sample_name = self._resolve_dpcm_sample_name(template_note, velocity, use_advanced)
 
         if sample_name:
             sample_data = self.sample_index[sample_name]
