@@ -38,7 +38,7 @@ class FrameAllocation:
     pulse1: Optional[Tuple[int, int, DutyCycle]] = None  # (note, velocity, duty)
     pulse2: Optional[Tuple[int, int, DutyCycle]] = None
     triangle: Optional[Tuple[int, int]] = None  # (note, velocity) - no duty
-    noise: Optional[Tuple[int, int]] = None  # (period, velocity)
+    noise: Optional[Tuple[int, int, int]] = None  # (period, velocity, mode)
     dpcm: Optional[int] = None  # sample index
 
 
@@ -323,7 +323,7 @@ class VoiceAllocator:
     def _allocate_noise(
         self,
         notes_data: List[Tuple[int, NoteInfo, TrackAnalysis]],
-    ) -> Optional[Tuple[int, int]]:
+    ) -> Optional[Tuple[int, int, int]]:
         """Allocate to noise channel for drums/percussion."""
         if not notes_data:
             self.noise.note = None
@@ -343,13 +343,20 @@ class VoiceAllocator:
         # floored to 1 at the noise-bytecode boundary, because period 0 is the
         # rest sentinel — so period-0 drums render one step lower in frequency
         # (#253, see arranger/pipeline_integration.py).
-        noise_period = get_drum_mapping(note.pitch).noise_period
+        drum_mapping = get_drum_mapping(note.pitch)
+        noise_period = drum_mapping.noise_period
         if noise_period is None:
             noise_period = 5
         noise_period = max(0, min(15, noise_period))
 
+        # Mode bit ($400E bit 7): periodic/metallic mode for the GM roles
+        # the legacy front-end also plays that way (hi-hats, cowbell —
+        # #392/NH-HW-2026-08-05-1). `drum_mapping.periodic` is False for
+        # every other role, matching the pre-fix default of always mode 0.
+        mode = 1 if drum_mapping.periodic else 0
+
         self.noise.note = note.pitch
-        return (noise_period, note.velocity)
+        return (noise_period, note.velocity, mode)
 
     def _allocate_dpcm(
         self,
@@ -463,10 +470,11 @@ class FrameByFrameAllocator:
                 }
 
             if allocation.noise:
-                period, vel = allocation.noise
+                period, vel, mode = allocation.noise
                 frames["noise"][frame] = {
                     "period": period,
                     "volume": max(1, vel // 8),
+                    "mode": mode,
                 }
 
             if allocation.dpcm is not None:

@@ -129,23 +129,23 @@ class NESProjectBuilder:
 
         print(f"  Using {self.mapper.name} with {self.mapper.prg_rom_size // 1024}KB PRG-ROM")
 
-        # Capacity pre-flight (#363/MAP-2026-07-19-3): the CLI runs
-        # check_mapper_capacity before calling us, but a library consumer that
-        # builds NESProjectBuilder(...).prepare_project(...) directly would
-        # otherwise get no clean overflow message and rely entirely on ld65
-        # erroring at link time. Gate here too so both entry points fail the
-        # same way, with the region-naming budget message. ld65 stays the exact
-        # backstop. Runs on the source music.asm (before any transforms below),
-        # matching what the CLI check sizes.
-        check_mapper_capacity(music_asm_path, self.mapper)
-
         if self.debug_mode:
             print(f"  Debug mode enabled - adding on-screen diagnostics")
             from nes.debug_overlay import NESDebugOverlay
             overlay = NESDebugOverlay(enable_overlay=True)
             music_content += "\n.importzp ptr1, temp1, temp2, frame_counter\n"
             music_content += "\n.global debug_init, debug_update, debug_test_apu\n"
-            music_content += "\n" + overlay.generate_full_debug_system()
+            # Explicit .segment "CODE" (#388/MAP-2026-08-05-1): the overlay
+            # text otherwise inherits whatever segment was last active in
+            # music.asm (in practice "RODATA", from the DPCM packer's stub
+            # tables). On mappers with a switchable direct-export window
+            # (MMC1), RODATA shares that switchable bank while CODE loads
+            # into the always-mapped fixed bank -- without this, debug_init/
+            # debug_update link into the switchable window and the CPU
+            # executes stale table bytes as opcodes the moment a different
+            # bank is selected when the NMI handler calls debug_update.
+            music_content += '\n.segment "CODE"\n'
+            music_content += overlay.generate_full_debug_system()
 
         # fetch_sequence_byte (bytecode runtime only) is .import'ed and called
         # by nes/audio_engine.asm (#314/EXP-12 -- this used to also append a
@@ -210,7 +210,23 @@ fetch_sequence_byte:
                 )
 
         # Write music.asm
-        (self.project_path / "music.asm").write_text(music_content)
+        music_asm_out = self.project_path / "music.asm"
+        music_asm_out.write_text(music_content)
+
+        # Capacity pre-flight (#363/MAP-2026-07-19-3, #389/MAP-2026-08-05-2):
+        # the CLI runs check_mapper_capacity before calling us too, but a
+        # library consumer that builds NESProjectBuilder(...).prepare_project(...)
+        # directly would otherwise get no clean overflow message and rely
+        # entirely on ld65 erroring at link time. Gate here so both entry
+        # points fail the same way, with the region-naming budget message.
+        # Runs on the *final* written music.asm -- after the --debug overlay,
+        # fetch_sequence_byte, and DPCM-stub content above are all folded in
+        # -- rather than the pre-transform source file, so a song that only
+        # overflows once that ~800+ bytes of extra content is added is still
+        # caught here instead of surfacing as a raw ld65 region overflow (or,
+        # on a mapper with a switchable direct-export bank, not failing
+        # cleanly at all). ld65 stays the exact backstop.
+        check_mapper_capacity(str(music_asm_out), self.mapper)
         
         # Audio Engine
         engine_src = Path(__file__).parent / "audio_engine.asm"
@@ -318,8 +334,22 @@ read_joypad_once:
     ; Test APU initialization
     jsr debug_test_apu
 """
-            debug_update_call = """
-    ; Update debug overlay
+            # Defense in depth for #388/MAP-2026-08-05-1: debug_init/
+            # debug_update now live in the always-mapped CODE segment (see
+            # the .segment "CODE" fix above), so which switchable bank is
+            # selected no longer affects whether `jsr debug_update` reaches
+            # the right code. But update_music's per-table bank-switching
+            # (MMC1 direct export) leaves an arbitrary bank active on
+            # return, and RODATA (the plain, non-banked segment the DPCM
+            # packer/stub still emit) physically shares bank 0 -- so
+            # reselecting bank 0 here means that even if a future change
+            # reintroduces debug code into an inherited RODATA segment, the
+            # bank left active is the one that content actually lives in.
+            bank_restore = ""
+            if self.mapper.direct_export_bank_size() is not None:
+                bank_restore = "\n" + self.mapper.generate_bank_switch_code(0) + "\n"
+            debug_update_call = f"""
+{bank_restore}    ; Update debug overlay
     jsr debug_update
 """
 

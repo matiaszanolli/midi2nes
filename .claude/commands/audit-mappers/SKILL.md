@@ -109,12 +109,15 @@ gaps it doesn't cover (#11, #126, #127, all fixed).
 - `check_mapper_capacity()` (`mappers/capacity.py:84-102`, re-exported from `main.py` for
   existing `from main import check_mapper_capacity` callers — #363/MAP-2026-07-19-3) calls
   `mapper.validate_segment_sizes(estimate_segment_sizes(music_asm_path))` and raises
-  `ValueError` (caught and turned into a clean exit at the CLI layer) before any project
-  files are written. It is invoked from `run_prepare()`/the full pipeline in `main.py`
-  (`main.py:491`, `:1070`) AND, independently, from `NESProjectBuilder.prepare_project()`
-  (`nes/project_builder.py:140`) — so a library consumer calling
-  `NESProjectBuilder(...).prepare_project(...)` directly now gets the same pre-flight the
-  CLI gets, not just an eventual raw `ld65` overflow (closes the gap noted below).
+  `ValueError` (caught and turned into a clean exit at the CLI layer). It is invoked from
+  `run_prepare()`/the full pipeline in `main.py` (`main.py:491`, `:1070`, against the raw
+  exporter output, before `NESProjectBuilder` is even constructed — kept for its fast, clean
+  early-exit UX) AND, independently, from `NESProjectBuilder.prepare_project()`
+  (`nes/project_builder.py`, after `music.asm` is written to `self.project_path` — #389/
+  MAP-2026-08-05-2) — so a library consumer calling `NESProjectBuilder(...).prepare_project(...)`
+  directly now gets the same pre-flight the CLI gets, sized against the *actual final*
+  `music.asm` (debug overlay / `fetch_sequence_byte` / DPCM-stub content all folded in), not
+  just an eventual raw `ld65` overflow.
   Separately, `ROMCompiler.compile()` (`compiler/compiler.py:188-194`) recovers the mapper
   from the `nes.cfg` marker via `_recover_mapper_from_cfg` when none is passed, and uses it
   for the **post-link exact-size check** (`:242-252`, `rom_size == mapper.prg_rom_size +
@@ -130,23 +133,41 @@ gaps it doesn't cover (#11, #126, #127, all fixed).
   against the 8KB bank size, plus a check that no bank index exceeds `SWAP_BANK_COUNT`
   (60) — this closes the "no cap on bank count" gap (#127).
 - Remaining things to verify on each audit:
-  - `estimate_segment_sizes()` (`main.py:93-...`) is a **text-scan heuristic** (regex
-    counts over `.byte`/`.word`/`.incbin` per active `.segment`), not a real assembly.
-    Check it can't systematically *under*-count (e.g. multi-directive lines, macros that
-    expand to more bytes than one `.byte`/`.word` per line) in a way that lets an
-    oversized song pass the pre-flight and hit a raw `ld65` region-overflow instead —
-    `ld65` remains the correctness backstop, but a misleading pre-flight message is at
-    least MEDIUM.
+  - `estimate_segment_sizes()` (`mappers/capacity.py:20-...`, re-exported from `main.py`) is
+    a **text-scan heuristic** (regex/token counts over `.byte`/`.word`/`.incbin` per active
+    `.segment`), not a real assembly. Check it can't systematically *under*-count (e.g.
+    multi-directive lines, macros that expand to more bytes than one `.byte`/`.word` per
+    line) in a way that lets an oversized song pass the pre-flight and hit a raw `ld65`
+    region-overflow instead — `ld65` remains the correctness backstop, but a misleading
+    pre-flight message is at least MEDIUM.
+  - **#390 (MAP-2026-08-05-3) is CLOSED**: `.byte`/`.word` operand counting used to split on
+    every comma and treat each resulting token as exactly one byte — correct for a numeric
+    literal, wrong for a quoted string token (undercounted its real character length, e.g.
+    `.byte "NES", $1A` counted as 2 bytes instead of 4) and wrong the other way for a comma
+    embedded inside a string (over-split into extra tokens). `mappers/capacity.py`'s
+    `_split_operands()`/`_byte_operand_length()` now quote-aware split and count a string
+    token's actual length. Verify-the-fix: a `.byte "some, string", $00` line must size as
+    13 bytes (12-char string + 1), not 3 tokens' worth; a plain numeric `.byte` line's count
+    must be unchanged.
   - **#363 (MAP-2026-07-19-3) is CLOSED**: the capacity gate used to live entirely in
     `main.py` (the CLI layer), so a caller using `NESProjectBuilder` as a library directly
     (bypassing `main.py`) got no pre-flight and relied solely on `ld65` erroring at link
     time — flagged as a defense-in-depth gap. `check_mapper_capacity` is now
-    `NESProjectBuilder.prepare_project()`'s own call (`nes/project_builder.py:140`), not
-    something only the CLI does on its behalf. Verify-the-fix: confirm the call still runs
-    on the *source* `music.asm` before any of `prepare_project`'s own transforms (matching
-    what the CLI sizes), and that it fires unconditionally (not just when invoked via
-    `main.py`) — e.g. by constructing `NESProjectBuilder` directly in a test and confirming
-    an oversized song raises there too, not just through the CLI.
+    `NESProjectBuilder.prepare_project()`'s own call, not something only the CLI does on its
+    behalf. Verify-the-fix: it fires unconditionally (not just when invoked via `main.py`) —
+    e.g. by constructing `NESProjectBuilder` directly in a test and confirming an oversized
+    song raises there too, not just through the CLI.
+  - **#389 (MAP-2026-08-05-2) is CLOSED**: `NESProjectBuilder.prepare_project()`'s own
+    capacity check used to run on the pre-transform *source* `music.asm`, strictly before
+    the `--debug` overlay / `fetch_sequence_byte` / DPCM-stub content were appended — so a
+    song that only overflowed once that ~800+ bytes of extra content was added slipped past
+    the pre-flight (surfacing as a raw `ld65` overflow, or, on a mapper with a switchable
+    direct-export bank, not failing cleanly at all — see #388). The call now runs on the
+    *final* written `music.asm`, after every transform is folded in. `main.py`'s own earlier
+    CLI-layer call is unchanged (still sizes the raw exporter output, before
+    `NESProjectBuilder` is constructed) and is not the last word for a `--debug` build.
+    Verify-the-fix: a song sized to fit within capacity on its own, but not once the debug
+    overlay is added, must raise from `NESProjectBuilder.prepare_project(debug_mode=True)`.
   - Sanity-check the capacity numbers themselves: NROM `get_data_capacity()`
     (`mappers/nrom.py:67-69`) returns 30KB against a 32KB ROM; `BaseMapper`'s default
     (`mappers/base.py:140-147`) subtracts a flat 2048 bytes for code+vectors. Flag a

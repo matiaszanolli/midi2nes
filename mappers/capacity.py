@@ -14,6 +14,42 @@ from typing import Dict
 from .base import BaseMapper
 
 
+def _split_operands(text: str):
+    """Quote-aware comma-split for a `.byte`/`.word` operand list.
+
+    A naive ``text.split(',')`` mis-parses two ways (#390/MAP-2026-08-05-3):
+    a comma *inside* a quoted string (``.byte "some, string", $00``) is
+    wrongly treated as a token separator, and each quoted-string token
+    itself needs its real character length, not "1 token = 1 byte" like a
+    numeric literal. This only splits on commas outside `"..."`.
+    """
+    tokens = []
+    current = []
+    in_string = False
+    for ch in text:
+        if ch == '"':
+            in_string = not in_string
+            current.append(ch)
+        elif ch == ',' and not in_string:
+            tokens.append(''.join(current))
+            current = []
+        else:
+            current.append(ch)
+    tokens.append(''.join(current))
+    return [t.strip() for t in tokens if t.strip()]
+
+
+def _byte_operand_length(token: str) -> int:
+    """Bytes a single `.byte` operand contributes: a quoted string's actual
+    character length, or 1 for a numeric/character literal (#390/
+    MAP-2026-08-05-3 -- a quoted string used to be counted as exactly one
+    token/one byte regardless of its length, e.g. `.byte "NES", $1A`
+    undercounting the 3-character "NES" token by 2)."""
+    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+        return len(token) - 2  # characters between the quotes
+    return 1
+
+
 def estimate_segment_sizes(music_asm_path) -> Dict[str, int]:
     """ROM byte totals music.asm emits (.byte/.word/.incbin), keyed by the active
     `.segment "NAME"`.
@@ -56,9 +92,9 @@ def estimate_segment_sizes(music_asm_path) -> Dict[str, int]:
             continue
         n = 0
         if low.startswith('.byte'):
-            n = len([t for t in line[5:].split(',') if t.strip()])
+            n = sum(_byte_operand_length(t) for t in _split_operands(line[5:]))
         elif low.startswith('.word'):
-            n = 2 * len([t for t in line[5:].split(',') if t.strip()])
+            n = 2 * len(_split_operands(line[5:]))
         elif low.startswith('.incbin'):
             bounded = re.search(r'"[^"]+"\s*,\s*\d+\s*,\s*(\d+)', line)
             if bounded:

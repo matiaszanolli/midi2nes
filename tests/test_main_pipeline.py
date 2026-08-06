@@ -1068,6 +1068,35 @@ class TestPipelineSafetyGates:
         assert sizes["RODATA"] == 3
         assert sizes["BANK_00"] == 4 + 4081
 
+    def test_estimate_segment_sizes_counts_string_literal_length(self):
+        """Regression (#390/MAP-2026-08-05-3): a quoted `.byte "string"` token
+        must count its real character length, not "1 token = 1 byte" like a
+        numeric literal -- the old naive comma-split undercounted every
+        string line (e.g. the iNES header's `.byte "NES", $1A"` was counted
+        as 2 bytes instead of the real 4)."""
+        from main import estimate_segment_sizes
+        asm = self.temp_dir / "strings.asm"
+        asm.write_text(
+            '.segment "HEADER"\n'
+            '    .byte "NES", $1A\n'          # "NES" (3) + $1A (1) = 4
+            '.segment "RODATA"\n'
+            '    .byte "MIDI2NES DEBUG v1.0", $00\n'  # 19-char string + $00 = 20
+        )
+        sizes = estimate_segment_sizes(str(asm))
+        assert sizes["HEADER"] == 4
+        assert sizes["RODATA"] == 20
+
+    def test_estimate_segment_sizes_ignores_comma_inside_string(self):
+        """A comma inside a quoted string literal is not a token separator
+        (#390/MAP-2026-08-05-3) -- the naive split would previously treat
+        `.byte "some, string", $00` as 3 tokens (overcounting) instead of the
+        real 13 bytes (12-char string + 1 terminator byte)."""
+        from main import estimate_segment_sizes
+        asm = self.temp_dir / "embedded_comma.asm"
+        asm.write_text('.segment "RODATA"\n    .byte "some, string", $00\n')
+        sizes = estimate_segment_sizes(str(asm))
+        assert sizes["RODATA"] == 13
+
     def test_estimate_segment_sizes_accounts_for_align_padding(self):
         """Regression (#301/MAP-2026-07-06-2): `.align N` must round the
         running per-segment offset up to the next multiple of N, matching

@@ -456,6 +456,75 @@ class TestDebugModeIntegration:
         # Without debug, should be close to original size
         assert generated_size >= original_size - 100  # Allow some variation
 
+    def test_debug_overlay_gets_explicit_code_segment(self, project_dir, temp_dir):
+        """#388/MAP-2026-08-05-1: the debug overlay must not inherit whatever
+        segment was last active in music.asm. Build a fixture ending in
+        .segment "RODATA" (matching the real DPCM-stub-appended case) and
+        assert an explicit .segment "CODE" directive sits between that and
+        debug_init: -- with nothing else (in particular no other .segment)
+        in between."""
+        music_asm = temp_dir / "music_ending_in_rodata.asm"
+        music_asm.write_text(
+            '.export init_music, update_music\n'
+            '.segment "CODE"\n'
+            'init_music:\n    rts\n'
+            'update_music:\n    rts\n'
+            '.segment "RODATA"\n'
+            'dpcm_bank_table:\n    .byte $00\n'
+        )
+
+        from mappers.mmc1 import MMC1Mapper
+        builder = NESProjectBuilder(str(project_dir), debug_mode=True, mapper=MMC1Mapper())
+        builder.prepare_project(str(music_asm))
+
+        content = (project_dir / "music.asm").read_text()
+        before_debug = content.split("debug_init:")[0]
+        # The nearest .segment directive before debug_init: must be CODE,
+        # not the trailing RODATA the fixture (and the real DPCM stub path)
+        # left active.
+        last_segment = before_debug.rsplit('.segment', 1)[-1].splitlines()[0].strip()
+        assert last_segment == '"CODE"', (
+            f"debug_init inherited segment {last_segment!r} instead of an "
+            "explicit CODE segment"
+        )
+
+    def test_mmc1_debug_restores_bank_before_debug_update_call(self, project_dir, minimal_music_asm):
+        """#388/MAP-2026-08-05-1 defense-in-depth: on a mapper with a
+        switchable direct-export bank (MMC1), main.asm's NMI handler must
+        reselect bank 0 before `jsr debug_update`."""
+        from mappers.mmc1 import MMC1Mapper
+        builder = NESProjectBuilder(str(project_dir), debug_mode=True, mapper=MMC1Mapper())
+        builder.prepare_project(str(minimal_music_asm))
+
+        main_asm = (project_dir / "main.asm").read_text()
+        assert "jsr debug_update" in main_asm
+        before_call = main_asm.split("jsr debug_update")[0]
+        # MMC1Mapper.generate_bank_switch_code(0) writes bank 0 via 5
+        # writes to $E000; the last one must appear before the call.
+        bank_select_snippet = MMC1Mapper().generate_bank_switch_code(0)
+        assert bank_select_snippet in before_call
+
+    def test_nrom_and_mmc3_debug_have_no_bank_restore(self, project_dir, minimal_music_asm):
+        """NROM/MMC3 have no switchable direct-export bank
+        (direct_export_bank_size() is None), so no bank-restore code should
+        be emitted before jsr debug_update for them (#388 sibling check)."""
+        from mappers.nrom import NROMMapper
+        from mappers.mmc3 import MMC3Mapper
+
+        for mapper_cls in (NROMMapper, MMC3Mapper):
+            builder = NESProjectBuilder(str(project_dir), debug_mode=True, mapper=mapper_cls())
+            builder.prepare_project(str(minimal_music_asm))
+            main_asm = (project_dir / "main.asm").read_text()
+            # Scope to the nmi: handler's gap between the two jsr calls --
+            # NROM has no bank registers at all, but MMC3's own reset-time
+            # init code legitimately writes $E000 (IRQ disable) elsewhere in
+            # the file, so a whole-file substring check would false-positive.
+            nmi_gap = main_asm.split("jsr update_music")[1].split("jsr debug_update")[0]
+            assert "$E000" not in nmi_gap, (
+                f"{mapper_cls.__name__} should not emit MMC1-style bank-switch code "
+                "between update_music and debug_update"
+            )
+
 
 class TestMultiSongCompatibility:
     """Test legacy multi-song compatibility."""

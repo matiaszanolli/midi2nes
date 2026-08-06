@@ -165,6 +165,34 @@ class TestLibraryCapacityGates:
         builder = NESProjectBuilder(str(tmp_path / "proj"), mapper=NROMMapper())
         assert builder.prepare_project(str(asm)) is True
 
+    def test_prepare_project_capacity_preflight_accounts_for_debug_overlay(self, tmp_path):
+        """Regression (#389/MAP-2026-08-05-2): the pre-flight used to size
+        only the raw exporter output, strictly before prepare_project
+        appends the --debug overlay (~800+ bytes of real CODE). A song that
+        only overflows once that overlay is added must still be caught here
+        instead of surfacing as a raw ld65 region overflow (or, on a mapper
+        with a switchable direct-export bank, not failing cleanly at all --
+        see #388). Size the base RODATA content to leave headroom under
+        TinyMapper's declared capacity, but not enough to also fit the
+        debug overlay's CODE bytes once appended."""
+        from nes.project_builder import NESProjectBuilder
+
+        class DebugSizedMapper(NROMMapper):
+            def get_data_capacity(self) -> int:
+                # Comfortably fits the base RODATA content below on its own,
+                # but not with the debug overlay's ~800+ extra CODE bytes.
+                return 100
+
+        asm = tmp_path / "music.asm"
+        asm.write_text('.segment "RODATA"\nsmall:\n    .byte ' +
+                       ",".join(["$00"] * 40) + "\n")
+        builder = NESProjectBuilder(
+            str(tmp_path / "proj"), debug_mode=True, mapper=DebugSizedMapper()
+        )
+        with pytest.raises(ValueError) as exc:
+            builder.prepare_project(str(asm))
+        assert "does not fit" in str(exc.value)
+
     def test_compiler_recovers_mapper_from_cfg(self, tmp_path):
         from compiler.compiler import _recover_mapper_from_cfg
         from nes.project_builder import NES_CFG_MAPPER_MARKER
