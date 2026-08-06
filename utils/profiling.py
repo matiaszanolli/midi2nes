@@ -63,7 +63,12 @@ class ProfileResult:
 
 class MemoryMonitor:
     """Continuous memory monitoring utility."""
-    
+
+    # A transient sampling hiccup shouldn't end monitoring for the rest of
+    # the run (#375/PERF-A-05); only give up after this many *consecutive*
+    # failures, which more plausibly indicates a persistent condition.
+    _MAX_CONSECUTIVE_SAMPLING_ERRORS = 5
+
     def __init__(self, interval_ms: int = 100):
         """
         Initialize memory monitor.
@@ -123,21 +128,33 @@ class MemoryMonitor:
 
     def _monitor_loop(self):
         """Memory monitoring loop."""
+        consecutive_errors = 0
         while self._monitoring:
             try:
                 memory_mb = self.process.memory_info().rss / 1024 / 1024
                 self._memory_samples.append(memory_mb)
                 self._peak_memory = max(self._peak_memory, memory_mb)
+                consecutive_errors = 0
                 time.sleep(self.interval_ms / 1000.0)
-            except Exception:
-                # Count instead of silently discarding (#336/PERF-16) --
-                # KeyboardInterrupt/SystemExit still propagate since this
-                # only catches Exception. A sampling error ends the loop
-                # (self.process may no longer be readable), but the caller
-                # can now tell a stat-collection failure happened instead of
-                # reading a clean-looking (and possibly short) sample set.
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # The monitored process is genuinely gone or unreadable --
+                # no future sample can ever succeed, so stop for real
+                # instead of retrying forever.
                 self._sampling_errors += 1
                 break
+            except Exception:
+                # Count instead of silently discarding (#336/PERF-16), but
+                # don't end the whole run on one transient hiccup (#375/
+                # PERF-A-05) -- KeyboardInterrupt/SystemExit still propagate
+                # since this only catches Exception. Only give up after
+                # several *consecutive* failures, which more plausibly
+                # indicates a persistent, unrecoverable condition than a
+                # one-off glitch (e.g. a momentarily unreadable /proc entry).
+                self._sampling_errors += 1
+                consecutive_errors += 1
+                if consecutive_errors >= self._MAX_CONSECUTIVE_SAMPLING_ERRORS:
+                    break
+                time.sleep(self.interval_ms / 1000.0)
 
 
 class ProfilerRegistry:

@@ -255,9 +255,12 @@ worth re-confirming, not open defects:
   time — non-blocking (no `interval=`), and accurate for exactly the profiled window.
   Verify-the-fix: confirm neither call site regresses back to `cpu_percent()`, and that a
   zero-duration stage reports `0.0` rather than raising `ZeroDivisionError`.
-- `MemoryMonitor._monitor_loop` swallows all exceptions with bare `except: break` and
-  samples on a daemon thread; verify `stop_monitoring`'s `join(timeout=1.0)` cannot lose
-  samples or report `{"peak_mb": 0}` when the work is shorter than `interval_ms`.
+- `MemoryMonitor._monitor_loop` samples on a daemon thread; a transient sampling exception
+  is counted and retried (up to `_MAX_CONSECUTIVE_SAMPLING_ERRORS` consecutive failures
+  before giving up), while a definite process-gone signal (`psutil.NoSuchProcess`/
+  `AccessDenied`) stops the loop immediately (#375/PERF-A-05). Verify `stop_monitoring`'s
+  `join(timeout=1.0)` cannot lose samples or report `{"peak_mb": 0}` when the work is
+  shorter than `interval_ms`.
 - `get_memory_usage` returns RSS/VMS/percent/available — confirm these are the values the
   callers (`main.py` `run_benchmark_memory`, `run_benchmarks.py`) actually print, and that
   none divide by zero on a total of 0.

@@ -1,6 +1,7 @@
 """Tests for memory and performance profiling utilities."""
 
 import pytest
+import psutil
 import tempfile
 import json
 import time
@@ -167,20 +168,75 @@ class TestMemoryMonitor:
         assert stats["sampling_errors"] == 0
 
     @patch('utils.profiling.psutil.Process')
-    def test_sampling_error_is_counted_not_silently_dropped(self, mock_process_class):
-        """Regression (#336/PERF-16): a sampling exception in the monitor
-        loop increments a visible counter instead of vanishing silently."""
+    def test_transient_sampling_error_is_counted_and_loop_continues(self, mock_process_class):
+        """Regression (#336/PERF-16, revised by #375/PERF-A-05): a single
+        transient sampling exception is counted, but no longer ends the
+        whole run -- the loop keeps sampling afterward instead of breaking
+        on the first hiccup."""
         mock_process = Mock()
-        # First read (the start_monitoring seed) succeeds; every read from
-        # the background thread's loop raises, forcing it to break quickly.
+        # Seed sample succeeds, the 2nd call (first loop iteration) raises
+        # once, every call after that succeeds indefinitely.
+        calls = {"n": 0}
+
+        def flaky_once(*_args, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("boom")
+            return Mock(rss=10 * 1024 * 1024)
+
+        mock_process.memory_info.side_effect = flaky_once
+        mock_process_class.return_value = mock_process
+
+        monitor = MemoryMonitor(interval_ms=1)
+        monitor.start_monitoring()
+        # Let the loop run past the transient error and collect more samples.
+        deadline = time.time() + 1.0
+        while calls["n"] < 5 and time.time() < deadline:
+            time.sleep(0.01)
+        stats = monitor.stop_monitoring()
+
+        assert stats["sampling_errors"] == 1
+        # The seed sample plus at least one post-recovery sample.
+        assert stats["samples"] >= 2
+
+    @patch('utils.profiling.psutil.Process')
+    def test_persistent_sampling_errors_eventually_stop_loop(self, mock_process_class):
+        """(#375/PERF-A-05): repeated, unrecoverable-looking failures still
+        give up eventually instead of retrying forever -- after
+        _MAX_CONSECUTIVE_SAMPLING_ERRORS consecutive failures the loop
+        stops on its own."""
+        mock_process = Mock()
+        mock_process.memory_info.side_effect = (
+            [Mock(rss=10 * 1024 * 1024)]
+            + [RuntimeError("persistent failure")] * 20
+        )
+        mock_process_class.return_value = mock_process
+
+        monitor = MemoryMonitor(interval_ms=1)
+        monitor.start_monitoring()
+        monitor._monitor_thread.join(timeout=1.0)
+        assert not monitor._monitor_thread.is_alive()
+        stats = monitor.stop_monitoring()
+
+        assert stats["sampling_errors"] == MemoryMonitor._MAX_CONSECUTIVE_SAMPLING_ERRORS
+
+    @patch('utils.profiling.psutil.Process')
+    def test_process_gone_stops_immediately_without_retry(self, mock_process_class):
+        """(#375/PERF-A-05): a definite process-gone signal
+        (psutil.NoSuchProcess/AccessDenied) stops the loop on the first
+        occurrence rather than spending consecutive-error retries on a
+        condition that can never recover."""
+        mock_process = Mock()
         mock_process.memory_info.side_effect = [
-            Mock(rss=10 * 1024 * 1024), RuntimeError("boom")
+            Mock(rss=10 * 1024 * 1024),
+            psutil.NoSuchProcess(pid=1234),
         ]
         mock_process_class.return_value = mock_process
 
         monitor = MemoryMonitor(interval_ms=1)
         monitor.start_monitoring()
         monitor._monitor_thread.join(timeout=1.0)
+        assert not monitor._monitor_thread.is_alive()
         stats = monitor.stop_monitoring()
 
         assert stats["sampling_errors"] == 1
