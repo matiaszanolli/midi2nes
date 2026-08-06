@@ -3,7 +3,8 @@ import sys
 import json
 import tempfile
 import shutil
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Dict
 from pathlib import Path
 
 # Import version information
@@ -102,6 +103,96 @@ def load_json_stage(path, required_keys, stage_name):
               f"(is this the right stage's JSON?)")
         sys.exit(1)
     return data
+
+
+@dataclass
+class DpcmPackResult:
+    """Result of `pack_dpcm_into_asm` (#380/TD-28). `index_found=False` means
+    there was nothing to pack (no dpcm_index.json) and no other field is
+    meaningful; otherwise `warning` is set on failure/no-samples-resolved,
+    `loaded_samples`/`bank_count` describe a successful pack."""
+    index_found: bool = False
+    sample_ids: Dict[str, int] = field(default_factory=dict)
+    loaded_samples: int = 0
+    bank_count: int = 0
+    warning: Optional[str] = None
+    # Populated only on the except path, so a --verbose caller can print it
+    # (captured here, not at the call site, since the exception context
+    # that traceback.format_exc() needs only exists inside this function).
+    traceback_text: Optional[str] = None
+
+
+def pack_dpcm_into_asm(frames, asm_path, *, verbose=False) -> DpcmPackResult:
+    """Pack this song's referenced DPCM samples and append the generated
+    lookup tables + binary includes to `asm_path`.
+
+    Extracted from run_export's and run_full_pipeline's identical
+    copy-pasted DPCM-packing sequence (#380/TD-28) -- both blocks did the
+    same thing in the same order (instantiate DpcmPacker, check
+    dpcm_index.json exists, compute sample_ids, load into the packer,
+    append packer.generate_assembly()) with the same broad `except
+    Exception` warning message, but had already drifted (run_export never
+    passed verbose= through; only run_full_pipeline printed packed-count/
+    no-samples/no-index status lines) -- a fix to one path could silently
+    miss the other. Presentation (step banners, status lines) stays at the
+    call sites; only the pack logic and the broad-except handling live here.
+    """
+    from dpcm_sampler.dpcm_packer import DpcmPacker
+    from dpcm_sampler.generate_dpcm_index import (
+        load_dpcm_index_into_packer,
+        get_dpcm_sample_ids_from_frames,
+    )
+    dpcm_index_path = Path('dpcm_index.json')
+    if not dpcm_index_path.exists():
+        return DpcmPackResult(index_found=False)
+
+    packer = DpcmPacker()
+    try:
+        with open(dpcm_index_path, 'r') as f:
+            dpcm_index = json.load(f)
+        # Pack only the samples this song triggers, not the whole catalog
+        # (#140), in ascending id order so they align with the engine's
+        # positional tables. An empty dict means "pack nothing" (no DPCM in
+        # this song), not "pack everything" -- pass it through directly.
+        # The dense_id -> catalog_id shape also lets the packer key each
+        # entry by its (small) dense id instead of a potentially huge
+        # catalog id, avoiding the note-byte collision two high catalog ids
+        # used to hit (#200/D-14).
+        sample_ids = get_dpcm_sample_ids_from_frames(frames)
+        loaded_samples, _ = load_dpcm_index_into_packer(
+            packer, dpcm_index, dpcm_index_path, verbose=verbose,
+            sample_ids=sample_ids)
+
+        with open(asm_path, 'a') as f:
+            f.write("\n\n" + packer.generate_assembly())
+
+        warning = None
+        if loaded_samples == 0 and sample_ids:
+            warning = (
+                f"this song references {len(sample_ids)} DPCM sample(s) but none "
+                f"resolved to a file — the exported ASM has NO drums."
+            )
+        return DpcmPackResult(
+            index_found=True, sample_ids=sample_ids,
+            loaded_samples=loaded_samples, bank_count=len(packer.banks),
+            warning=warning,
+        )
+    except Exception as e:
+        # Tracks any failure so it can be surfaced prominently rather than
+        # buried above the final status line -- a corrupt/partial
+        # dpcm_index.json (bad JSON, or an entry missing 'id'/'filename')
+        # used to be swallowed by this broad except with only an
+        # easy-to-miss warning (#123).
+        import traceback
+        return DpcmPackResult(
+            index_found=True,
+            warning=(
+                f"DPCM packing failed ({e}) — the exported ASM has NO drums "
+                f"even though dpcm_index.json may reference some."
+            ),
+            traceback_text=traceback.format_exc(),
+        )
+
 
 def run_parse(args):
     # Use fast parser by default for better performance
@@ -592,46 +683,12 @@ def run_export(args):
             mapper=mapper
         )
             
-        # Pack DPCM samples for exported ASM. Tracks any failure so it can be
-        # surfaced prominently after the success line rather than buried above
-        # it — a corrupt/partial dpcm_index.json (bad JSON, or an entry
-        # missing 'id'/'filename') used to be swallowed by this broad except
-        # and ship a silently drumless ASM with only an easy-to-miss warning
-        # printed before the final status line (#123).
-        dpcm_pack_warning = None
-        try:
-            from dpcm_sampler.dpcm_packer import DpcmPacker
-            from dpcm_sampler.generate_dpcm_index import (
-                load_dpcm_index_into_packer,
-                get_dpcm_sample_ids_from_frames,
-            )
-            packer = DpcmPacker()
-            dpcm_index_path = Path('dpcm_index.json')
-            if dpcm_index_path.exists():
-                with open(dpcm_index_path, 'r') as f:
-                    dpcm_index = json.load(f)
-                # Pack only the samples this song triggers, not the whole catalog (#140).
-                # Pass the dict directly: an empty dict means "pack nothing" (no
-                # DPCM in this song), not "pack everything". The dict shape
-                # (dense_id -> catalog_id) also lets the packer key each entry
-                # by its dense id instead of a potentially huge catalog id,
-                # avoiding the note-byte collision two high catalog ids used
-                # to hit (#200/D-14).
-                sample_ids = get_dpcm_sample_ids_from_frames(frames)
-                loaded_samples, _ = load_dpcm_index_into_packer(
-                    packer, dpcm_index, dpcm_index_path, sample_ids=sample_ids)
-                if loaded_samples == 0 and sample_ids:
-                    dpcm_pack_warning = (
-                        f"this song references {len(sample_ids)} DPCM sample(s) but none "
-                        f"resolved to a file — the exported ASM has NO drums."
-                    )
-                with open(args.output, 'a') as f:
-                    f.write("\n\n" + packer.generate_assembly())
-        except Exception as e:
-            dpcm_pack_warning = (
-                f"DPCM packing failed ({e}) — the exported ASM has NO drums even "
-                f"though dpcm_index.json may reference some."
-            )
+        # Pack DPCM samples for exported ASM (#380/TD-28: extracted helper
+        # shared with run_full_pipeline, so a fix to one path can't
+        # silently miss the other).
+        pack_result = pack_dpcm_into_asm(
+            frames, args.output, verbose=getattr(args, 'verbose', False))
+        dpcm_pack_warning = pack_result.warning
 
         print(f" Exported CA65 ASM -> {args.output}")
         if dpcm_pack_warning:
@@ -1008,65 +1065,24 @@ def run_full_pipeline(args):
                 mapper=mapper
             )
             
-            # Step 5.5: Pack DPCM samples. Tracks any failure so the success
-            # banner can warn the ROM has no drums, rather than reporting silent
-            # loss (#123) — a corrupt/partial dpcm_index.json (bad JSON, or an
-            # entry missing 'id'/'filename') used to be swallowed by this broad
-            # except with only a warning line that scrolled out of view.
+            # Step 5.5: Pack DPCM samples (#380/TD-28: extracted helper
+            # shared with run_export, so a fix to one path can't silently
+            # miss the other).
             print("[5.5/7] Packing DPCM samples...")
-            dpcm_pack_warning = None
-            try:
-                from dpcm_sampler.dpcm_packer import DpcmPacker
-                from dpcm_sampler.generate_dpcm_index import (
-                    load_dpcm_index_into_packer,
-                    get_dpcm_sample_ids_from_frames,
-                )
-                packer = DpcmPacker()
-                dpcm_index_path = Path('dpcm_index.json')
+            pack_result = pack_dpcm_into_asm(frames, music_asm, verbose=args.verbose)
+            dpcm_pack_warning = pack_result.warning
 
-                if dpcm_index_path.exists():
-                    with open(dpcm_index_path, 'r') as f:
-                        dpcm_index = json.load(f)
-
-                    # Pack only the samples this song triggers (#140), truncating
-                    # oversized ones (#68), in ascending id order so they align
-                    # with the engine's positional tables. An empty dict means
-                    # "pack nothing", so pass it through directly (not `or None`).
-                    # The dense_id -> catalog_id dict shape also lets the packer
-                    # key each entry by its (small) dense id rather than a
-                    # potentially huge catalog id (#200/D-14).
-                    sample_ids = get_dpcm_sample_ids_from_frames(frames)
-                    loaded_samples, _ = load_dpcm_index_into_packer(
-                        packer, dpcm_index, dpcm_index_path, verbose=args.verbose,
-                        sample_ids=sample_ids
-                    )
-
-                    # Generate the lookup tables and binary includes, append to music.asm
-                    dpcm_asm = packer.generate_assembly()
-                    with open(music_asm, 'a') as f:
-                        f.write("\n\n" + dpcm_asm)
-
-                    if loaded_samples > 0:
-                        print(f"  ✓ Packed {loaded_samples} DPCM samples across {len(packer.banks)} banks")
-                    elif sample_ids:
-                        dpcm_pack_warning = (
-                            f"this song references {len(sample_ids)} DPCM sample(s) but none "
-                            f"resolved to a file — the ROM has NO drums."
-                        )
-                        print(f"  ⚠️ Warning: {dpcm_pack_warning}")
-                    else:
-                        print("  ℹ️ No DPCM samples referenced by this song.")
-                else:
-                    print("  ℹ️ No dpcm_index.json found, skipping DPCM packing.")
-            except Exception as e:
-                dpcm_pack_warning = (
-                    f"DPCM packing failed ({e}) — the ROM has NO drums even though "
-                    f"dpcm_index.json may reference some."
-                )
-                print(f"  ⚠️ Warning: Failed to pack DPCM samples: {str(e)}")
-                if args.verbose:
-                    import traceback
-                    traceback.print_exc()
+            if not pack_result.index_found:
+                print("  ℹ️ No dpcm_index.json found, skipping DPCM packing.")
+            elif pack_result.warning:
+                print(f"  ⚠️ Warning: {pack_result.warning}")
+                if args.verbose and pack_result.traceback_text:
+                    print(pack_result.traceback_text)
+            elif pack_result.loaded_samples > 0:
+                print(f"  ✓ Packed {pack_result.loaded_samples} DPCM samples "
+                      f"across {pack_result.bank_count} banks")
+            else:
+                print("  ℹ️ No DPCM samples referenced by this song.")
 
             # Step 6: Prepare NES project
             print("[6/7] Preparing NES project...")
