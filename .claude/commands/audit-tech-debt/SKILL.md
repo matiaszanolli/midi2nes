@@ -74,12 +74,17 @@ hardware behavior is MEDIUM.
 grep -rnE 'TODO|FIXME|HACK|XXX' --include='*.py' .
 ```
 Report markers that describe real unfinished work (not just notes). Group by subsystem.
-One known, still-open marker: the DPCM `.incbin` TODO in the macro-bytecode export path
-at `exporter/exporter_ca65.py:988` (TD-08/#137). It is stale rather than describing
-real unfinished work — the actual `.incbin` lines and lookup tables are produced by
-`dpcm_sampler/dpcm_packer.py`'s `generate_assembly` and appended to `music.asm` in
-`main.py:597` (the `export` path) and `main.py:961` (the full pipeline). Confirm this is
-still the only TODO/FIXME/HACK/XXX in non-test source before reporting new ones.
+**TD-08/#137 is CLOSED**: the DPCM `.incbin` TODO in the macro-bytecode export path
+(`exporter/exporter_ca65.py`, `.segment "DPCM"` block) was itself stale rather than
+describing real unfinished work, and has been replaced with an accurate comment
+(`exporter/exporter_ca65.py:1090-1094`) explaining the segment is *deliberately* left
+empty — the actual `.incbin` lines and lookup tables are produced by
+`dpcm_sampler/dpcm_packer.py`'s `generate_assembly` and appended to `music.asm` via the
+shared `pack_dpcm_into_asm` helper (`main.py:126-215`, called from both `run_export` and
+`run_full_pipeline` — see `/audit-dpcm` Dimension 2 / `/audit-safety` Dimension 1 for
+that consolidation, #380/TD-28), not into this fixed `$C000`/R6-window segment. Confirmed
+at the time of the fix this was the only TODO/FIXME/HACK/XXX in non-test source — re-run
+the grep before reporting new ones.
 
 ### Dimension 5: Stub & Placeholder Implementations
 Functions that `return None`/`pass`/raise `NotImplementedError`, or hardcode a value where
@@ -102,17 +107,37 @@ A concrete, still-open instance: `utils/profiling.py` has a bare `except:` claus
 Blast radius is limited to profiling/benchmark tooling, not the MIDI→ROM pipeline, hence LOW.
 
 ### Dimension 8: Module / Function Size & Structure
-Oversized modules or functions doing too much. Two still-open, previously-identified
-monoliths (TD-11/#136):
-- `main.py` is ~1480 lines total: argparse-based dispatch (`main()`, from line 1077)
-  layered with hand-rolled pre-subcommand argv scanning for global flags like
-  `--arranger`/`--debug`/`--verbose` (`main.py:1237-1344`). `run_full_pipeline`
-  (`main.py:744-1076`) alone is ~330 lines threading parse → map/arrange → frames →
-  patterns → export → DPCM-pack → prepare → compile → validate inline.
-- `exporter/exporter_ca65.py` is ~1290 lines total; `export_direct_frames`
-  (`exporter/exporter_ca65.py:187-925`, next method `_compress_macro` at line 926)
-  is ~738 lines emitting pitch tables, per-channel playback routines
-  (pulse/triangle/noise/DPCM), and data tables all inline.
+Oversized modules or functions doing too much. TD-11/#136 covered two monoliths;
+one half is now closed, the other explicitly deferred:
+- **`exporter/exporter_ca65.py`'s `export_direct_frames` half is CLOSED** (#136):
+  extracted 8 per-channel emitter methods — `_emit_pulse_or_triangle_table` (`:213`),
+  `_emit_noise_table` (`:303`), `_emit_dpcm_table` (`:326`) for frame-data tables, and
+  `_emit_pulse1_proc` (`:341`), `_emit_pulse2_proc` (`:399`), `_emit_triangle_proc`
+  (`:453`), `_emit_noise_proc` (`:507`), `_emit_dpcm_proc` (`:545`) for playback
+  subroutines — cutting `export_direct_frames` (`:603-1027`) from ~750 lines to ~425.
+  Verified byte-for-byte identical emitted output via a golden-file diff across 24
+  configs at the time of the fix. `exporter_ca65.py` is now ~1445 lines total (grew
+  overall — extraction adds method boilerplate — but the one oversized function is
+  gone). Verify-the-fix: confirm the 8 emitters stay focused (one channel's table or
+  proc each) and a future edit doesn't re-inline them back into
+  `export_direct_frames`.
+- **`main.py` remains OPEN — deliberately deferred, tracked as #406**: still
+  argparse-based dispatch (`main()`, from line 1207) layered with hand-rolled
+  pre-subcommand argv scanning for global flags like `--arranger`/`--debug`/
+  `--verbose`. `run_full_pipeline` (`main.py:871-1206`) alone is still ~335 lines
+  threading parse → map/arrange → frames → patterns → export → DPCM-pack → prepare →
+  compile → validate inline; `main.py` is now ~1610 lines total (grew further from the
+  `pack_dpcm_into_asm` extraction, #380, and the `__all__` fix, #393 — neither touched
+  `run_full_pipeline`'s own structure). This half was investigated alongside the
+  exporter refactor and *intentionally* not attempted in the same pass: unlike
+  `export_direct_frames`, `run_full_pipeline` entangles a single try/except/finally
+  gating backup/restore-on-failure (#26), deliberate `del` calls trimming peak memory
+  (#371/PERF-A-01, see `/audit-performance`), mapper-resolution timing that genuinely
+  differs by code path, and inline `sys.exit(1)` validation — no clean byte-for-byte
+  verification story the way `export_direct_frames` had. #406 files the specific
+  design contract for this split (memory-profile comparison against #371's baseline,
+  preserved single-recovery-point semantics, stages raising instead of calling
+  `sys.exit` inline) — check #406's status before re-reporting this as a fresh finding.
 
 Report the split that would help, not just the line count — and flag if either has
 grown further since the numbers above.

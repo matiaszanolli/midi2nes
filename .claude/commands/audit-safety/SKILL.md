@@ -42,22 +42,31 @@ informative typed exception (`InvalidMIDIError`, `ConfigurationError`, `Toolchai
 the user-facing output is meaningful even though the `except` clause itself still can't
 distinguish failure classes programmatically — still worth a LOW–MEDIUM finding
 (defense-in-depth / testability), not a live "swallows a real bug" bug.
-The DPCM-pack block (`main.py:625`–`676`, `try:` at `:627`, `except Exception as e:` at
-`:667`) **no longer just warns and silently continues** — it builds a
-`dpcm_pack_warning` string and prints it prominently (`⚠️ Warning: ...` at `:672`,
-echoed again in the final success banner at `:725`–`726`) so a corrupt/partial
-`dpcm_index.json` no longer ships a drumless ROM with an easy-to-miss message (fixed,
-#123 — see Dimension 8 for the step-by-step `run_export` counterpart at
-`main.py:317`–`345`, which got identical treatment). Verify: does the warning fire on
-*every* path that can leave DPCM unpacked, or is there a code path inside the `try`
-that could still exit early without setting `dpcm_pack_warning`? The parallel→sequential
-fallback (`main.py:557`–`580`, catches bare `Exception` at `:562`) is unchanged
-behavior (just line-shifted) — confirm it is still the *documented* fallback
-(`_audit-common.md` Multiprocessing rule) and not masking a real bug, and that the
-lossy-resample warning (`:573`–`579`) still fires whenever the fallback had to
-downsample. Severity: swallowing on a recoverable/optional path = LOW–MEDIUM;
-swallowing where the song is silently changed (dropped DPCM, dropped channel) escalates
-per `_audit-severity.md`.
+**#380/TD-28 is CLOSED**: the DPCM-pack block that used to be copy-pasted separately
+into `run_export` and `run_full_pipeline` (and had already diverged — `run_export`
+never passed `verbose=`) is now a single shared `pack_dpcm_into_asm(frames, asm_path,
+*, verbose=False) -> DpcmPackResult` helper (`main.py:126`–`215`, `try:` at `:151`,
+`except Exception as e:` at `:194`). It **still doesn't just warn and silently
+continue** — a failure or a no-samples-resolved pack sets `DpcmPackResult.warning`,
+which each call site prints prominently (`run_export` at `main.py:714`–`720`;
+`run_full_pipeline` at `:1102`–`1104`, echoed again in the final success banner) so a
+corrupt/partial `dpcm_index.json` no longer ships a drumless ROM with an easy-to-miss
+message (fixed, #123). **#367/DP-DPCM-05 is CLOSED** on top of that: the warning used
+to only fire on the all-missing case — a *partial* miss (some but not all referenced
+samples resolve) produced no warning at all, so a song could ship with a silently
+dropped drum. `pack_dpcm_into_asm` now distinguishes the two: both call sites label the
+same `warning` string "NO DRUMS" when `loaded_samples == 0` and "PARTIAL DPCM MISS"
+otherwise (`main.py:719` / `:1183`, mirrored at both sites so a fix to the label logic
+in one can't silently miss the other now that it's one function). Verify: does the
+warning fire on *every* path that can leave DPCM unpacked or partially unpacked, or is
+there a code path inside the `try` that could still exit early without setting
+`warning`? The parallel→sequential fallback (`main.py:557`–`580`, catches bare
+`Exception` at `:562`) is unchanged behavior (just line-shifted) — confirm it is still
+the *documented* fallback (`_audit-common.md` Multiprocessing rule) and not masking a
+real bug, and that the lossy-resample warning (`:573`–`579`) still fires whenever the
+fallback had to downsample. Severity: swallowing on a recoverable/optional path =
+LOW–MEDIUM; swallowing where the song is silently changed (dropped DPCM, dropped
+channel) escalates per `_audit-severity.md`.
 
 ### Dimension 2: Malformed-Input Resilience
 `mido.MidiFile(...)` is now **guarded** in both parsers (fixed, #121, commit
@@ -161,8 +170,10 @@ Check that file handles use context managers and temp dirs are cleaned up.
 `run_full_pipeline` still correctly uses
 `with tempfile.TemporaryDirectory(prefix="midi2nes_")` (`main.py:498`, line-shifted),
 which auto-cleans — confirm nothing escapes it. All the named `open(...)` sites still
-use `with`: the step-by-step DPCM append (`main.py:339`), the full-pipeline DPCM append
-(`main.py:652`), the benchmark `open(results_file, 'w')` (`main.py:1080`), and
+use `with`: the DPCM append inside the shared `pack_dpcm_into_asm` helper
+(`main.py:168`, `open(asm_path, 'a')` — used by both `run_export` and
+`run_full_pipeline` since #380/TD-28, see Dimension 1), the benchmark
+`open(results_file, 'w')` (`main.py:1571`), and
 `config/config_manager.py` `save()` (`:245`). No bare `open()` without `with` found in
 these paths.
 Backup/restore around `output_rom`: creation is at `main.py:482`–`486` (only when
@@ -202,14 +213,17 @@ mistakes for a good build. `run_full_pipeline` still builds the ROM inside the t
 and only reaches the final path via `shutil.copy(rom_path, output_path)` in
 `ROMCompiler.compile()` (`compiler/compiler.py:144`) — unchanged, still the safe
 pattern. Check the subcommand exporters: `run_export` writes `args.output` via
-`exporter.export_tables_with_patterns(...)` (`main.py:301`–`308`) then **appends** DPCM
-assembly in a separate `try` (`main.py:317`–`345`) — the structural risk is unchanged
-(a DPCM-pack failure after the main write leaves an ASM file without the DPCM append),
-but the consequence is now loudly surfaced — `⚠️  NO DRUMS: ...` (`main.py:348`–`349`)
-— instead of a warning a user could scroll past, which meaningfully mitigates (if not
-eliminates) the risk (#123). The full-pipeline DPCM block (`main.py:625`–`676`) got the
-identical treatment, with the warning echoed again in the final summary
-(`main.py:725`–`726`). Check the backup-restore on compile/validate failure: now
+`exporter.export_tables_with_patterns(...)` (`main.py:697`–`704`) then **appends** DPCM
+assembly via the shared `pack_dpcm_into_asm` helper (`main.py:709`–`711`; extracted
+from a separate inline `try` in #380/TD-28, see Dimension 1) — the structural risk is
+unchanged (a DPCM-pack failure after the main write leaves an ASM file without the
+DPCM append), but the consequence is loudly surfaced — `⚠️  NO DRUMS: ...` or
+`⚠️  PARTIAL DPCM MISS: ...` (`main.py:714`–`720`, label chosen per #367/DP-DPCM-05,
+see Dimension 1) — instead of a warning a user could scroll past, which meaningfully
+mitigates (if not eliminates) the risk (#123). `run_full_pipeline`'s DPCM step
+(`main.py:1097`–`1104`) goes through the identical helper now (not a second
+hand-written block), with the warning echoed again in the final summary. Check the
+backup-restore on compile/validate failure: now
 centralized in the single `finally` block described in Dimension 6
 (`main.py:743`–`747`) rather than duplicated at multiple call sites — confirm it still
 restores the prior good ROM and never leaves the broken one in place (it does). Flag

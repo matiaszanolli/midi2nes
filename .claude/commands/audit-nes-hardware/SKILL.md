@@ -74,19 +74,18 @@ Pulse channels live at `$4000–$4007` (`exporter/exporter_ca65.py` defines
   `docs/APU_PULSE_REFERENCE.md` §2 regardless of the stray negate bit — confirm this
   reading and that no other code path re-enables sweep afterward (a stale sweep left
   enabled silently bends pitch — HIGH per Special Rules).
-- **Open (NH-25, #167)**: the direct-export `play_pulse1`/`play_pulse2` "new note"
-  path writes the control byte straight from `pulse1_control`/`pulse2_control`
-  (`sta $4000`/`sta $4004`), which is `duty_bits | 0x10 | volume` from
-  `get_envelope_control_byte` — **bit 5 (length-counter halt) is never set**.
-  `docs/APU_LENGTH_COUNTER_REFERENCE.md` §5 "Engine Implementation Notes" mandates
-  the halt flag always be set so the 60Hz software model isn't undercut by the
-  hardware length counter. The same routine's timer-hi write (`ora #$08` before
-  `sta $4003`/`sta $4007`) reloads a real (short) length-counter value on every new
-  note. Now that NH-20 (#160) is fixed and real note durations flow through instead
-  of a 4-frame cap, a direct-export note held longer than the reloaded length-counter
-  value **will** be cut off mid-note by hardware, independent of continued frame
-  writes — this is no longer a purely latent/masked bug. Verify whether this
-  actually reproduces with a long sustained note through `--no-patterns` export.
+- **Closed (NH-25, #167)**: required no further code change — already fixed by an
+  earlier commit (`cb2a8ac`) that the GitHub issue was simply never closed against.
+  `get_envelope_control_byte` (`nes/envelope_processor.py:145-174`) sets
+  `envelope_bits = 0x30` (`:174`) — both constant-volume (bit 4) *and*
+  length-counter halt (bit 5) — so the direct-export `play_pulse1`/`play_pulse2`
+  "new note" path's control-byte write (`sta $4000`/`sta $4004`) always carries the
+  halt bit per `docs/APU_LENGTH_COUNTER_REFERENCE.md` §5. `tests/test_core.py:156-161`
+  and `tests/test_envelope.py:106` both pin `0x30` explicitly. Verify-the-fix: confirm
+  no future envelope-byte change drops back to a bare `0x10` (constant-volume only) —
+  that would silently let the hardware length counter cut off long sustained notes
+  again, independent of continued frame writes, now that NH-20 (#160) lets real note
+  durations flow through instead of a 4-frame cap.
 
 ### Dimension 2: Triangle — the no-volume / no-duty invariant + linear counter
 This is the highest-yield dimension. The Triangle channel (`$4008–$400B`) has **no
@@ -157,8 +156,16 @@ DMC is at `$4010–$4013`; direct level load is `$4011` (7-bit, `docs/APU_DMC_RE
 - `nes/audio_engine.asm` (bytecode path) writes `$4011` **only** to reset the DMC DAC
   to 0 at init (`audio_engine.asm:128`), preventing the documented Triangle/Noise
   mixing-DC-offset quirk — confirm this stays the only live `$4011` write on that path.
-  Note the direct-export path (`export_direct_frames`'s `init_music`/`reset`) omits this
-  `$00→$4011` DAC-zero, an open defense-in-depth gap on soft-reset (#348/NH-HW-1).
+  **#348/NH-HW-1 is CLOSED**: the direct-export path's own `init_music`/`reset` no
+  longer omits the DAC-zero — `export_direct_frames`'s standalone `reset` proc
+  (`exporter/exporter_ca65.py:788`, `sta $4011` right after `lda #$00 / sta $4015`)
+  and its non-standalone `init_music` (`:946`) both now zero `$4011` before enabling
+  channels, with a comment citing the same §5 mixing-quirk doc. The third `init_music`
+  (non-standalone bytecode path, `:1422`) just `jmp`s to `audio_init`, which already
+  had the zero. Verify-the-fix: confirm all three `init_music`/`reset` code paths still
+  zero `$4011` *before* `sta $4015` re-enables channels (ordering matters — enabling
+  first could let one frame of stale DAC output through), and that a future direct-export
+  refactor doesn't reintroduce a path that skips it.
   (nes/mmc3_init.asm — a second, never-assembled copy — was deleted as dead code, #203.)
 - The `@cmd_dmc_level` handler in `nes/audio_engine.asm` (reads a 7-bit level operand
   and writes it to `$4011`) still exists, but `exporter/exporter_ca65.py` never emits

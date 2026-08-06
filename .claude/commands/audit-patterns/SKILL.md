@@ -46,7 +46,7 @@ THE headline check. Compression must be lossless. Do not take the docstrings' wo
   pattern's `events` (variation positions no longer leak in). Any note/volume mismatch found by
   your own round-trip is still CRITICAL; still flag any change that starts having an exporter
   reconstruct from `references` (#4).
-- The RLE/delta path (`exporter/compression.py` `CompressionEngine`) was **removed as dead code
+- The RLE/delta path (exporter/compression.py's `CompressionEngine`) was **removed as dead code
   (#302/EXP-09)**: no exporter or `main.py` ever called it — the CA65 paths do their own inline
   compression (macro-bytecode serializer / direct frame tables). Do not audit it; if you see a
   reference to `compression.py`/`CompressionEngine` in a stale report, it no longer exists.

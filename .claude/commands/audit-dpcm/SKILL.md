@@ -70,30 +70,50 @@ Mapping resolution is in `EnhancedDrumMapper._resolve_dpcm_sample_name` and
 
 ### Dimension 2: `dpcm_index.json` schema integrity
 The index is loaded in the same three places, still against two different shapes:
-- `EnhancedDrumMapper._load_sample_index` (`dpcm_sampler/enhanced_drum_mapper.py:211-224`)
-  passes each entry as `sample_data` to `DPCMSampleManager.allocate_sample`
-  (`dpcm_sampler/dpcm_sample_manager.py:15-65`), which reads
-  `sample_data.get('length', 1024)` (line 34), `sample_data.get('data', [])`
-  (line 55), and `sample_data.get('frequency', 33144)` (line 58).
-- **Still true** (this is not a bug that was "fixed", just the current shape of the
-  data): the real `dpcm_index.json` entries only contain **`id`** and **`filename`**
-  (verify: `python -c "import json;
-  print(list(json.load(open('dpcm_index.json')).values())[0])"`). So `length`,
-  `data`, and `frequency` still always fall back to defaults on real input. What
-  *did* change (#70/#71, see Dimension 7) is that the sample manager now uses one
-  consistent accounting formula for those defaults instead of two divergent ones,
-  and the now-dead similarity/dedup code that also depended on `data` was removed
-  outright rather than left silently inert. Assess whether relying on constant
-  placeholder size/frequency for every sample is still an acceptable simplification
-  or worth back-filling from the real `.dmc` files at index-generation time.
+- `EnhancedDrumMapper._load_sample_index` (`dpcm_sampler/enhanced_drum_mapper.py:268-281`)
+  reads the raw index; entries reach `DPCMSampleManager.allocate_sample`
+  (`dpcm_sampler/dpcm_sample_manager.py:15-65`, reads `sample_data.get('length', 1024)`
+  at line 34, `sample_data.get('data', [])` at line 55, `sample_data.get('frequency',
+  33144)` at line 58) only through the shared `_allocate` helper (`enhanced_drum_mapper.py:
+  252-261`), not directly.
+- The real `dpcm_index.json` entries only contain **`id`** and **`filename`** (verify:
+  `python -c "import json;
+  print(list(json.load(open('dpcm_index.json')).values())[0])"`) — `data` and `frequency`
+  still always fall back to `allocate_sample`'s defaults on real input; there is no wav
+  data or per-sample frequency anywhere in the index to backfill them from. **#341/
+  DP-DPCM-02 is CLOSED for `length`**, though: it used to fall back to the same 1024-byte
+  placeholder for every sample, making memory-limit/eviction accounting operate on
+  identical fictional sizes. `_allocate` (`enhanced_drum_mapper.py:252-261`) now resolves
+  each sample's real on-disk size via `_real_sample_size` (`:226-247`, mirrors
+  `generate_dpcm_index.resolve_dpcm_sample_path` — the same resolution the packer itself
+  uses, cached per sample name in `self._sample_size_cache` so a drum reused many times in
+  one song costs one `os.path.getsize` call) and injects it into `sample_data['length']`
+  before calling `allocate_sample`, through the one shared call site both `map_drums`
+  callers use (`:350`, `:416`) so a fix to one path can't silently miss the other. Note
+  this only makes `DPCMSampleManager`'s own internal accounting reflect reality — the
+  eviction machinery still has no effect on what actually gets packed into the ROM
+  (packing is driven by frame references via `pack_dpcm_into_asm`, not
+  `sample_manager.active_samples`); that remains unchanged and out of scope here.
+  Verify-the-fix: confirm `_real_sample_size` returns `None` (falls back to the 1024
+  placeholder, not a crash) when `resolve_dpcm_sample_path` can't find the file, and that
+  `data`/`frequency` are still correctly understood as permanent placeholders, not a
+  second instance of the same bug. What *did* change earlier (#70/#71, see Dimension 7)
+  is that the sample manager uses one consistent accounting formula for those remaining
+  defaults instead of two divergent ones, and the now-dead similarity/dedup code that also
+  depended on `data` was removed outright rather than left silently inert.
 - The packer path moved: `dpcm_sampler/generate_dpcm_index.py:load_dpcm_index_into_packer`
-  (lines 38-79) is now the single shared call site (used from both
-  `main.py:run_export` ~lines 317-345 and `main.py:run_full_pipeline` ~lines
-  625-670) and reads `sample.get('pitch', 15)` (line 75) and `sample['filename']`
+  (lines 38-79) is now called from a single shared `main.py:pack_dpcm_into_asm`
+  helper (`main.py:126-215`), not duplicated inline at the two call sites. **#380/TD-28
+  is CLOSED**: `run_export` and `run_full_pipeline` previously had copy-pasted,
+  already-diverged DPCM-pack blocks (`run_export` never passed `verbose=`) — both now
+  just call `pack_dpcm_into_asm(frames, asm_path, verbose=...)` (`main.py:709` and
+  `main.py:1097` respectively) and format their own status line from the returned
+  `DpcmPackResult`. It reads `sample.get('pitch', 15)` (line 75) and `sample['filename']`
   (line 66) — `pitch` is still absent from the shipped index. Confirm `id`/`filename`
-  remain the only keys any consumer can rely on, and that `generate_dpcm_index`
+  remain the only keys any consumer can rely on, that `generate_dpcm_index`
   (`dpcm_sampler/generate_dpcm_index.py:82-102`) is still the sole writer (it emits
-  exactly `id` + `filename`).
+  exactly `id` + `filename`), and that no future edit re-forks the two call sites back
+  into separate copies.
 
 ### Dimension 3: DPCM conversion correctness (1-bit delta)
 `dpcm_sampler/dpcm_converter.py` does WAV→PCM→delta→packed-bits. It remains
@@ -177,9 +197,11 @@ orphaned (nothing in the pipeline calls it; `generate_dpcm_index` scans pre-made
 - Silence init: `docs/APU_DMC_REFERENCE.md` says init should write `$00` to `$4011`
   so the DMC counter doesn't muffle Triangle/Noise via the non-linear mixer.
   Live on the bytecode path: `nes/audio_engine.asm:128` writes `LDA #$00` / `STA $4011`
-  at `audio_init`. (The direct-export `init_music`/`reset` omits it — open gap
-  #348/NH-HW-1; nes/mmc3_init.asm, which also had this write, was deleted as dead
-  code, #203.) The live DPCM trigger is `@write_dpcm` (`nes/audio_engine.asm`, ~line
+  at `audio_init`. **#348/NH-HW-1 is CLOSED**: the direct-export `init_music`/`reset`
+  no longer omits it — see `/audit-nes-hardware` Dimension 4 for the exact
+  `exporter/exporter_ca65.py` line numbers across all three `init_music`/`reset`
+  variants; nes/mmc3_init.asm, which also had this write, was deleted as dead
+  code, #203. The live DPCM trigger is `@write_dpcm` (`nes/audio_engine.asm`, ~line
   512), which writes `$4010` → `$4012` → `$4013` then toggles `$4015`
   (disable-then-enable-with-DMC), matching `docs/APU_DMC_REFERENCE.md`; re-verify this
   order is still correct if the trigger routine changes. (The old
@@ -262,18 +284,22 @@ orphaned (nothing in the pipeline calls it; `generate_dpcm_index` scans pre-made
   (`tracker/track_mapper.py:253-259`). Verify the count in the warning matches
   `len(noise_events)` exactly and that this is the only discard path for these
   events.
-- The hardcoded default `'dpcm_index.json'` path means a missing file still raises
-  inside `_load_sample_index` (`enhanced_drum_mapper.py:216-219`,
-  `FileNotFoundError`). This is **not caught** in the standalone `map` subcommand
-  (`main.py:run_map`, lines 104-112; the mapper call is line 110) — that path still crashes with a raw traceback (#256),
-  unlike every other step-by-step guard in `main.py` (`load_json_stage`, #120).
-  `run_full_pipeline` fares better only because its whole body is wrapped in one
-  outer `try/except Exception` (`main.py:~992-997`) that turns any such crash into
-  a clean `[ERROR] Pipeline failed: ...` message — but the pipeline still aborts
-  entirely rather than degrading to a drumless build, in contrast to the DPCM
-  *packer* path (`main.py:run_export`/`run_full_pipeline`), which explicitly
-  handles a missing index file gracefully ("No dpcm_index.json found, skipping").
-  Assess whether `run_map` should get the same guard as the packer path.
+- **#256/D-18 is CLOSED** (fixed in `7853aa4`, predates this sync but the prose here
+  was never updated): the hardcoded default `'dpcm_index.json'` path used to raise a
+  bare `FileNotFoundError` out of `_load_sample_index`
+  (`enhanced_drum_mapper.py:216-219`) uncaught inside the standalone `map` subcommand.
+  `run_map` (`main.py:226-242`) now checks `Path(dpcm_index_path).exists()` up front
+  (honoring `--dpcm-index` too, #13) and exits with a clean `[ERROR] DPCM index not
+  found: ...` message instead of a raw traceback — matching every other step-by-step
+  guard in `main.py` (`load_json_stage`, #120). `run_full_pipeline`'s outer
+  `try/except Exception` (`main.py:1193-1194`, `[ERROR] Pipeline failed: ...`) is
+  still the backstop for anything `run_map`'s own guard doesn't catch, and the pipeline
+  still aborts entirely there rather than degrading to a drumless build — in contrast
+  to the DPCM *packer* path (`main.py:pack_dpcm_into_asm`, shared by `run_export`/
+  `run_full_pipeline`, see the packer-path note above), which explicitly handles a
+  missing index file gracefully ("No dpcm_index.json found, skipping"). Verify-the-fix:
+  confirm `run_map` still exits 1 (not a partial/degraded mapped.json) on a missing
+  index, and that `--dpcm-index` pointing at a nonexistent path hits the same guard.
 - **Fixed, verify (#9, #66, #67, #200/D-14, #254)**: `dpcm_events` carry `{frame,
   sample_id, velocity}`; the frame-generation stage (`nes/emulator_core.py:188-235`)
   remaps the raw catalog `sample_id`s a song actually references to a dense,

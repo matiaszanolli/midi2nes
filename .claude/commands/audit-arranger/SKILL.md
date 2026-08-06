@@ -127,9 +127,25 @@ Checklist:
   defensible — e.g. that BASS is not dropped while a DECORATIVE voice survives. Cross-ref
   Dimension 4's note on `get_role_priority()` being unused here (ARR-05, #88) — the sort key
   is `TrackAnalysis.priority`, not that function.
-- Drum tracks claim BOTH `noise` and `dpcm` (`arranger/role_analyzer.py:312-320`,
-  `if track.is_drum_track: ... continue`) — so a second drum track, or a melodic voice that
-  wanted noise/dpcm, is starved. Confirm intent.
+- Drum tracks claim BOTH `noise` and `dpcm` (`arranger/role_analyzer.py:303-320`).
+  **#205/ARR-10 is CLOSED**: a second drum track finding both already taken used to hit an
+  unconditional `continue`, vanishing with no `dropped_tracks` entry and no `plan.notes`
+  diagnostic, unlike every other overflow case. It now only skips the "couldn't be assigned"
+  bookkeeping when it actually claimed noise and/or dpcm here (`assigned` tracked per-track,
+  `:303-319`) — a starved second drum track still gets the standard drop diagnostic. **#330/
+  ARR-NEW-6 is CLOSED**: a drum track that claimed noise/dpcm also now shares PULSE2
+  non-exclusively (`:321-333`, deliberately never sets `pulse2_assigned`, so it can't block a
+  melodic track from also claiming PULSE2) so `GM_DRUM_MAP`'s PULSE2-mapped percussion
+  (agogo/cuica/mute+open triangle) can actually reach PULSE2 via `_route_note`
+  (`arranger/voice_allocator.py`, now checks the mapped channel before the NOISE catch-all)
+  instead of always collapsing onto NOISE regardless of the mapping table. TRIANGLE-mapped
+  percussion (toms/whistles) is deliberately left on NOISE — `_allocate_triangle` is
+  monophonic with no collision handling, so granting drums the triangle channel risks
+  silently dropping real bass notes; those hits get a distinct `noise_period` per instrument
+  instead of the generic "Unknown Drum" fallback so they stay differentiated. Verify-the-fix:
+  confirm a PULSE2-mapped drum hit and a melodic PULSE2 track can coexist via
+  `_allocate_pulse`'s arpeggiation without one silently starving the other, and that
+  TRIANGLE-mapped percussion still never reaches the triangle channel.
 - Per-frame overflow: when multiple tracks map to one pulse channel, `_allocate_pulse` merges
   all their pitches into one arpeggio (it does not steal/keep separate). Triangle
   (`_allocate_triangle`) always keeps the **lowest** pitch (drops the rest); noise

@@ -152,9 +152,17 @@ user expects a good one.
 - `run_full_pipeline`'s body is one `try` (`main.py:773`) / `except Exception` (`main.py:1063`)
   / `finally` (`main.py:1071-1076`). Verify no inner `except` still swallows a fatal error and
   lets the run reach ROM emission:
-  - The DPCM-pack block (`main.py:933-984`) catches broadly but is genuinely non-fatal by
-    design — it records `dpcm_pack_warning` and surfaces it prominently in the success banner
-    rather than burying it (SAFE-04/#123, closed); the ROM still builds without drums.
+  - The DPCM-pack step catches broadly but is genuinely non-fatal by design — it records
+    a `DpcmPackResult.warning` and surfaces it prominently in the success banner rather than
+    burying it (SAFE-04/#123, closed); the ROM still builds without drums. **#380/TD-28
+    closed**: the pack logic used to be duplicated inline in both `run_full_pipeline` and
+    `run_export`; it now lives in one shared `pack_dpcm_into_asm` helper (`main.py:126-215`,
+    `except Exception as e:` at `:194`) called from both (`main.py:709` / `:1097`), so this
+    check only needs verifying once instead of per call site. **#367/DP-DPCM-05 closed**: the
+    warning used to fire only on an all-samples-missing pack; a partial miss (some but not all
+    referenced samples resolve) now also warns, labeled "PARTIAL DPCM MISS" vs "NO DRUMS"
+    (`main.py:719` / `:1183`) so a silently-dropped single drum isn't mistaken for "no
+    warning printed, so it worked."
   - **`validate_rom`'s own diagnostics-import guard (#177/PL-04, closed)**: the
     `try/except Exception` around `ROMDiagnostics(...).diagnose_rom(...)` (`main.py:380-385`)
     now returns `False` (validation failed) — not `True` — on *any* exception, and prints the
@@ -197,15 +205,17 @@ The default path writes intermediates into a `tempfile.TemporaryDirectory(prefix
   final ROM to `output_rom` — the user's path, outside the temp dir — so it survives
   `TemporaryDirectory` cleanup. Confirmed by reading the call; no late read of anything inside
   `temp_path` after the `with` block observed.
-- **DPCM append-mode double-write (F-10/#23, closed)**: `run_full_pipeline` appends to the
-  fresh temp `music.asm` (`main.py:962`), which is safe (new file every run). `run_export`'s
-  step-by-step path still does `with open(args.output, 'a') as f` (`main.py:596`) *after*
-  `export_tables_with_patterns` — but that call opens the same path in `'w'` (truncate) mode
-  first (`exporter/exporter_ca65.py:894`, `:1283`), so it wipes the entire prior file,
-  including any DPCM block appended on an earlier run, before the fresh append. A re-run
-  therefore lands the append into a freshly-truncated file and cannot accumulate duplicate
-  `dpcm_*` symbols. Verify the exporter still truncates (`'w'`) rather than appends; if it ever
-  switches to append mode, the original double-write hazard returns.
+- **DPCM append-mode double-write (F-10/#23, closed)**: both call sites append via the shared
+  `pack_dpcm_into_asm` helper's `with open(asm_path, 'a') as f` (`main.py:168`, extracted in
+  #380/TD-28 — previously two separate inline `open(..., 'a')` sites, one per call site).
+  `run_full_pipeline` passes it the fresh temp `music.asm` (safe, new file every run);
+  `run_export` passes `args.output` *after* `export_tables_with_patterns` already opened the
+  same path in `'w'` (truncate) mode first (`exporter/exporter_ca65.py:894`, `:1283`), so it
+  wipes the entire prior file, including any DPCM block appended on an earlier run, before the
+  fresh append. A re-run therefore lands the append into a freshly-truncated file and cannot
+  accumulate duplicate `dpcm_*` symbols. Verify the exporter still truncates (`'w'`) rather than
+  appends; if it ever switches to append mode, the original double-write hazard returns — and
+  now only needs fixing once at the shared helper's call sites, not twice.
 - Step-by-step intermediates (`parsed.json`, `mapped.json`, etc.) remain user-managed and
   uncleaned — confirm no stage overwrites an input it still needs.
 
