@@ -1,10 +1,11 @@
 # tests/test_patterns.py
 import io
 import unittest
+import pytest
 from concurrent.futures import Future
 from contextlib import redirect_stdout
 from unittest.mock import patch
-from tracker.pattern_detector import PatternDetector, PatternCompressor, EnhancedPatternDetector
+from tracker.pattern_detector import PatternDetector, PatternCompressor, EnhancedPatternDetector, DrumPatternDetector
 from tracker.loop_manager import LoopManager
 from tracker.tempo_map import EnhancedTempoMap
 
@@ -766,11 +767,13 @@ class TestLargeFilePolicy(unittest.TestCase):
         self.assertIn('sample_events_for_detection', par,
                       "parallel default path must apply the shared sampler")
 
+    @pytest.mark.slow
     def test_base_detector_uniformly_samples_not_head_cuts(self):
         """The sequential detector must uniformly sample its working set, not
         head-cut to the first DETECTOR_MAX_EVENTS — otherwise the whole back
         half of a long song is silently dropped (#100)."""
         from tracker.pattern_detector import PatternDetector, DETECTOR_MAX_EVENTS
+        from constants import PATTERN_MAX_LENGTH
         n = DETECTOR_MAX_EVENTS * 3
         half = n // 2
         # A repeating motif in the head (notes 60-62), a DIFFERENT repeating
@@ -780,7 +783,15 @@ class TestLargeFilePolicy(unittest.TestCase):
                 for i in range(half)]
         tail = [{'frame': i, 'note': 80 + (i % 3), 'volume': 100}
                 for i in range(half, n)]
-        patterns = PatternDetector().detect_patterns(head + tail)
+        # max_pattern_length matches what main.py actually passes
+        # (constants.PATTERN_MAX_LENGTH) rather than the class default (32).
+        # The bare class default doubles+ the length-bucket range no
+        # production caller ever exercises, and on this detector's O(n^2)
+        # worst case (a maximally-periodic sequence, exactly what this test
+        # constructs) that turned a several-second test into a
+        # multi-minute one -- misdiagnosed as a pytest hang in #355.
+        patterns = PatternDetector(
+            max_pattern_length=PATTERN_MAX_LENGTH).detect_patterns(head + tail)
         notes = {ev['note'] for p in patterns.values() for ev in p['events']}
         self.assertTrue(any(note >= 80 for note in notes),
                         "tail motif dropped — detector head-cut instead of "
@@ -1556,6 +1567,32 @@ class TestPatternHashExactKeying(unittest.TestCase):
         # p0 now carries both its own and p1's positions; p2 only its own.
         self.assertEqual(refs['p0'], [0, 16])
         self.assertEqual(refs['p2'], [32])
+
+
+class TestDrumPatternEmergentScanOverlap(unittest.TestCase):
+    """Regression (#366/PAT-B): DrumPatternDetector's emergent-pattern scan
+    must not double-count overlapping windows on a self-similar drum run,
+    mirroring the _find_pattern_matches non-overlap discipline (#170/PAT-04)."""
+
+    def test_self_similar_run_produces_non_overlapping_matches(self):
+        detector = DrumPatternDetector(min_pattern_length=4, max_pattern_length=4)
+        # 12 identical (note, volume) events -- a period-1 self-similar run.
+        # Note 50 doesn't appear in any built-in drum_patterns template, so
+        # only the emergent-pattern path is exercised.
+        events = [{'note': 50, 'volume': 100} for _ in range(12)]
+        patterns = detector.detect_drum_patterns(events)
+
+        self.assertTrue(patterns, "expected at least one emergent pattern")
+        for pattern_id, info in patterns.items():
+            matches = sorted(info['matches'])
+            # Consecutive match positions (including the anchor) must be at
+            # least a full pattern length (4) apart -- overlapping windows
+            # must not be counted as separate occurrences.
+            for a, b in zip(matches, matches[1:]):
+                self.assertGreaterEqual(
+                    b - a, 4,
+                    f"{pattern_id}: overlapping matches {a} and {b} "
+                    f"(pattern length 4)")
 
 
 if __name__ == '__main__':

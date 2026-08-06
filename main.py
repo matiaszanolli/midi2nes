@@ -114,6 +114,7 @@ class DpcmPackResult:
     index_found: bool = False
     sample_ids: Dict[str, int] = field(default_factory=dict)
     loaded_samples: int = 0
+    skipped_samples: int = 0
     bank_count: int = 0
     warning: Optional[str] = None
     # Populated only on the except path, so a --verbose caller can print it
@@ -159,9 +160,10 @@ def pack_dpcm_into_asm(frames, asm_path, *, verbose=False) -> DpcmPackResult:
         # catalog id, avoiding the note-byte collision two high catalog ids
         # used to hit (#200/D-14).
         sample_ids = get_dpcm_sample_ids_from_frames(frames)
-        loaded_samples, _ = load_dpcm_index_into_packer(
+        skipped_details = []
+        loaded_samples, skipped_samples = load_dpcm_index_into_packer(
             packer, dpcm_index, dpcm_index_path, verbose=verbose,
-            sample_ids=sample_ids)
+            sample_ids=sample_ids, skipped_details=skipped_details)
 
         with open(asm_path, 'a') as f:
             f.write("\n\n" + packer.generate_assembly())
@@ -172,9 +174,27 @@ def pack_dpcm_into_asm(frames, asm_path, *, verbose=False) -> DpcmPackResult:
                 f"this song references {len(sample_ids)} DPCM sample(s) but none "
                 f"resolved to a file — the exported ASM has NO drums."
             )
+        elif skipped_details:
+            # Partial miss (#367/DP-DPCM-05): the frames stage already baked
+            # dense_id = note-1 for every referenced sample before file
+            # resolution ran here, so a skipped id's lookup-table slot is a
+            # $00 placeholder the frame still indexes. Name the dropped
+            # drums (loud, not just verbose-gated) instead of silently
+            # leaving that slot for the runtime $00-length skip to catch.
+            # Built from skipped_details (populated in-place by this call),
+            # not the skipped count returned above -- robust to a caller
+            # that mocks load_dpcm_index_into_packer's return shape.
+            names = ", ".join(
+                f"{d['filename']} (id {d['pack_id']})" for d in skipped_details)
+            warning = (
+                f"{len(skipped_details)} of {len(sample_ids)} referenced DPCM "
+                f"sample(s) could not be found and were dropped (silenced, not "
+                f"substituted): {names}"
+            )
         return DpcmPackResult(
             index_found=True, sample_ids=sample_ids,
-            loaded_samples=loaded_samples, bank_count=len(packer.banks),
+            loaded_samples=loaded_samples, skipped_samples=skipped_samples,
+            bank_count=len(packer.banks),
             warning=warning,
         )
     except Exception as e:
@@ -692,7 +712,12 @@ def run_export(args):
 
         print(f" Exported CA65 ASM -> {args.output}")
         if dpcm_pack_warning:
-            print(f"   ⚠️  NO DRUMS: {dpcm_pack_warning}")
+            # "NO DRUMS" only actually describes the all-missing case
+            # (loaded_samples == 0); a partial miss (#367/DP-DPCM-05) still
+            # has *some* drums, so labeling it "NO DRUMS" would misdescribe
+            # the very warning meant to make the drop visible.
+            label = "NO DRUMS" if pack_result.loaded_samples == 0 else "PARTIAL DPCM MISS"
+            print(f"   ⚠️  {label}: {dpcm_pack_warning}")
 
 def run_detect_patterns(args):
     # Guard against a missing/corrupt file (#120); the frames JSON's channel
@@ -1153,7 +1178,10 @@ def run_full_pipeline(args):
             if pattern_loss_warning:
                 print(f"\n   ⚠️  {pattern_loss_warning}")
             if dpcm_pack_warning:
-                print(f"\n   ⚠️  NO DRUMS: {dpcm_pack_warning}")
+                # See run_export's identical labeling: "NO DRUMS" only
+                # actually describes the all-missing case (#367/DP-DPCM-05).
+                label = "NO DRUMS" if pack_result.loaded_samples == 0 else "PARTIAL DPCM MISS"
+                print(f"\n   ⚠️  {label}: {dpcm_pack_warning}")
             print("\n🎮 Your NES ROM is ready to run on emulators or flash carts!")
 
             # The new ROM is final and validated; mark success so the finally

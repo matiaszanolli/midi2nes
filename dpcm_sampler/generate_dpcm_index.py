@@ -36,7 +36,7 @@ def resolve_dpcm_sample_path(filename, index_path):
 
 
 def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False,
-                                sample_ids=None):
+                                sample_ids=None, skipped_details=None):
     """Resolve every entry in ``dpcm_index`` and add it to ``packer``.
 
     Shared by both DPCM packing call sites so the same robustness rules apply at
@@ -64,6 +64,12 @@ def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False,
     Samples are added in ascending index-id order, matching the positional
     lookup tables the engine indexes by ``sample_id``. Returns
     ``(loaded, skipped)``.
+
+    ``skipped_details``, if given a list, has one dict appended per skipped
+    entry (``{'pack_id': ..., 'filename': ...}`` -- ``pack_id`` is the same
+    dense/catalog id the sample would have been keyed by in the packer) so a
+    caller can name the dropped drums in a warning instead of only knowing
+    the count (#367/DP-DPCM-05).
     """
     loaded = 0
     skipped = 0
@@ -80,13 +86,16 @@ def load_dpcm_index_into_packer(packer, dpcm_index, index_path, verbose=False,
                 continue
         elif sample_ids is not None and sid_int not in sample_ids:
             continue
+        pack_id = catalog_to_dense[sid_int] if catalog_to_dense is not None else sid
         sample_path = resolve_dpcm_sample_path(sample['filename'], index_path)
         if sample_path is None:
             skipped += 1
+            if skipped_details is not None:
+                skipped_details.append(
+                    {'pack_id': pack_id, 'filename': sample['filename']})
             if verbose:
                 print(f"  ⚠️ Warning: DPCM sample not found: {sample['filename']}")
             continue
-        pack_id = catalog_to_dense[sid_int] if catalog_to_dense is not None else sid
         packer.add_sample(
             str(pack_id),
             str(sample_path.absolute()).replace('\\', '/'),

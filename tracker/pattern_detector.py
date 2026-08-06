@@ -685,20 +685,31 @@ class DrumPatternDetector(PatternDetector):
                     
                 matches = []
                 variations = []
-                
-                # Look for similar patterns
-                for pos in range(start + 1, len(sequence) - length + 1):
+
+                # Look for similar patterns. On a self-similar run (period <
+                # length), scanning pos by pos would let consecutive windows
+                # overlap the anchor and each other, double-counting a single
+                # underlying occurrence (#366/PAT-B). Start past the anchor
+                # window itself and skip a full `length` past any classified
+                # window, mirroring the non-overlap discipline in
+                # _find_pattern_matches (#170/PAT-04).
+                pos = start + length
+                while pos <= len(sequence) - length:
                     current = sequence[pos:pos + length]
                     similarity = self._calculate_drum_similarity(pattern, current)
-                    
+
                     if similarity > 0.85:
                         matches.append(pos)
+                        pos += length
                     elif similarity > 0.7:
                         variations.append({
                             'position': pos,
                             'similarity': similarity,
                             'pattern': current
                         })
+                        pos += length
+                    else:
+                        pos += 1
                 
                 if matches or variations:
                     pattern_score = score_drum_pattern(length, matches, variations)
