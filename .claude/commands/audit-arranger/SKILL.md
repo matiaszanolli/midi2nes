@@ -273,9 +273,20 @@ Checklist:
   strike), ramps it down over `NOISE_DECAY_FRAMES` via the shared
   `nes/envelope_processor.noise_strike_decay_volume` helper — so both front-ends sound alike —
   and truncates it to that length. Verify-the-fix: confirm period/control are untouched (only
-  volume is scaled, and only downward, so it can't leave the 4-bit range), that a gap or a
-  period change starts a fresh strike, and that `allocate_with_arpeggiation` (the live entry
-  point) is what actually calls `process_song` — not a dead/parallel code path.
+  volume is scaled, and only downward, so it can't leave the 4-bit range), that a gap, a
+  period change, or a raw-volume change starts a fresh strike, and that
+  `allocate_with_arpeggiation` (the live entry point) is what actually calls `process_song` —
+  not a dead/parallel code path.
+- **#391 (ARR-2026-08-05-1) is CLOSED**: the boundary check above originally only broke a
+  strike on a frame gap or period change, so `_apply_sustain`'s zero-gap bridging routinely
+  merged back-to-back same-period hits (e.g. fast repeated hi-hats) into one strike, discarding
+  every hit after the first. `_apply_noise_strike_decay` now also breaks the strike whenever
+  the raw (pre-decay) volume changes between contiguous frames — safe because each discrete
+  note's frames carry one flat volume for its whole duration (`_allocate_noise` picks a single
+  fixed `NoteInfo.velocity`), so a volume change mid-run can only be a different note taking
+  over. Verify-the-fix: a genuinely sustained flat-volume run must still collapse to one
+  strike (not fragment per-frame), while a same-period run with a volume change mid-run must
+  yield one strike per distinct volume segment.
 - `control = (duty << 6) | 0x30 | volume` for pulse — verify the byte stays in 0–255 and the
   duty bits land in bits 6–7 per `docs/APU_PULSE_REFERENCE.md`.
 

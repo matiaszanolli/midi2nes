@@ -483,8 +483,9 @@ class FrameByFrameAllocator:
         truncated to that length; frames past the decay are dropped so the hit
         ends instead of hissing on. Period/control are untouched (noise has no
         pitch table); volume stays in the 4-bit range because the ramp only
-        scales the existing per-frame volume down. A new run (a gap, or a period
-        change) starts a fresh strike (#359/ARR-2026-07-19-1).
+        scales the existing per-frame volume down. A new run (a gap, a period
+        change, or a raw-volume change) starts a fresh strike (#359/
+        ARR-2026-07-19-1, #391/ARR-2026-08-05-1).
         """
         if not noise_frames:
             return noise_frames
@@ -495,10 +496,21 @@ class FrameByFrameAllocator:
             start = ordered[i]
             period = noise_frames[start].get("period")
             peak = noise_frames[start].get("volume", 1)
-            # Extend the strike while frames stay contiguous and same-period.
+            # Extend the strike while frames stay contiguous, same-period,
+            # AND same raw (pre-decay) volume. Each discrete note's frames
+            # carry one flat volume here (_allocate_noise picks one fixed
+            # NoteInfo.velocity for the note's whole duration), so a volume
+            # change mid-run can only mean a different note took over this
+            # frame -- a re-trigger of the same drum, or a handoff to
+            # another already-sounding note after a louder one ended.
+            # Without this check, back-to-back same-period hits (routine
+            # under _apply_sustain's zero-gap bridging) collapsed into one
+            # strike, discarding every hit after the first and dropping any
+            # hit past the 6-frame decay window entirely (#391).
             j = i
             while (j + 1 < n and ordered[j + 1] == ordered[j] + 1
-                   and noise_frames[ordered[j + 1]].get("period") == period):
+                   and noise_frames[ordered[j + 1]].get("period") == period
+                   and noise_frames[ordered[j + 1]].get("volume", 1) == peak):
                 j += 1
             run_len = ordered[j] - start + 1
             span = min(run_len, NOISE_DECAY_FRAMES)

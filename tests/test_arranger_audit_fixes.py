@@ -53,6 +53,39 @@ class TestArrangerNoiseStrikeDecay:
         from arranger.voice_allocator import FrameByFrameAllocator
         assert FrameByFrameAllocator._apply_noise_strike_decay({}) == {}
 
+    def test_zero_gap_retrigger_starts_new_strike(self):
+        """#391/ARR-2026-08-05-1: back-to-back same-period hits with no frame
+        gap between them (routine under _apply_sustain's zero-gap bridging,
+        e.g. fast repeated hi-hats) must each get their own peak/decay
+        instead of collapsing into one truncated strike."""
+        from arranger.voice_allocator import FrameByFrameAllocator
+        nf = {}
+        nf.update({f: {"period": 5, "volume": 8} for f in range(0, 3)})   # hit 1
+        nf.update({f: {"period": 5, "volume": 12} for f in range(3, 6)})  # hit 2 (louder)
+        nf.update({f: {"period": 5, "volume": 8} for f in range(6, 9)})   # hit 3
+        out = FrameByFrameAllocator._apply_noise_strike_decay(nf)
+
+        # All three hits survive with their own fresh peak...
+        assert out[0]["volume"] == 8
+        assert out[3]["volume"] == 12  # hit 2's peak is not discarded
+        assert out[6]["volume"] == 8   # hit 3 is not dropped past the decay window
+        # ...and each decays monotonically within its own 3-frame span.
+        assert out[0]["volume"] >= out[1]["volume"] >= out[2]["volume"]
+        assert out[3]["volume"] >= out[4]["volume"] >= out[5]["volume"]
+        assert out[6]["volume"] >= out[7]["volume"] >= out[8]["volume"]
+
+    def test_same_volume_run_still_truncates_as_one_strike(self):
+        """A genuinely sustained single note (flat volume for its whole
+        duration, matching _allocate_noise's per-note NoteInfo.velocity) is
+        still one strike, not one-per-frame -- the volume-change check must
+        not fragment a real sustain into spurious re-triggers."""
+        from arranger.voice_allocator import FrameByFrameAllocator
+        from nes.envelope_processor import NOISE_DECAY_FRAMES
+        flat = {f: {"period": 5, "volume": 10} for f in range(12)}
+        out = FrameByFrameAllocator._apply_noise_strike_decay(flat)
+        assert sorted(out) == list(range(NOISE_DECAY_FRAMES))
+        assert out[0]["volume"] == 10
+
     def test_shared_helper_matches_legacy_formula(self):
         from nes.envelope_processor import noise_strike_decay_volume
         # Both front-ends use this; ramp = round(peak*(span-offset)/span), min 1.
