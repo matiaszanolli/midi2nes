@@ -711,7 +711,14 @@ def run_export(args):
         dpcm_pack_warning = pack_result.warning
 
         print(f" Exported CA65 ASM -> {args.output}")
-        if dpcm_pack_warning:
+        if not pack_result.index_found:
+            # A missing dpcm_index.json used to print nothing at all here --
+            # `if dpcm_pack_warning:` below is None in this case, so a song
+            # with percussion silently lost its drums with zero feedback,
+            # unlike run_full_pipeline's explicit index_found branch
+            # (#411/SAFE-2026-08-06-1). Same wording as that sibling branch.
+            print("   ℹ️ No dpcm_index.json found, skipping DPCM packing.")
+        elif dpcm_pack_warning:
             # "NO DRUMS" only actually describes the all-missing case
             # (loaded_samples == 0); a partial miss (#367/DP-DPCM-05) still
             # has *some* drums, so labeling it "NO DRUMS" would misdescribe
