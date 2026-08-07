@@ -27,6 +27,7 @@ import main
 from main import (
     run_parse, run_map, run_frames, run_prepare, run_export, run_compile,
     run_detect_patterns, run_song_add, run_song_list, run_song_remove,
+    run_song_build, midi_to_frames_for_song,
     load_config, run_config_init, run_config_validate,
     run_benchmark, run_benchmark_memory, run_full_pipeline, main,
     DETECTOR_MAX_EVENTS, resolve_mapper, get_mapper_choice,
@@ -1611,6 +1612,160 @@ class TestSongBankCommands:
         assert exc_info.value.code == 1
         printed_text = " ".join(str(call[0][0]) for call in mock_print.call_args_list)
         assert "[ERROR]" in printed_text
+
+
+class TestRunSongBuild:
+    """Test run_song_build orchestration (#30/F-13, song bank -> ROM).
+
+    Mocks only the CC65-dependent tail (NESProjectBuilder/compile_rom/
+    validate_rom), same style as TestRunCompile/TestRunPrepare -- everything
+    upstream of that (bank loading, per-song parse/map, the real
+    CA65Exporter.export_song_bank_bytecode) runs for real.
+    """
+
+    def setup_method(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.output_rom = self.temp_dir / "jukebox.nes"
+        self.bank_path = self.temp_dir / "bank.json"
+
+        import mido
+        self.midi_a = self.temp_dir / "song_a.mid"
+        self.midi_b = self.temp_dir / "song_b.mid"
+        for path, note in [(self.midi_a, 60), (self.midi_b, 67)]:
+            mid = mido.MidiFile()
+            track = mido.MidiTrack()
+            mid.tracks.append(track)
+            track.append(mido.Message('note_on', note=note, velocity=100, channel=0, time=0))
+            track.append(mido.Message('note_off', note=note, velocity=0, channel=0, time=240))
+            mid.save(str(path))
+
+    def teardown_method(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _write_bank(self, entries):
+        """entries: list of (name, midi_path_or_None, order)."""
+        songs = {}
+        for name, midi_path, order in entries:
+            songs[name] = {
+                'segments': {'events': [], 'patterns': {}, 'frames': []},
+                'metadata': {'title': name, 'composer': None, 'order': order,
+                             'loop_point': None, 'tags': [], 'tempo_base': 120},
+                'bank': 0,
+                'size': 100,
+                'midi_path': str(midi_path) if midi_path else None,
+            }
+        self.bank_path.write_text(json.dumps({
+            'version': '0.3.0',
+            'bank_info': {'total_banks': 8, 'bank_size': 16384},
+            'songs': songs,
+        }))
+
+    def _args(self, **overrides):
+        defaults = dict(bank=str(self.bank_path), output=str(self.output_rom),
+                         arranger=True, dpcm_index=None, skip_validation=False,
+                         verbose=False)
+        defaults.update(overrides)
+        return Namespace(**defaults)
+
+    @patch('main.validate_rom')
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    def test_builds_songs_in_metadata_order_and_calls_pipeline(
+            self, mock_builder_class, mock_compile, mock_validate):
+        # order=0 is song_b despite song_a being inserted "first" in the
+        # dict -- metadata['order'] must win, not insertion order.
+        self._write_bank([
+            ('song_a', self.midi_a, 1),
+            ('song_b', self.midi_b, 0),
+        ])
+        mock_builder = Mock()
+        mock_builder_class.return_value = mock_builder
+        captured_asm = {}
+
+        def _capture_asm(music_asm_path, **kwargs):
+            # The music.asm lives in run_song_build's own temp dir, which is
+            # cleaned up before this test can inspect it -- read it now,
+            # while prepare_project is "receiving" it (mocked, so nothing
+            # actually consumes the file).
+            captured_asm['text'] = Path(music_asm_path).read_text()
+            return True
+
+        mock_builder.prepare_project.side_effect = _capture_asm
+        mock_compile.return_value = True
+        mock_validate.return_value = True
+
+        run_song_build(self._args())
+
+        mock_builder.prepare_project.assert_called_once()
+        _, kwargs = mock_builder.prepare_project.call_args
+        assert kwargs['song_count'] == 2
+
+        # song0_ must be song_b's data (order=0), not song_a's.
+        assert 'song0_pulse1_sequence' in captured_asm['text']
+        assert 'song1_pulse1_sequence' in captured_asm['text']
+
+        mock_compile.assert_called_once()
+        mock_validate.assert_called_once()
+
+    @patch('main.validate_rom')
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    def test_skip_validation_skips_validate_rom(
+            self, mock_builder_class, mock_compile, mock_validate):
+        self._write_bank([('song_a', self.midi_a, 0)])
+        mock_builder_class.return_value = Mock()
+        mock_compile.return_value = True
+
+        run_song_build(self._args(skip_validation=True))
+
+        mock_compile.assert_called_once()
+        mock_validate.assert_not_called()
+
+    def test_missing_bank_file_exits(self):
+        with pytest.raises(SystemExit):
+            run_song_build(self._args(bank=str(self.temp_dir / "nope.json")))
+
+    def test_empty_bank_exits(self):
+        self._write_bank([])
+        with pytest.raises(SystemExit):
+            run_song_build(self._args())
+
+    def test_song_missing_midi_path_exits(self):
+        """A bank built before this feature existed has no midi_path -- must
+        fail with a clear, actionable message, not a crash."""
+        self._write_bank([('song_a', None, 0)])
+        with pytest.raises(SystemExit):
+            run_song_build(self._args())
+
+    def test_song_midi_missing_on_disk_exits(self):
+        self._write_bank([('song_a', self.temp_dir / "gone.mid", 0)])
+        with pytest.raises(SystemExit):
+            run_song_build(self._args())
+
+    @patch('main.NESProjectBuilder')
+    def test_song_with_dpcm_events_is_rejected(self, mock_builder_class):
+        """v1 scope cut (#30/F-13, see docs/ROADMAP.md): DPCM/drums aren't
+        supported in jukebox builds yet."""
+        self._write_bank([('song_a', self.midi_a, 0)])
+        with patch('main.midi_to_frames_for_song') as mock_parse:
+            mock_parse.return_value = {
+                'pulse1': {}, 'dpcm': {'0': {'note': 5, 'volume': 15}}
+            }
+            with pytest.raises(SystemExit):
+                run_song_build(self._args())
+        mock_builder_class.assert_not_called()
+
+    @patch('main.NESProjectBuilder')
+    def test_legacy_mode_without_dpcm_index_exits_cleanly(self, mock_builder_class):
+        """Legacy (non-arranger) mapping needs dpcm_index.json even for a
+        song with no drums (matches run_full_pipeline's own requirement) --
+        must fail with a clear message, not an unhandled exception."""
+        self._write_bank([('song_a', self.midi_a, 0)])
+        missing_index = str(self.temp_dir / "no_such_index.json")
+        with pytest.raises(SystemExit):
+            run_song_build(self._args(arranger=False, dpcm_index=missing_index))
+        mock_builder_class.assert_not_called()
 
 
 class TestConfigCommands:

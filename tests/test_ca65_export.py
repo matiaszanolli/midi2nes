@@ -601,6 +601,128 @@ class TestCA65Export(unittest.TestCase):
             if test_output.exists():
                 test_output.unlink()
 
+
+class TestExportSongBankBytecode(unittest.TestCase):
+    """CA65Exporter.export_song_bank_bytecode -- multi-song 'jukebox' export
+    (#30/F-13). See docs/ROADMAP.md for the feature and its v1 scope."""
+
+    def setUp(self):
+        self.exporter = CA65Exporter()
+
+    @staticmethod
+    def _song(base_note, n_events=6):
+        return {'frames': {
+            'pulse1': {str(i): {'note': base_note + (i % 5), 'volume': 10}
+                       for i in range(n_events)}
+        }}
+
+    def test_requires_at_least_one_song(self):
+        with self.assertRaises(ValueError):
+            self.exporter.export_song_bank_bytecode([], "unused.asm")
+
+    def test_symbols_are_prefixed_per_song_no_collisions(self):
+        songs = [self._song(60), self._song(67), self._song(72)]
+        out = Path("test_jukebox_symbols.asm")
+        try:
+            self.exporter.export_song_bank_bytecode(songs, str(out))
+            asm = out.read_text()
+            for i in range(3):
+                self.assertIn(f'song{i}_pulse1_sequence:', asm)
+                self.assertIn(f'song{i}_instrument_table:', asm)
+            # A jukebox build has no plain `instrument_table`/`pulse1_sequence`
+            # label -- EVAL_MACRO (nes/audio_engine.asm) indirects through
+            # instrument_table_ptr instead (its .ifdef JUKEBOX_BUILD branch),
+            # since there's no single fixed table to address when each song
+            # has its own.
+            self.assertNotIn('\ninstrument_table:', asm)
+            self.assertNotRegex(asm, r'\npulse1_sequence:')
+        finally:
+            if out.exists():
+                out.unlink()
+
+    def test_period_tables_emitted_once_shared_across_songs(self):
+        # ntsc_period_low/high and triangle_period_low/high are pure hardware
+        # constants, identical for every song -- emitted once, not per song.
+        songs = [self._song(60), self._song(67)]
+        out = Path("test_jukebox_periods.asm")
+        try:
+            self.exporter.export_song_bank_bytecode(songs, str(out))
+            asm = out.read_text()
+            self.assertEqual(asm.count('ntsc_period_low:'), 1)
+            self.assertEqual(asm.count('triangle_period_low:'), 1)
+        finally:
+            if out.exists():
+                out.unlink()
+
+    def test_each_song_starts_a_fresh_bank(self):
+        # A song big enough to spill past BANK_00 on its own forces the
+        # regression this guards: if song 1 shared song 0's ending bank
+        # instead of starting fresh, ca65's own byte accounting for that
+        # bank would silently exceed 8KB (see _build_song_bytecode's
+        # docstring for why sharing a bank across calls isn't safe).
+        big_song = {'frames': {'pulse1': {
+            str(i): {'note': 60 + (i % 24), 'volume': 8 + (i % 7)}
+            for i in range(5000)
+        }}}
+        songs = [big_song, self._song(60)]
+        out = Path("test_jukebox_freshbank.asm")
+        try:
+            self.exporter.export_song_bank_bytecode(songs, str(out))
+            asm = out.read_text()
+        finally:
+            if out.exists():
+                out.unlink()
+
+        cur_bank = None
+        song0_last_bank = None
+        song1_start_bank = None
+        for line in asm.splitlines():
+            seg = re.match(r'\.segment\s+"BANK_(\d+)"', line.strip())
+            if seg:
+                cur_bank = int(seg.group(1))
+            if 'song0_dpcm_sequence:' in line:
+                song0_last_bank = cur_bank
+            if 'song1_pulse1_sequence:' in line:
+                song1_start_bank = cur_bank
+        self.assertIsNotNone(song0_last_bank)
+        self.assertIsNotNone(song1_start_bank)
+        self.assertGreater(song1_start_bank, song0_last_bank,
+                            "song 1 must start in a fresh bank after song 0's tail")
+
+    def test_song_table_matches_song_and_channel_count(self):
+        songs = [self._song(60), self._song(67)]
+        out = Path("test_jukebox_songtable.asm")
+        try:
+            self.exporter.export_song_bank_bytecode(songs, str(out))
+            asm = out.read_text()
+        finally:
+            if out.exists():
+                out.unlink()
+
+        m = re.search(r'song_table_bank:\s*\n\s*\.byte\s+([^\n;]+)', asm)
+        self.assertIsNotNone(m, "song_table_bank must be emitted")
+        table = [int(tok.strip().lstrip('$'), 16) for tok in m.group(1).split(',')]
+        self.assertEqual(len(table), 10, "2 songs x 5 channels (SEQUENCE_CHANNELS)")
+
+        m = re.search(r'song_count:\s*\n\s*\.byte\s+([^\n;]+)', asm)
+        self.assertIsNotNone(m, "song_count must be emitted")
+        self.assertEqual(int(m.group(1).strip().lstrip('$'), 16), 2)
+
+    def test_notes_clamped_totalled_across_songs(self):
+        # #298/EXP-10: the single-song exporter reports a clamp tally on
+        # self.notes_clamped; the jukebox entry point must sum it across all
+        # songs, not just report whichever song exported last.
+        hi_song = {'frames': {'pulse1': {'0': {'note': 200, 'volume': 10}}}}
+        lo_song = {'frames': {'pulse1': {'0': {'note': 5, 'volume': 10}}}}
+        out = Path("test_jukebox_clamp.asm")
+        try:
+            self.exporter.export_song_bank_bytecode([hi_song, lo_song], str(out))
+        finally:
+            if out.exists():
+                out.unlink()
+        self.assertEqual(self.exporter.notes_clamped, {'high': 1, 'low': 1})
+
+
 def _patch_music_asm(music_asm_path):
     """Fix missing entry points in the generated music.asm to ensure compilation."""
     with open(music_asm_path, 'r') as f:
@@ -974,6 +1096,84 @@ class TestCA65CompilationIntegration(unittest.TestCase):
 
         self.assertEqual(header[0:4], b'NES\x1a', "Invalid iNES header")
         self.assertEqual(header[6] & 0xF0, 0x40, "Mapper should be MMC3 (4)")
+
+
+@pytest.mark.requires_cc65
+class TestJukeboxCompilationIntegration(unittest.TestCase):
+    """Real CC65 build of a multi-song jukebox ROM (#30/F-13).
+
+    Exercises the whole song-bank -> ROM route end to end: CA65Exporter.
+    export_song_bank_bytecode -> NESProjectBuilder.prepare_project(song_count=N)
+    -> compile_rom -> ROMDiagnostics, the same path main.py's run_song_build
+    drives (see tests/test_main.py::TestRunSongBuild for the mocked-compile
+    orchestration tests).
+    """
+
+    def setUp(self):
+        self.exporter = CA65Exporter()
+        self.temp_dir = tempfile.mkdtemp()
+        self.project_path = Path(self.temp_dir) / "jukebox_project"
+        self.builder = NESProjectBuilder(str(self.project_path), mapper=MMC3Mapper())
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir)
+
+    @staticmethod
+    def _song_frames(base_note):
+        return {'frames': {
+            'pulse1': {str(i): {'note': base_note + (i % 5), 'volume': 10}
+                       for i in range(8)},
+            'triangle': {str(i): {'note': base_note - 12, 'volume': 15}
+                         for i in range(0, 8, 2)},
+        }}
+
+    def test_two_song_jukebox_rom_compiles_and_passes_diagnostics(self):
+        songs = [self._song_frames(60), self._song_frames(67)]
+        music_asm = Path(self.temp_dir) / "music.asm"
+        self.exporter.export_song_bank_bytecode(songs, str(music_asm))
+
+        self.assertTrue(self.builder.prepare_project(str(music_asm), song_count=len(songs)))
+
+        rom_path = Path(self.temp_dir) / "jukebox.nes"
+        from compiler import compile_rom
+        success = compile_rom(self.project_path, rom_path, mapper=MMC3Mapper())
+        self.assertTrue(success, "jukebox ROM failed to compile/link")
+        self.assertTrue(rom_path.exists())
+
+        from debug.rom_diagnostics import ROMDiagnostics
+        result = ROMDiagnostics(verbose=False).diagnose_rom(str(rom_path))
+        self.assertIn(result.overall_health, ("HEALTHY", "GOOD", "FAIR"),
+                      f"jukebox ROM diagnostics unexpectedly bad: {result.issues}")
+        self.assertTrue(result.reset_vectors_valid, "invalid reset vector")
+        self.assertGreater(result.apu_pattern_count, 0, "no APU init patterns found")
+
+        # main.asm must actually reference the jukebox-only routines this
+        # build turned on (song_count=2 > 1).
+        main_asm = (self.project_path / "main.asm").read_text()
+        self.assertIn("JUKEBOX_BUILD = 1", main_asm)
+        self.assertIn("jsr audio_advance_song", main_asm)
+
+    def test_single_song_still_compiles_after_jukebox_changes(self):
+        """Regression guard: song_count=None (the default, ordinary
+        single-song path) must keep compiling exactly as before -- the
+        jukebox additions to nes/audio_engine.asm are .ifdef-gated
+        specifically so this stays true."""
+        songs = [self._song_frames(60)]
+        music_asm = Path(self.temp_dir) / "music.asm"
+        self.exporter.export_tables_with_patterns(
+            songs[0]['frames'], {'p0': {'events': [{'note': 60, 'volume': 15}]}},
+            {}, str(music_asm), standalone=False)
+
+        self.assertTrue(self.builder.prepare_project(str(music_asm)))
+
+        main_asm = (self.project_path / "main.asm").read_text()
+        self.assertNotIn("JUKEBOX_BUILD", main_asm)
+
+        rom_path = Path(self.temp_dir) / "single.nes"
+        from compiler import compile_rom
+        success = compile_rom(self.project_path, rom_path, mapper=MMC3Mapper())
+        self.assertTrue(success, "single-song ROM failed to compile/link")
 
 
 class TestPackDirectTablesIntoBanks(unittest.TestCase):

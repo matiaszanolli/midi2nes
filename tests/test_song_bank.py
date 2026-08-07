@@ -207,6 +207,35 @@ class TestSongBank(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.bank.import_bank(str(self.test_bank_path))
 
+    def test_add_song_from_midi_stores_resolved_midi_path(self):
+        """Regression (#30/F-13): `song build` re-parses/re-maps from the
+        original MIDI (SongBank's stored `segments` are raw parsed events
+        only, not compile-ready frames) -- so add_song_from_midi must record
+        the source path, resolved to absolute so a build run from a
+        different cwd than `song add` can still find it."""
+        import mido
+
+        mid = mido.MidiFile()
+        track = mido.MidiTrack()
+        mid.tracks.append(track)
+        track.append(mido.Message('note_on', note=60, velocity=100, channel=0, time=0))
+        track.append(mido.Message('note_off', note=60, velocity=0, channel=0, time=480))
+        midi_path = Path(self.temp_dir) / "song.mid"
+        mid.save(str(midi_path))
+
+        self.bank.add_song_from_midi(str(midi_path), name="test_song")
+
+        self.assertEqual(
+            self.bank.songs["test_song"]["midi_path"], str(midi_path.resolve()))
+
+    def test_add_song_midi_path_defaults_to_none(self):
+        """`add_song` called directly (no MIDI file involved, e.g. a hand-built
+        segments dict) must not require midi_path -- it's optional and absent
+        songs are exactly what `song build` uses to raise a clear per-song
+        error rather than crash (see main.py's run_song_build)."""
+        self.bank.add_song('test_song', self.test_song_data, {'tempo_base': 120})
+        self.assertIsNone(self.bank.songs['test_song']['midi_path'])
+
     def test_import_bank_valid_file_roundtrips(self):
         """A well-formed bank file (as produced by export_bank) must still
         import successfully after the new guard."""

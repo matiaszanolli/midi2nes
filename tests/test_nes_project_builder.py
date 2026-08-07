@@ -526,26 +526,74 @@ class TestDebugModeIntegration:
             )
 
 
-class TestMultiSongCompatibility:
-    """Test legacy multi-song compatibility."""
+class TestJukeboxSongCount:
+    """Test prepare_project's song_count param (#30/F-13, song bank -> ROM).
 
-    def test_prepare_multi_song_project(self, project_dir, minimal_music_asm):
-        """Test prepare_multi_song_project method."""
+    Replaces the old prepare_multi_song_project()/add_song_bank() placeholder
+    tests -- those methods were removed once a real multi-song route
+    (CA65Exporter.export_song_bank_bytecode + prepare_project(song_count=N))
+    existed to call instead.
+    """
+
+    @staticmethod
+    def _bytecode_music_asm(temp_dir):
+        path = temp_dir / "music.asm"
+        path.write_text(
+            "; CA65 Exporter: MMC3 Macro Bytecode mode\n"
+            ".segment \"CODE\"\ninit_music:\n    rts\nupdate_music:\n    rts\n"
+        )
+        return path
+
+    def test_song_count_none_leaves_output_unchanged(self, project_dir, temp_dir):
+        """The default (song_count=None) must produce byte-identical main.asm
+        to before this parameter existed -- no JUKEBOX_BUILD define, no
+        Start-skip polling."""
+        music_asm = self._bytecode_music_asm(temp_dir)
         builder = NESProjectBuilder(str(project_dir))
-        segments_data = {"song_1": {}}
+        assert builder.prepare_project(str(music_asm))
 
-        result = builder.prepare_multi_song_project(str(minimal_music_asm), segments_data)
-        assert result == True
-        assert (project_dir / "main.asm").exists()
+        content = (project_dir / "main.asm").read_text()
+        assert "JUKEBOX_BUILD" not in content
+        assert "audio_advance_song" not in content
+        assert "prev_start_state" not in content
 
-    def test_add_song_bank(self, project_dir, minimal_music_asm):
-        """Test add_song_bank method."""
+    def test_song_count_one_leaves_output_unchanged(self, project_dir, temp_dir):
+        """song_count=1 is still an ordinary single-song project."""
+        music_asm = self._bytecode_music_asm(temp_dir)
         builder = NESProjectBuilder(str(project_dir))
-        builder.prepare_project(str(minimal_music_asm))
+        assert builder.prepare_project(str(music_asm), song_count=1)
 
-        song_bank = {"name": "song_1", "data": b"test"}
-        result = builder.add_song_bank(song_bank)
-        assert result == True
+        content = (project_dir / "main.asm").read_text()
+        assert "JUKEBOX_BUILD" not in content
+
+    def test_song_count_above_one_defines_jukebox_build_before_include(
+            self, project_dir, temp_dir):
+        """JUKEBOX_BUILD must be a plain assignment (ca65's .ifdef only
+        recognizes real symbol/constant definitions, not .define'd macros)
+        and must precede `.include "audio_engine.asm"` so the engine's own
+        `.ifdef JUKEBOX_BUILD` sees it."""
+        music_asm = self._bytecode_music_asm(temp_dir)
+        builder = NESProjectBuilder(str(project_dir))
+        assert builder.prepare_project(str(music_asm), song_count=3)
+
+        content = (project_dir / "main.asm").read_text()
+        assert "JUKEBOX_BUILD = 1" in content
+        assert content.index("JUKEBOX_BUILD = 1") < content.index('.include "audio_engine.asm"')
+
+    def test_song_count_above_one_adds_start_skip_polling(self, project_dir, temp_dir):
+        """A jukebox build reads the joypad in the NMI handler and calls
+        audio_advance_song on a fresh Start press (#30/F-13)."""
+        music_asm = self._bytecode_music_asm(temp_dir)
+        builder = NESProjectBuilder(str(project_dir))
+        assert builder.prepare_project(str(music_asm), song_count=2)
+
+        content = (project_dir / "main.asm").read_text()
+        assert "jsr read_joypad_safe" in content
+        assert "jsr audio_advance_song" in content
+        assert "prev_start_state: .res 1" in content
+        # Must be inside the NMI handler, after update_music, not the reset routine.
+        nmi_body = content.split("nmi:")[1]
+        assert "audio_advance_song" in nmi_body
 
 
 class TestMMC1Configuration:
@@ -684,21 +732,6 @@ class TestReturnValues:
 
         assert result == True
         assert isinstance(result, bool)
-
-    def test_add_song_bank_returns_true(self, project_dir, minimal_music_asm):
-        """Test that add_song_bank returns True."""
-        builder = NESProjectBuilder(str(project_dir))
-        builder.prepare_project(str(minimal_music_asm))
-
-        result = builder.add_song_bank({})
-        assert result == True
-
-    def test_prepare_multi_song_returns_true(self, project_dir, minimal_music_asm):
-        """Test that prepare_multi_song_project returns True."""
-        builder = NESProjectBuilder(str(project_dir))
-        result = builder.prepare_multi_song_project(str(minimal_music_asm), {})
-
-        assert result == True
 
 
 class TestMapperFactoryDefault:

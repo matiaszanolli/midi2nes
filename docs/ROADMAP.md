@@ -54,14 +54,28 @@ infrastructure, and the `debug/` diagnostic suite.
 - [ ] FamiStudio export fidelity (effects, pattern organization).
 - [ ] Mapper coverage and auto-selection tuning (NROM/MMC1/MMC3).
 
-### Song banks → ROM
-`SongBank` (`nes/song_bank.py`) is currently **storage/analysis only**: the
-`song add|list|remove` subcommands manage a JSON bank but nothing compiles a
-bank into a `.nes`. Closing the gap (issue #30 / F-13):
-- [ ] `song build <bank> <out.nes>` route through the project builder + compiler.
-- [ ] Real multi-song ROM layout: per-song sequence pointers, a song table, and
-      an in-ROM song-select entry point (today `prepare_multi_song_project` /
-      `add_song_bank` are placeholders that fall back to single-song).
+### Song banks → ROM (#30/F-13) — ✅ v1 shipped, follow-ups remain
+`song build <bank.json> <out.nes>` compiles a `SongBank` into a real
+multi-song "jukebox" ROM: `SongBank` now records each song's source MIDI
+path (`song add`), and `song build` re-parses/maps every song, exports a
+combined MMC3 macro-bytecode `music.asm` with a real song table (per-song
+sequence pointers + a per-song instrument-table pointer, continuing the
+shared 60-bank pool fresh per song), and `nes/project_builder.py` wires in
+runtime song-switching: auto-advance when a song ends, and a Start-button
+press skips to the next song immediately (both wrap around). The engine
+additions are `.ifdef JUKEBOX_BUILD`-gated in `nes/audio_engine.asm`, so
+ordinary single-song builds are byte-identical to before this shipped.
+
+v1 deliberately narrowed scope — tracked as follow-ups, not silent gaps:
+- [ ] DPCM/drums in jukebox builds. `song build` currently rejects any song
+      with real DPCM events — DPCM sample banks and sequence banks already
+      share one 60-bank pool for a *single* song; extending that sharing
+      safely across N songs is unsolved.
+- [ ] `--mapper` choice for `song build` (always MMC3 today — the song-table/
+      bank-pool mechanism is bytecode-engine-specific and MMC3-only).
+- [ ] `--debug` overlay support for jukebox builds.
+- [ ] A visual song-select screen. Today's Start-skip is audible-only; no
+      PPU/tile-rendering code exists anywhere in this codebase yet.
 
 ## 🧭 Mid-term (v0.7.0–v0.9.0)
 

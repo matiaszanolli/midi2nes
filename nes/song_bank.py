@@ -69,12 +69,12 @@ class SongBank:
             'fits_in_bank': total_size <= self.max_bank_size
         }
 
-    def add_song_from_midi(self, midi_path: str, name: Optional[str] = None, 
+    def add_song_from_midi(self, midi_path: str, name: Optional[str] = None,
                           metadata: Optional[Dict[str, Any]] = None) -> None:
         """Add a song to the bank from a MIDI file"""
         parsed_data = parse_midi_to_frames(midi_path)
         song_name = name or Path(midi_path).stem
-        
+
         # Create metadata object
         meta = SongMetadata(
             title=song_name,
@@ -84,9 +84,14 @@ class SongBank:
             tags=metadata.get('tags', []) if metadata else [],
             tempo_base=metadata.get('tempo_base', 120) if metadata else 120
         )
-        
+
         segments = self._process_segments(parsed_data)
-        self.add_song(song_name, segments, vars(meta))
+        # Resolved to an absolute path so a `song build` run from a different
+        # cwd than `song add` can still find the source MIDI (#30/F-13) --
+        # the stored `segments` above are raw parsed events only (no NES
+        # channel mapping/frames/patterns), so building a real ROM from this
+        # bank later requires re-parsing/re-mapping from the original file.
+        self.add_song(song_name, segments, vars(meta), midi_path=str(Path(midi_path).resolve()))
 
     def _process_segments(self, parsed_data: Dict) -> Dict:
         """Process parsed MIDI data into segments"""
@@ -96,8 +101,16 @@ class SongBank:
             'frames': parsed_data.get('frames', [])
         }
 
-    def add_song(self, name: str, segments: Dict, metadata: Optional[Dict] = None) -> None:
-        """Add a song to the bank with its segments and metadata"""
+    def add_song(self, name: str, segments: Dict, metadata: Optional[Dict] = None,
+                 midi_path: Optional[str] = None) -> None:
+        """Add a song to the bank with its segments and metadata.
+
+        ``midi_path`` is the source MIDI file this song was parsed from, if
+        known. It's not used by anything in this class -- it's recorded so a
+        later ``song build`` can re-parse/re-map the real MIDI into
+        compile-ready frames, since ``segments`` here is raw parsed-event
+        storage only (#30/F-13; see the class docstring).
+        """
         if name in self.songs:
             raise ValueError(f"Song '{name}' already exists in the bank")
 
@@ -123,7 +136,8 @@ class SongBank:
             'segments': segments,
             'metadata': vars(meta),
             'bank': bank,
-            'size': size
+            'size': size,
+            'midi_path': midi_path
         }
 
     def _calculate_bank_assignment(self, size: int) -> int:
