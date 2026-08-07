@@ -80,12 +80,19 @@ class NESProjectBuilder:
         self._mapper = get_mapper("auto", data_size=data_size)
         return self._mapper
 
-    def prepare_project(self, music_asm_path: str) -> bool:
+    def prepare_project(self, music_asm_path: str, song_count: Optional[int] = None) -> bool:
         """
         Creates a complete NES project structure ready for CC65 compilation.
 
         Args:
             music_asm_path: Path to the music.asm file to include
+            song_count: Number of songs packed into ``music_asm_path`` by a
+                jukebox build (#30/F-13, ``CA65Exporter.export_song_bank_bytecode``).
+                ``None``/``1`` (default) is an ordinary single-song project --
+                output is unchanged from before this parameter existed.
+                ``> 1`` defines ``JUKEBOX_BUILD`` before including
+                audio_engine.asm and adds the Start-button skip-to-next-song
+                polling in ``_generate_main_asm``.
 
         Returns:
             True on success
@@ -243,7 +250,7 @@ fetch_sequence_byte:
         (self.project_path / "nes.cfg").write_text(nes_cfg)
             
         # Generate main.asm
-        main_content = self._generate_main_asm(is_bytecode)
+        main_content = self._generate_main_asm(is_bytecode, song_count=song_count)
         
         # Add mapper-specific bank switching code and export it.
         # The main.asm template ends inside the VECTORS segment, so switch back
@@ -298,6 +305,13 @@ read_joypad_once:
         # Include the audio engine only for the bytecode export. The direct export
         # is self-contained and the engine imports symbols it never defines (#50).
         if is_bytecode and engine_src.exists():
+            if song_count and song_count > 1:
+                # ca65's .ifdef only recognizes real symbol/constant
+                # definitions, not .define'd macros -- this must be a plain
+                # assignment, and it must precede the .include below so
+                # audio_engine.asm's own `.ifdef JUKEBOX_BUILD` sees it
+                # (#30/F-13).
+                main_content += '\nJUKEBOX_BUILD = 1\n'
             main_content += '\n.include "audio_engine.asm"\n'
             
         (self.project_path / "main.asm").write_text(main_content)
@@ -305,13 +319,22 @@ read_joypad_once:
 
         return True
 
-    def _generate_main_asm(self, is_bytecode: bool = True) -> str:
+    def _generate_main_asm(self, is_bytecode: bool = True, song_count: Optional[int] = None) -> str:
         """Generate main.asm with mapper-specific code.
 
         In bytecode mode the included audio_engine.asm defines/exports
         frame_counter; the self-contained direct export does not include the
         engine, so main.asm must own frame_counter itself (issue #50).
+
+        ``song_count`` is the number of songs a jukebox build (#30/F-13)
+        packed into this ROM via ``CA65Exporter.export_song_bank_bytecode``.
+        ``None``/``1`` (the default -- ordinary single-song builds) leaves
+        this method's output unchanged from before this feature existed;
+        only ``song_count > 1`` adds the Start-button skip-to-next-song
+        polling below.
         """
+        jukebox_mode = bool(song_count and song_count > 1)
+
         frame_counter_def = "" if is_bytecode else (
             "    frame_counter: .res 2  ; 60Hz tick (direct export owns this)\n"
             ".exportzp frame_counter\n"
@@ -320,6 +343,33 @@ read_joypad_once:
         debug_imports = ""
         debug_init_call = ""
         debug_update_call = ""
+
+        # Jukebox-only (#30/F-13): edge-detect the Start button in the NMI
+        # handler and skip to the next song on a fresh press. Reuses
+        # read_joypad_safe/joypad_state (appended by prepare_project after
+        # this method returns -- same module, forward reference is fine in
+        # ca65) rather than a second joypad-read routine. `prev_start_state`
+        # is what makes this edge-triggered instead of re-firing every frame
+        # the button stays held.
+        jukebox_zp = ""
+        jukebox_skip_call = ""
+        if jukebox_mode:
+            jukebox_zp = "    prev_start_state: .res 1\n"
+            jukebox_skip_call = """
+    ; Start button: skip to the next song (edge-triggered -- only on a
+    ; fresh press, not every frame it's held).
+    jsr read_joypad_safe
+    lda joypad_state
+    and #$10            ; isolate the Start bit
+    tax                 ; save this frame's Start state (0 or nonzero)
+    beq @start_not_pressed
+    lda prev_start_state
+    bne @start_not_pressed  ; still held from last frame -- not a new press
+    jsr audio_advance_song
+@start_not_pressed:
+    txa
+    sta prev_start_state
+"""
 
         if self.debug_mode:
             debug_imports = """; Import debug functions
@@ -363,6 +413,7 @@ read_joypad_once:
     sequence_bank: .res 1  ; 8-bit bank number where this sequence lives
 .exportzp temp_ptr, sequence_ptr, sequence_bank
 {frame_counter_def}
+{jukebox_zp}
 .segment "CODE"
 ; Import music functions from music.asm
 .global init_music
@@ -404,6 +455,7 @@ nmi:
     ; Update music - this calls our working frame-based music code
     jsr update_music
 {debug_update_call}
+{jukebox_skip_call}
     ; Restore registers and return
     pla
     tay
@@ -440,20 +492,3 @@ irq:
         """Legacy compatibility: check if using MMC1."""
         return self.mapper.mapper_number == 1
 
-    def prepare_multi_song_project(self, music_asm_path: str, segments_data: dict) -> bool:
-        """Placeholder for multi-song ROM builds.
-
-        A true multi-song layout (per-song sequence pointers, a song table, and
-        an in-ROM song-select entry point) is not implemented yet, so this
-        falls back to a single-song project and ignores ``segments_data``. See
-        the song-bank note in docs/ROADMAP.md.
-        """
-        return self.prepare_project(music_asm_path)
-
-    def add_song_bank(self, song_bank) -> bool:
-        """Placeholder for wiring a SongBank into a ROM build.
-
-        No-op until the song-bank -> ROM route exists; SongBank is currently a
-        storage/analysis container only (see nes/song_bank.py).
-        """
-        return True

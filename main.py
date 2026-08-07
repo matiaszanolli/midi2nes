@@ -874,6 +874,159 @@ def run_song_remove(args):
     bank.export_bank(args.bank)
     print(f"Song '{args.name}' removed from bank")
 
+
+def midi_to_frames_for_song(midi_path, use_arranger, dpcm_index_path='dpcm_index.json', verbose=False):
+    """Parse one MIDI file into NES-mapped frames for a `song build` (#30/F-13).
+
+    Mirrors run_full_pipeline's inline parse -> map/arrange steps (its
+    steps 1-3), but as a standalone callable a multi-song build can invoke
+    once per song. Deliberately NOT extracted from run_full_pipeline itself:
+    that function's `del midi_data`/`del mapped` calls are pinned in place by
+    a memory-optimization test contract (see the stage-helpers comment block
+    above `detect_patterns_or_direct_export`), so this is a separate, small
+    function rather than a refactor of that path.
+
+    Raises FileNotFoundError (legacy/non-arranger mode only) if
+    `dpcm_index_path` doesn't exist, matching run_full_pipeline's own
+    requirement -- assign_tracks_to_nes_channels needs it unconditionally,
+    even for a song with no drums.
+    """
+    from tracker.parser_fast import parse_midi_to_frames as parse_fast
+    midi_data = parse_fast(str(midi_path))
+
+    if use_arranger:
+        return arrange_for_nes(midi_data["events"], arp_speed=3, verbose=verbose)
+
+    if not Path(dpcm_index_path).exists():
+        raise FileNotFoundError(
+            f"DPCM index not found: {dpcm_index_path} (pass --dpcm-index <path>, "
+            f"or restore dpcm_index.json) -- required for legacy (non-arranger) mapping"
+        )
+    mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
+    emulator = NESEmulatorCore()
+    return emulator.process_all_tracks(mapped)
+
+
+def _song_has_dpcm_events(frames):
+    """True if `frames['dpcm']` contains a real (non-silent) drum hit.
+
+    `song build` doesn't support DPCM in v1 (#30/F-13, see docs/ROADMAP.md),
+    so callers use this to reject a song with a clear error instead of
+    silently producing a ROM with a broken/colliding DPCM bank pool (each
+    song's sequence bytecode already claims its own fresh bank range, but
+    DPCM sample packing -- excluded here -- would need the same treatment
+    and doesn't have it yet).
+    """
+    dpcm_frames = frames.get('dpcm') or {}
+    return any(
+        (frame_data or {}).get('note', 0) and (frame_data or {}).get('volume', 0)
+        for frame_data in dpcm_frames.values()
+    )
+
+
+def run_song_build(args):
+    """Build a multi-song 'jukebox' ROM from a song bank (#30/F-13).
+
+    v1 scope: MMC3 only, no DPCM/drums, no --debug overlay, no pattern
+    detection (bytecode compression already comes from macro/instrument
+    dedup, not the detector -- see CLAUDE.md). See docs/ROADMAP.md for the
+    documented cuts and planned follow-ups.
+    """
+    bank_path = Path(args.bank)
+    if not bank_path.exists():
+        print(f"Error: Song bank file not found: {bank_path}")
+        sys.exit(1)
+
+    bank = SongBank()
+    try:
+        bank.import_bank(str(bank_path))
+    except Exception as e:
+        print(f"[ERROR] Failed to load song bank: {e}")
+        sys.exit(1)
+
+    if not bank.songs:
+        print("[ERROR] Song bank is empty -- nothing to build")
+        sys.exit(1)
+
+    # metadata['order'] was recorded at `song add` time but never consumed
+    # by anything until now -- this is what finally gives it a purpose.
+    ordered_names = sorted(
+        bank.songs, key=lambda name: bank.songs[name]['metadata'].get('order', 0))
+
+    use_arranger = getattr(args, 'arranger', False)
+    dpcm_index_path = getattr(args, 'dpcm_index', None) or 'dpcm_index.json'
+    verbose = getattr(args, 'verbose', False)
+
+    songs = []
+    for name in ordered_names:
+        song_data = bank.songs[name]
+        midi_path = song_data.get('midi_path')
+        if not midi_path:
+            print(f"[ERROR] Song '{name}' has no recorded source MIDI -- "
+                  f"re-add it with 'song add' to build it.")
+            sys.exit(1)
+        if not Path(midi_path).exists():
+            print(f"[ERROR] Song '{name}' source MIDI not found: {midi_path}")
+            sys.exit(1)
+
+        print(f"  Parsing '{name}' ({midi_path})...")
+        try:
+            frames = midi_to_frames_for_song(
+                midi_path, use_arranger, dpcm_index_path=dpcm_index_path, verbose=verbose)
+        except FileNotFoundError as e:
+            print(f"[ERROR] {e}")
+            sys.exit(1)
+
+        if _song_has_dpcm_events(frames):
+            print(f"[ERROR] Song '{name}' contains DPCM drum samples -- "
+                  f"'song build' does not support DPCM in multi-song ROMs yet "
+                  f"(see docs/ROADMAP.md). Remove drums or build this song "
+                  f"individually with the normal pipeline.")
+            sys.exit(1)
+
+        songs.append({'frames': frames})
+
+    output_rom = Path(args.output)
+    skip_validation = getattr(args, 'skip_validation', False)
+
+    with tempfile.TemporaryDirectory(prefix="midi2nes_") as temp_dir:
+        temp_path = Path(temp_dir)
+        music_asm = temp_path / "music.asm"
+
+        exporter = CA65Exporter()
+        try:
+            exporter.export_song_bank_bytecode(songs, str(music_asm))
+        except ValueError as e:
+            print(f"[ERROR] {e}")
+            sys.exit(1)
+
+        from mappers.factory import MapperFactory
+        mapper = MapperFactory.get_mapper('mmc3')
+
+        try:
+            check_mapper_capacity(str(music_asm), mapper)
+        except ValueError as e:
+            print(f"[ERROR] {e}")
+            sys.exit(1)
+
+        project_path = temp_path / "nes_project"
+        builder = NESProjectBuilder(str(project_path), debug_mode=False, mapper=mapper)
+        builder.prepare_project(str(music_asm), song_count=len(songs))
+
+        print(f"🔨 Compiling {len(songs)}-song jukebox ROM...")
+        success = compile_rom(project_path, output_rom, verbose=verbose, mapper=mapper)
+        if not success:
+            print("[ERROR] Compilation failed")
+            sys.exit(1)
+
+        if not skip_validation:
+            if not validate_rom(output_rom):
+                print("[ERROR] ROM validation failed")
+                sys.exit(1)
+
+    print(f"✅ Jukebox ROM built: {output_rom} ({len(songs)} songs)")
+
+
 def load_config(config_path: Optional[str] = None) -> DrumMapperConfig:
     """Load drum mapper configuration from file or use defaults"""
     if config_path:
@@ -1404,7 +1557,7 @@ def main():
     # Song bank management commands
     p_song = subparsers.add_parser(
         'song',
-        help='Song bank management (JSON storage/analysis only; not compiled to ROM)'
+        help='Song bank management (add/list/remove manage a JSON bank; build compiles it to a multi-song ROM)'
     )
     song_subparsers = p_song.add_subparsers(dest='song_command')
 
@@ -1429,6 +1582,19 @@ def main():
     p_song_remove.add_argument('bank', help='Song bank file')
     p_song_remove.add_argument('name', help='Song name to remove')
     p_song_remove.set_defaults(func=run_song_remove)
+
+    p_song_build = song_subparsers.add_parser(
+        'build',
+        help="Build a multi-song 'jukebox' ROM from a song bank (#30/F-13; MMC3 only, no DPCM/drums yet)"
+    )
+    p_song_build.add_argument('bank', help='Song bank file')
+    p_song_build.add_argument('output', help='Output .nes ROM path')
+    p_song_build.add_argument('--arranger', action='store_true',
+                               help='Use arranger mode (voice allocation + arpeggiation) for every song in the bank')
+    p_song_build.add_argument('--dpcm-index', help='Path to DPCM sample index (legacy/non-arranger mode only)')
+    p_song_build.add_argument('--skip-validation', action='store_true', help='Skip post-compile ROM validation')
+    p_song_build.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
+    p_song_build.set_defaults(func=run_song_build)
 
     # Add benchmark command
     p_benchmark = subparsers.add_parser('benchmark', help='Performance benchmarking')

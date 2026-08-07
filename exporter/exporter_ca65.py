@@ -1063,62 +1063,25 @@ class CA65Exporter(BaseExporter):
 
         return best_compression
 
-    def export_tables_with_patterns(self, frames, patterns, references, output_path, standalone=True, mapper=None):
-        """Export NES audio assembly from per-frame channel data.
+    # Channel order used throughout the bytecode engine -- sequence labels,
+    # channel_start_banks/song_table entries, and the engine's stream_*, x
+    # arrays (nes/audio_engine.asm) all index 0..4 in this order.
+    SEQUENCE_CHANNELS = ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']
 
-        All emitted bytes derive from ``frames``. ``patterns`` is used only as a
-        boolean switch: when empty, export the direct frame tables; when non-empty,
-        emit the MMC3 macro-bytecode serializer (whose compression comes from
-        macro/instrument de-duplication, not from the pattern detector). The
-        ``references`` argument is **not consumed** — the detector's pattern
-        references are analysis/metrics only and have no effect on output bytes
-        (#4). It is retained for call-site compatibility.
+    def _emit_period_tables(self, lines):
+        """Append the shared pulse/triangle pitch lookup tables.
+
+        Generated from the single authoritative per-channel tables so the
+        runtime base period matches the base_timer the pitch offset was
+        computed against (#16) — keeping them as separate hardcoded copies
+        is exactly how they drifted an octave apart. The triangle channel
+        needs its own /32 table or it plays an octave low (#12).
+
+        These are pure hardware constant tables, not derived from any song's
+        `frames` -- identical for every song, so a multi-song build emits
+        them exactly once (see `export_song_bank_bytecode`) rather than once
+        per song.
         """
-        if not patterns:
-            return self.export_direct_frames(frames, output_path, standalone, mapper)
-
-        print("🔧 CA65 Exporter: MMC3 Macro Bytecode mode")
-        
-        lines = []
-        lines.append('; CA65 Assembly Export (MMC3 Macro Bytecode)')
-        lines.append('')
-        lines.append('.importzp ptr1, temp1, temp2, frame_counter')
-        lines.append('')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('; DPCM Sample Bank (Mapped to $C000)')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('.segment "DPCM"')
-        lines.append('.align 64')
-        # Deliberately left empty (#137/TD-08). DPCM sample data and lookup
-        # tables are packed and appended to this music.asm by DpcmPacker
-        # (dpcm_sampler/dpcm_packer.py) into the swappable DPCM_NN bank
-        # segments -- not this fixed "DPCM" segment (mapped to the $C000/R6
-        # window's default bank, `optional = yes` in the mapper's linker
-        # config, mappers/mmc3.py) -- so there is nothing to .incbin here.
-        lines.append('')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('; Macro & Sequence Data (Mapped to fixed $8000 bank)')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('.segment "CODE_8000"')
-        lines.append('')
-        # The DPCM lookup tables (dpcm_bank_table/pitch/addr/len) are owned by the
-        # DPCM packer when real samples exist, and stubbed by the project builder
-        # otherwise. Defining them here too would be a duplicate-symbol error once
-        # the packer appends the real tables to music.asm.
-        
-        # Export symbols needed by the audio engine
-        lines.append('.export pulse1_sequence, pulse2_sequence, triangle_sequence, noise_sequence, dpcm_sequence')
-        lines.append('.export ntsc_period_low, ntsc_period_high')
-        lines.append('.export triangle_period_low, triangle_period_high')
-        lines.append('.export instrument_table')
-        lines.append('.export channel_start_banks')
-        lines.append('')
-
-        # Write Pitch Lookup Tables. Generated from the single authoritative
-        # per-channel tables so the runtime base period matches the base_timer
-        # the pitch offset was computed against (#16) — keeping them as separate
-        # hardcoded copies is exactly how they drifted an octave apart. The
-        # triangle channel needs its own /32 table or it plays an octave low (#12).
         def _emit_period_table(label, table, byte_of):
             lines.append(f'{label}:')
             for row_start in range(0, 128, 8):
@@ -1136,6 +1099,39 @@ class CA65Exporter(BaseExporter):
         _emit_period_table('triangle_period_low', NES_TRIANGLE_TABLE, lambda p: p & 0xFF)
         _emit_period_table('triangle_period_high', NES_TRIANGLE_TABLE, lambda p: (p >> 8) & 0xFF)
 
+    def _build_song_bytecode(self, frames, label_prefix='', start_bank=0):
+        """Serialize one song's per-channel frames into MMC3 macro-bytecode.
+
+        Walks `frames` into per-channel note/duration events, de-duplicates
+        them into volume/arp/pitch/duty macros and instruments, and emits
+        the instrument table, macro byte streams, and banked sequence
+        bytecode for all 5 channels (`SEQUENCE_CHANNELS`).
+
+        `label_prefix` is prepended to every symbol this song defines
+        (`instrument_table`, `macro_*`, and each channel's `*_sequence` /
+        bank-jump labels) so a multi-song build's N songs can coexist in one
+        music.asm without colliding ca65 symbol names (#30/F-13). The
+        single-song caller (`export_tables_with_patterns`) passes `''` --
+        byte-identical output to before this was extracted.
+
+        `start_bank` is the first `BANK_NN` this song's sequence data may
+        use. Returns `next_bank = <song's last used bank> + 1` -- a
+        multi-song caller always starts the following song in a fresh bank
+        rather than packing two songs' sequence bytes into the same
+        `BANK_NN` segment, since this function's own `bytes_in_current_bank`
+        accounting (and its overflow check against `MAX_SEQUENCE_BANK`) only
+        tracks bytes *within this call*; sharing a bank across calls would
+        silently desync that accounting from ca65's real per-segment size.
+
+        Returns `(lines, next_bank, channel_start_banks, notes_clamped)`.
+        `channel_start_banks` maps channel name -> the `BANK_NN` index its
+        `{label_prefix}{channel}_sequence` label physically landed in (a
+        later channel's label can spill past the bank the song started in).
+        `notes_clamped` is `{'high': N, 'low': N}`, the tone-range clamp
+        tally for this song (#298/EXP-10).
+        """
+        lines = []
+
         def optimize_macro(seq):
             return tuple(self._compress_macro(seq))
 
@@ -1147,21 +1143,21 @@ class CA65Exporter(BaseExporter):
         arp_macro_defs = [(0xFF,)]
         pitch_macros = {(0xFF,): 0}
         pitch_macro_defs = [(0xFF,)]
-        
+
         instruments = {(0, 0, 0, 0): 0}
         instrument_defs = [(0, 0, 0, 0)]
 
-        channel_events = {ch: [] for ch in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']}
+        channel_events = {ch: [] for ch in self.SEQUENCE_CHANNELS}
 
         # Count tone-channel notes re-pitched by the range clamp below so the
         # loss is reported instead of silently altering pitch (#298/EXP-10).
         notes_clamped_high = 0  # note > 95 (above B6)
         notes_clamped_low = 0   # 0 < note < 24 (below C1, tone channels)
 
-        for channel in ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']:
+        for channel in self.SEQUENCE_CHANNELS:
             if channel not in frames or not frames[channel]:
                 continue
-                
+
             channel_frames = frames[channel]
             max_frame = max(int(f) for f in channel_frames.keys()) if channel_frames else -1
 
@@ -1318,28 +1314,29 @@ class CA65Exporter(BaseExporter):
                 channel_events[channel].append(current_event)
 
         lines.append('; The Instrument Macro Pointers')
-        lines.append('instrument_table:')
+        lines.append(f'{label_prefix}instrument_table:')
         for inst in instrument_defs:
             v_id, a_id, p_id, d_id = inst
-            lines.append(f'    .word macro_vol_{v_id}, macro_arp_{a_id}, macro_pitch_{p_id}, macro_duty_{d_id}')
+            lines.append(f'    .word {label_prefix}macro_vol_{v_id}, {label_prefix}macro_arp_{a_id}, '
+                          f'{label_prefix}macro_pitch_{p_id}, {label_prefix}macro_duty_{d_id}')
         lines.append('')
-        
+
         for name, defs in [('vol', vol_macro_defs), ('arp', arp_macro_defs), ('pitch', pitch_macro_defs), ('duty', duty_macro_defs)]:
             lines.append(f'; --- {name.capitalize()} Macros ---')
             for i, seq in enumerate(defs):
-                lines.append(f'macro_{name}_{i}:')
+                lines.append(f'{label_prefix}macro_{name}_{i}:')
                 lines.append('    .byte ' + ', '.join(f'${val:02X}' for val in seq))
             lines.append('')
-        
+
         # Bytecode generation for channels
         from mappers.mmc3 import MMC3Mapper
         # Highest swap-bank index the MMC3 linker config defines (BANK_00..N-1).
         # Rolling past it would emit a .segment ld65 has no MEMORY region for (#127).
         MAX_SEQUENCE_BANK = MMC3Mapper.SWAP_BANK_COUNT - 1
-        current_bank = 0
+        current_bank = start_bank
         bytes_in_current_bank = 0
         BANK_SIZE_LIMIT = 8192 - 256  # 8KB minus a safety margin
-        
+
         lines.append('; ---------------------------------------------------------------------------')
         lines.append('; Sequence Data (Dynamically Banked)')
         lines.append('; ---------------------------------------------------------------------------')
@@ -1347,15 +1344,16 @@ class CA65Exporter(BaseExporter):
         lines.append('')
 
         # The bank each channel's sequence label physically lands in. Only
-        # pulse1 is guaranteed to be BANK_00; once earlier channels fill a bank,
-        # a later channel's label spills into BANK_01+. audio_init must seed each
-        # channel's stream_bank from this instead of assuming 0 (#328/EXP-13).
-        SEQUENCE_CHANNELS = ['pulse1', 'pulse2', 'triangle', 'noise', 'dpcm']
+        # the first channel is guaranteed to start in `start_bank`; once
+        # earlier channels fill a bank, a later channel's label spills into
+        # the next one. audio_init/load_song_streams_indexed must seed each
+        # channel's stream_bank from this instead of assuming a fixed value
+        # (#328/EXP-13).
         channel_start_banks = {}
 
-        for channel in SEQUENCE_CHANNELS:
+        for channel in self.SEQUENCE_CHANNELS:
             channel_start_banks[channel] = current_bank
-            lines.append(f'{channel}_sequence:')
+            lines.append(f'{label_prefix}{channel}_sequence:')
             events = channel_events[channel]
             if not events:
                 lines.append('    .byte $FF')
@@ -1395,15 +1393,15 @@ class CA65Exporter(BaseExporter):
                             f"BANK_00..BANK_{MAX_SEQUENCE_BANK:02d}. Shorten the song or "
                             f"split it across songs."
                         )
-                    jump_label = f'{channel}_seq_bank_{next_bank:02d}'
+                    jump_label = f'{label_prefix}{channel}_seq_bank_{next_bank:02d}'
                     lines.append(f'    .byte $FE, ${next_bank:02X}, <{jump_label}, >{jump_label} ; CMD_BANK_JUMP')
-                    
+
                     current_bank = next_bank
                     bytes_in_current_bank = 0
                     lines.append('')
                     lines.append(f'.segment "BANK_{current_bank:02d}"')
                     lines.append(f'{jump_label}:')
-                
+
                 # Emit bytes and update size counter
                 if note > 0:
                     inst_id = event['inst_id']
@@ -1411,7 +1409,7 @@ class CA65Exporter(BaseExporter):
                         lines.append(f'    .byte $80, ${inst_id:02X} ; CMD_INSTRUMENT')
                         current_inst = inst_id
                         bytes_in_current_bank += 2
-                
+
                 if dur > 0:
                     rem_dur = dur
                     while rem_dur > 0:
@@ -1419,10 +1417,74 @@ class CA65Exporter(BaseExporter):
                         lines.append(f'    .byte ${(write_dur - 1) + 0x60:02X}, ${note:02X} ; Length {write_dur}, Note {note}')
                         rem_dur -= write_dur
                         bytes_in_current_bank += 2
-            
+
             lines.append('    .byte $FF')
             lines.append('')
             bytes_in_current_bank += 1
+
+        notes_clamped = {'high': notes_clamped_high, 'low': notes_clamped_low}
+        # Multi-song callers always start the next song in a fresh bank
+        # rather than continuing to pack into whatever's left of this one --
+        # see the docstring above for why sharing a bank across calls isn't
+        # safe with this function's per-call byte accounting.
+        return lines, current_bank + 1, channel_start_banks, notes_clamped
+
+    def export_tables_with_patterns(self, frames, patterns, references, output_path, standalone=True, mapper=None):
+        """Export NES audio assembly from per-frame channel data.
+
+        All emitted bytes derive from ``frames``. ``patterns`` is used only as a
+        boolean switch: when empty, export the direct frame tables; when non-empty,
+        emit the MMC3 macro-bytecode serializer (whose compression comes from
+        macro/instrument de-duplication, not from the pattern detector). The
+        ``references`` argument is **not consumed** — the detector's pattern
+        references are analysis/metrics only and have no effect on output bytes
+        (#4). It is retained for call-site compatibility.
+        """
+        if not patterns:
+            return self.export_direct_frames(frames, output_path, standalone, mapper)
+
+        print("🔧 CA65 Exporter: MMC3 Macro Bytecode mode")
+
+        lines = []
+        lines.append('; CA65 Assembly Export (MMC3 Macro Bytecode)')
+        lines.append('')
+        lines.append('.importzp ptr1, temp1, temp2, frame_counter')
+        lines.append('')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('; DPCM Sample Bank (Mapped to $C000)')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('.segment "DPCM"')
+        lines.append('.align 64')
+        # Deliberately left empty (#137/TD-08). DPCM sample data and lookup
+        # tables are packed and appended to this music.asm by DpcmPacker
+        # (dpcm_sampler/dpcm_packer.py) into the swappable DPCM_NN bank
+        # segments -- not this fixed "DPCM" segment (mapped to the $C000/R6
+        # window's default bank, `optional = yes` in the mapper's linker
+        # config, mappers/mmc3.py) -- so there is nothing to .incbin here.
+        lines.append('')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('; Macro & Sequence Data (Mapped to fixed $8000 bank)')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('.segment "CODE_8000"')
+        lines.append('')
+        # The DPCM lookup tables (dpcm_bank_table/pitch/addr/len) are owned by the
+        # DPCM packer when real samples exist, and stubbed by the project builder
+        # otherwise. Defining them here too would be a duplicate-symbol error once
+        # the packer appends the real tables to music.asm.
+
+        # Export symbols needed by the audio engine
+        lines.append('.export pulse1_sequence, pulse2_sequence, triangle_sequence, noise_sequence, dpcm_sequence')
+        lines.append('.export ntsc_period_low, ntsc_period_high')
+        lines.append('.export triangle_period_low, triangle_period_high')
+        lines.append('.export instrument_table')
+        lines.append('.export channel_start_banks')
+        lines.append('')
+
+        self._emit_period_tables(lines)
+
+        body_lines, _next_bank, channel_start_banks, notes_clamped = self._build_song_bytecode(
+            frames, label_prefix='', start_bank=0)
+        lines.extend(body_lines)
 
         # Per-channel starting-bank table (#328/EXP-13). Emitted into the fixed
         # CODE_8000 bank (always mapped) so audio_init can read it via absolute
@@ -1430,7 +1492,7 @@ class CA65Exporter(BaseExporter):
         # tables above. Order matches the engine's channel indices 0..4.
         lines.append('.segment "CODE_8000"')
         bank_bytes = ', '.join(
-            f'${channel_start_banks[ch]:02X}' for ch in SEQUENCE_CHANNELS)
+            f'${channel_start_banks[ch]:02X}' for ch in self.SEQUENCE_CHANNELS)
         lines.append('channel_start_banks:')
         lines.append(f'    .byte {bank_bytes} ; pulse1, pulse2, triangle, noise, dpcm')
         lines.append('')
@@ -1450,20 +1512,159 @@ class CA65Exporter(BaseExporter):
                 '    jmp audio_update',
                 ''
             ])
-            
+
         # Atomic write (#385/SAFE-2026-07-19-3) -- see export_direct_frames above.
         atomic_write_text(output_path, '\n'.join(lines))
 
         # Expose the clamp tally for callers/tests; report it so an out-of-range
         # song does not get silently re-pitched (#298/EXP-10).
-        self.notes_clamped = {'high': notes_clamped_high, 'low': notes_clamped_low}
-        total_clamped = notes_clamped_high + notes_clamped_low
+        self.notes_clamped = notes_clamped
+        total_clamped = notes_clamped['high'] + notes_clamped['low']
         if total_clamped:
             print(
                 f"⚠ {total_clamped} note(s) clamped to the NES tone range (24-95): "
-                f"{notes_clamped_high} above B6, {notes_clamped_low} below C1. "
+                f"{notes_clamped['high']} above B6, {notes_clamped['low']} below C1. "
                 "Pitch may differ from the MIDI file."
             )
 
         print(f"✅ Macro Bytecode export complete: {output_path}")
+        return output_path
+
+    def export_song_bank_bytecode(self, songs, output_path):
+        """Export a multi-song 'jukebox' ROM's music.asm (#30/F-13).
+
+        `songs` is an ordered list of mappings with a `'frames'` key (one
+        entry per song, in playback order -- callers should already have
+        sorted by the song bank's `metadata['order']`). Each song's frames
+        are serialized exactly like a single-song bytecode export (see
+        `_build_song_bytecode`), but with its symbols prefixed `song{i}_`
+        and its sequence bytecode continuing the shared MMC3 60-bank pool
+        from a fresh bank after the previous song's tail. Distinct songs
+        keep separate instrument/macro tables (no cross-song dedup) but
+        share one copy of the pulse/triangle period tables (they're pure
+        hardware constants, identical for every song).
+
+        A `song_table` (three parallel byte arrays -- low/high address byte
+        and bank, indexed `song_index*5 + channel`) plus a `song_count` byte
+        replace the single-song `channel_start_banks` table, giving the
+        jukebox-only engine routines in nes/audio_engine.asm (gated behind
+        `.ifdef JUKEBOX_BUILD`) a way to look up any song's channel entry
+        points at runtime. `init_music` jumps to `audio_init_song` instead
+        of `audio_init` (single-song builds are unaffected -- they never
+        call this method).
+        """
+        if not songs:
+            raise ValueError("export_song_bank_bytecode requires at least one song")
+
+        print(f"🔧 CA65 Exporter: MMC3 Macro Bytecode mode ({len(songs)}-song jukebox build)")
+
+        lines = []
+        lines.append('; CA65 Assembly Export (MMC3 Macro Bytecode -- multi-song jukebox build)')
+        lines.append('')
+        lines.append('.importzp ptr1, temp1, temp2, frame_counter')
+        lines.append('')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('; DPCM Sample Bank (Mapped to $C000)')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('.segment "DPCM"')
+        lines.append('.align 64')
+        lines.append('')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('; Macro & Sequence Data (Mapped to fixed $8000 bank)')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('.segment "CODE_8000"')
+        lines.append('')
+
+        song_labels = [f'song{i}_' for i in range(len(songs))]
+        for prefix in song_labels:
+            lines.append(
+                f'.export {prefix}pulse1_sequence, {prefix}pulse2_sequence, '
+                f'{prefix}triangle_sequence, {prefix}noise_sequence, {prefix}dpcm_sequence'
+            )
+            lines.append(f'.export {prefix}instrument_table')
+        lines.append('.export ntsc_period_low, ntsc_period_high')
+        lines.append('.export triangle_period_low, triangle_period_high')
+        lines.append('.export song_table_ptr_lo, song_table_ptr_hi, song_table_bank, song_count')
+        lines.append('.export song_instrument_ptr_lo, song_instrument_ptr_hi')
+        lines.append('')
+
+        self._emit_period_tables(lines)
+
+        all_notes_clamped = {'high': 0, 'low': 0}
+        next_bank = 0
+        song_channel_labels = []  # per song: {channel: (label, bank)}
+
+        for prefix, song in zip(song_labels, songs):
+            body_lines, next_bank, channel_start_banks, notes_clamped = self._build_song_bytecode(
+                song['frames'], label_prefix=prefix, start_bank=next_bank)
+            lines.extend(body_lines)
+            all_notes_clamped['high'] += notes_clamped['high']
+            all_notes_clamped['low'] += notes_clamped['low']
+            song_channel_labels.append({
+                ch: (f'{prefix}{ch}_sequence', channel_start_banks[ch])
+                for ch in self.SEQUENCE_CHANNELS
+            })
+
+        # song_table: 3 parallel arrays (addr-lo/addr-hi/bank), indexed
+        # song_index*5 + channel, channel order = SEQUENCE_CHANNELS. Emitted
+        # into CODE_8000 (fixed, always-mapped) like channel_start_banks was
+        # for a single song, so load_song_streams_indexed can read any
+        # song's entry via absolute,Y addressing without a bank swap.
+        lines.append('.segment "CODE_8000"')
+        lo_bytes, hi_bytes, bank_bytes = [], [], []
+        for entry in song_channel_labels:
+            for ch in self.SEQUENCE_CHANNELS:
+                label, bank = entry[ch]
+                lo_bytes.append(f'<{label}')
+                hi_bytes.append(f'>{label}')
+                bank_bytes.append(f'${bank:02X}')
+        lines.append('song_table_ptr_lo:')
+        lines.append('    .byte ' + ', '.join(lo_bytes))
+        lines.append('song_table_ptr_hi:')
+        lines.append('    .byte ' + ', '.join(hi_bytes))
+        lines.append('song_table_bank:')
+        lines.append('    .byte ' + ', '.join(bank_bytes))
+        lines.append('song_count:')
+        lines.append(f'    .byte ${len(songs):02X}')
+        lines.append('')
+
+        # song_instrument_ptr: one entry per song (not per channel) --
+        # EVAL_MACRO (nes/audio_engine.asm) indirects through this via
+        # instrument_table_ptr since there's no single fixed `instrument_table`
+        # label when each song has its own.
+        lines.append('song_instrument_ptr_lo:')
+        lines.append('    .byte ' + ', '.join(f'<{prefix}instrument_table' for prefix in song_labels))
+        lines.append('song_instrument_ptr_hi:')
+        lines.append('    .byte ' + ', '.join(f'>{prefix}instrument_table' for prefix in song_labels))
+        lines.append('')
+
+        lines.extend([
+            '',
+            '; Project builder compatible functions',
+            '.export init_music, update_music',
+            '.import audio_init_song, audio_update',
+            '',
+            '.segment "CODE"',
+            'init_music:',
+            '    jmp audio_init_song',
+            '',
+            'update_music:',
+            '    jmp audio_update',
+            ''
+        ])
+
+        # Atomic write (#385/SAFE-2026-07-19-3) -- see export_direct_frames above.
+        atomic_write_text(output_path, '\n'.join(lines))
+
+        self.notes_clamped = all_notes_clamped
+        total_clamped = all_notes_clamped['high'] + all_notes_clamped['low']
+        if total_clamped:
+            print(
+                f"⚠ {total_clamped} note(s) clamped to the NES tone range (24-95) across "
+                f"{len(songs)} song(s): {all_notes_clamped['high']} above B6, "
+                f"{all_notes_clamped['low']} below C1. Pitch may differ from the MIDI file(s)."
+            )
+
+        print(f"✅ Macro Bytecode jukebox export complete: {output_path} "
+              f"({len(songs)} songs, {next_bank} bank(s) used)")
         return output_path

@@ -11,6 +11,19 @@
 .import channel_start_banks
 .import fetch_sequence_byte
 
+; Multi-song "jukebox" builds only (nes/project_builder.py assigns
+; `JUKEBOX_BUILD = 1` before `.include`ing this file when a music.asm was
+; produced by exporter.export_song_bank_bytecode -- #30/F-13; ca65's .ifdef
+; only recognizes real symbol/constant definitions, not `.define`d macros).
+; A single-song build never defines JUKEBOX_BUILD and its music.asm never
+; exports these symbols, so everything below gated by this stays out of the
+; assembly entirely and single-song ROMs are byte-identical to before this
+; feature existed.
+.ifdef JUKEBOX_BUILD
+.import song_table_ptr_lo, song_table_ptr_hi, song_table_bank, song_count
+.import song_instrument_ptr_lo, song_instrument_ptr_hi
+.endif
+
 .segment "ZEROPAGE"
 ptr1:           .res 2
 
@@ -18,6 +31,10 @@ ptr1:           .res 2
 temp1:          .res 1
 temp2:          .res 1
 frame_counter:  .res 2
+; Jukebox-only (see EVAL_MACRO): points at the active song's instrument_table
+; since there's no single fixed label to address directly when N songs each
+; have their own. Harmless, unused reservation in a single-song build.
+instrument_table_ptr: .res 2
 
 .segment "BSS"
 
@@ -29,6 +46,11 @@ frame_wait:     .res 5
 current_len:    .res 5
 current_note:   .res 5
 current_inst:   .res 5
+; Jukebox-only state (RAM reservations cost nothing in a single-song ROM's
+; PRG-ROM budget, so these stay unconditional rather than ifdef-gated too --
+; only the CODE that reads/writes them is gated).
+current_song:   .res 1
+channel_ended:  .res 5
 macro_steps_vol:    .res 5
 macro_steps_arp:    .res 5
 macro_steps_pitch:  .res 5
@@ -62,11 +84,31 @@ temp_inst_base: .res 1
     .local @done
     
     ldy temp_inst_base
+.ifdef JUKEBOX_BUILD
+    ; A jukebox build has one instrument_table per song (song0_instrument_table,
+    ; song1_instrument_table, ...), not the single fixed `instrument_table`
+    ; label the .else branch addresses directly -- there's no compile-time
+    ; constant to reference, so go through instrument_table_ptr (set by
+    ; load_song_streams_indexed whenever the active song changes) instead.
+    ; This costs a few extra cycles per macro eval versus the direct
+    ; absolute,Y read below; single-song builds never assemble this branch,
+    ; so they pay none of it (#30/F-13).
+    tya
+    clc
+    adc #inst_offset
+    tay
+    lda (instrument_table_ptr), y
+    sta ptr1
+    iny
+    lda (instrument_table_ptr), y
+    sta ptr1+1
+.else
     lda instrument_table+inst_offset, y
     sta ptr1
     lda instrument_table+inst_offset+1, y
     sta ptr1+1
-    
+.endif
+
     lda step_array, x
     tay
     lda (ptr1), y
@@ -89,6 +131,17 @@ temp_inst_base: .res 1
 .endmacro
 
 audio_init:
+.ifdef JUKEBOX_BUILD
+    ; A jukebox music.asm never defines the fixed single-song labels the
+    ; .else branch below references (pulse1_sequence, channel_start_banks,
+    ; ...) -- ld65 links whole modules, not per-routine, so leaving that
+    ; branch's instructions assembled here would fail the link with
+    ; unresolved externals even though nothing calls audio_init in a
+    ; jukebox build. Redirect to the real jukebox entry point instead;
+    ; audio_init stays exported/callable as a harmless alias so nothing
+    ; downstream needs conditional call-site logic (#30/F-13).
+    jmp audio_init_song
+.else
     ; Initialize sequence pointers from the exported CA65 labels. Each channel's
     ; starting bank comes from the exporter's channel_start_banks table, NOT a
     ; hardcoded 0 -- a later channel's sequence label can spill past BANK_00 once
@@ -129,7 +182,15 @@ audio_init:
     sta stream_ptr_hi+4
     lda channel_start_banks+4
     sta stream_bank+4
+.endif
 
+; Shared APU/frame-counter/channel-state init tail, reached by both a
+; single-song audio_init (falls straight through, unchanged) and a jukebox
+; audio_init_song (jumps in after loading its own song's stream pointers via
+; load_song_streams_indexed instead of the fixed labels above). A pure label
+; insertion -- no instruction here is reordered or modified, so audio_init's
+; own bytes are unaffected when JUKEBOX_BUILD is undefined (#30/F-13).
+audio_init_hw_and_state:
     ; Initialize DMC output level to 0 to prevent muffling Triangle/Noise.
     ; (A no longer holds 0 after the bank loads above, so reload it.)
     lda #$00
@@ -181,7 +242,96 @@ audio_init:
     dex
     bpl @clear_loop
     rts
-    
+
+.ifdef JUKEBOX_BUILD
+; ---------------------------------------------------------------------------
+; Jukebox routines (multi-song builds only -- #30/F-13)
+; ---------------------------------------------------------------------------
+.export audio_init_song, audio_advance_song
+
+; load_song_streams_indexed
+; Loads channel 0-4's stream_ptr_lo/hi + stream_bank from the song_table_*
+; arrays at index current_song*5 + channel (instead of audio_init's fixed
+; per-channel labels), and instrument_table_ptr from song_instrument_ptr_*
+; at index current_song (see EVAL_MACRO). 6502 has no multiply --
+; current_song*5 is computed as (current_song*4) + current_song rather than
+; a loop.
+load_song_streams_indexed:
+    lda current_song
+    tax
+    lda song_instrument_ptr_lo, x
+    sta instrument_table_ptr
+    lda song_instrument_ptr_hi, x
+    sta instrument_table_ptr+1
+
+    lda current_song
+    asl a
+    asl a               ; A = current_song * 4
+    clc
+    adc current_song    ; A = current_song * 5
+    tay
+
+    ldx #0
+@copy_loop:
+    lda song_table_ptr_lo, y
+    sta stream_ptr_lo, x
+    lda song_table_ptr_hi, y
+    sta stream_ptr_hi, x
+    lda song_table_bank, y
+    sta stream_bank, x
+    iny
+    inx
+    cpx #5
+    bne @copy_loop
+    rts
+
+; audio_init_song
+; Jukebox entry point: init_music jumps here instead of audio_init. Always
+; cold-boots on song 0, then shares audio_init's APU/state-init tail.
+audio_init_song:
+    lda #0
+    sta current_song
+    ldx #4
+@clear_ended:
+    lda #0
+    sta channel_ended, x
+    dex
+    bpl @clear_ended
+    jsr load_song_streams_indexed
+    jmp audio_init_hw_and_state
+
+; audio_advance_song
+; Advances to the next song (wrapping past the last back to song 0), reloads
+; its stream pointers, and clears per-channel playback state so the new song
+; starts clean rather than inheriting timing state left over from the last
+; note of the previous song. Called both from @end_of_stream (all 5 channels
+; of the current song finished) and from main.asm's Start-button edge
+; detector (immediate skip).
+audio_advance_song:
+    inc current_song
+    lda current_song
+    cmp song_count
+    bcc @no_wrap
+    lda #0
+    sta current_song
+@no_wrap:
+    jsr load_song_streams_indexed
+
+    ldx #4
+@clear_loop:
+    lda #1
+    sta current_len, x
+    lda #0
+    sta frame_wait, x
+    sta current_note, x
+    sta channel_ended, x
+    lda #$FF
+    sta last_written_hi, x
+    dex
+    bpl @clear_loop
+    rts
+.endif
+
 audio_update:
     inc frame_counter
     bne :+
@@ -587,6 +737,28 @@ audio_update:
     ; each frame instead (idempotent, and cheap next to a 5-channel budget).
     lda #0
     sta current_note, x
+.ifdef JUKEBOX_BUILD
+    ; Auto-advance (#30/F-13): mark this channel ended (idempotent -- this
+    ; re-fires every frame per the comment above) and, once all 5 channels
+    ; of the current song have ended simultaneously, jump to the next song.
+    ; X is the outer channel_loop index (audio_update); save/restore it
+    ; around this check since it's reused as the inner scan index below.
+    lda #1
+    sta channel_ended, x
+    txa
+    pha
+    ldx #0
+@jukebox_scan_ended:
+    lda channel_ended, x
+    beq @jukebox_not_all_ended
+    inx
+    cpx #5
+    bne @jukebox_scan_ended
+    jsr audio_advance_song      ; clears channel_ended itself on the way out
+@jukebox_not_all_ended:
+    pla
+    tax
+.endif
     jmp @silence
 
 @next_channel:
