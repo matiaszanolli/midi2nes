@@ -158,5 +158,66 @@ class TestChannelAssignment(unittest.TestCase):
         self.assertEqual(len(plan.tracks), 3)
 
 
+class TestDetermineRoleChannelCuration(unittest.TestCase):
+    """Coverage for _determine_role's GM-curated channel handling (#408/
+    ARR-2026-08-06-1). Previously every non-drum track's preferred_channel
+    was unconditionally overwritten by a 4-bucket role->channel table after
+    being seeded from GM_INSTRUMENT_MAP, so a curated choice like Ocarina/
+    Whistle/Blown Bottle -> TRIANGLE (a breathy timbre) never survived."""
+
+    def setUp(self):
+        self.analyzer = VoiceRoleAnalyzer()
+
+    def test_curated_triangle_channel_survives_when_role_agrees_with_gm_hint(self):
+        """Ocarina (program 79) is curated MELODY/TRIANGLE. A track whose
+        musical characteristics also score highest for MELODY must keep the
+        curated TRIANGLE channel instead of being collapsed to PULSE1."""
+        analysis = TrackAnalysis(
+            track_id=0, name="ocarina", program=79,
+            avg_pitch=66.0,       # mid-high range -> favors MELODY, not BASS
+            note_density=1.0,     # neither sparse nor dense
+            avg_velocity=80.0,    # neutral
+            max_polyphony=1,
+        )
+        self.analyzer._determine_role(analysis)
+
+        self.assertEqual(analysis.role, MusicalRole.MELODY)
+        self.assertEqual(analysis.preferred_channel, NESChannel.TRIANGLE)
+
+    def test_curated_channel_is_overridden_when_analysis_disagrees_with_gm_hint(self):
+        """Same Ocarina GM hint (MELODY/TRIANGLE), but musical analysis
+        strongly indicates BASS (very low average pitch) -- the override
+        must still apply since actual analysis disagrees with the GM hint,
+        landing on TRIANGLE via the BASS branch rather than via curation."""
+        analysis = TrackAnalysis(
+            track_id=0, name="ocarina_bass_register", program=79,
+            avg_pitch=30.0,        # well below BASS_THRESHOLD (48)
+            note_density=1.0,
+            avg_velocity=80.0,
+            max_polyphony=1,
+        )
+        self.analyzer._determine_role(analysis)
+
+        self.assertEqual(analysis.role, MusicalRole.BASS)
+        self.assertEqual(analysis.preferred_channel, NESChannel.TRIANGLE)
+        self.assertGreaterEqual(analysis.priority, 8)
+
+    def test_curated_any_pulse_channel_survives_when_role_agrees(self):
+        """Electric Piano 1 (program 4) is curated HARMONY/ANY_PULSE. When
+        the detected role agrees, ANY_PULSE should survive rather than being
+        hardcoded to PULSE2 -- ANY_PULSE already resolves flexibly in
+        _assign_channels, so this is strictly more capable, not a behavior
+        loss."""
+        analysis = TrackAnalysis(
+            track_id=0, name="epiano", program=4,
+            avg_pitch=60.0, note_density=0.3, avg_velocity=70.0,
+            max_polyphony=3,   # pushes toward HARMONY (chords)
+        )
+        self.analyzer._determine_role(analysis)
+
+        self.assertEqual(analysis.role, MusicalRole.HARMONY)
+        self.assertEqual(analysis.preferred_channel, NESChannel.ANY_PULSE)
+
+
 if __name__ == "__main__":
     unittest.main()

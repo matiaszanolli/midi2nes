@@ -260,19 +260,32 @@ class VoiceRoleAnalyzer:
         analysis.role = best_role
         analysis.confidence = role_scores[best_role] / total_score if total_score > 0 else 0.0
 
-        # Override channel preference based on detected role
+        # Only override the GM-curated channel when the detected role
+        # disagrees with GM's own role hint for this instrument. When they
+        # agree, the curator's per-instrument choice (e.g. Ocarina/Whistle/
+        # Blown Bottle -> TRIANGLE for a breathy timbre, several harmony
+        # instruments -> ANY_PULSE for flexible allocation) survives instead
+        # of being unconditionally collapsed to the generic 4-bucket
+        # role->channel default (#408/ARR-2026-08-06-1). Priority/play-style
+        # adjustments below are still role-driven either way.
+        channel_override = not (best_role == gm_mapping.role)
+
         if best_role == MusicalRole.BASS:
-            analysis.preferred_channel = NESChannel.TRIANGLE
+            if channel_override:
+                analysis.preferred_channel = NESChannel.TRIANGLE
             analysis.priority = max(analysis.priority, 8)
         elif best_role == MusicalRole.MELODY:
-            analysis.preferred_channel = NESChannel.PULSE1
+            if channel_override:
+                analysis.preferred_channel = NESChannel.PULSE1
             analysis.priority = max(analysis.priority, 7)
         elif best_role == MusicalRole.HARMONY:
-            analysis.preferred_channel = NESChannel.PULSE2
+            if channel_override:
+                analysis.preferred_channel = NESChannel.PULSE2
             if analysis.needs_arpeggiation:
                 analysis.play_style = PlayStyle.ARPEGGIATE
         elif best_role == MusicalRole.DECORATIVE:
-            analysis.preferred_channel = NESChannel.PULSE2
+            if channel_override:
+                analysis.preferred_channel = NESChannel.PULSE2
             analysis.priority = min(analysis.priority, 4)
 
     def create_arrangement_plan(self) -> ArrangementPlan:
