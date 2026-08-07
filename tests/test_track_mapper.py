@@ -323,5 +323,92 @@ class TestMultiTrackChannelAllocation(unittest.TestCase):
         self.assertEqual(sorted(e["frame"] for e in pulse2_note_offs), source_off_frames)
 
 
+class TestChannelNineExclusionFromPitchSplit(unittest.TestCase):
+    """Regression (#404/ARR-NEW-5-LEGACY): a Type-0 MIDI (one track carrying
+    every channel) or a multi-channel Type-1 track must not let channel-9
+    drum hits reach the pitch-based pulse/triangle split alongside genuine
+    melody/bass notes just because their raw pitch numbers fall in that
+    range."""
+
+    DPCM_INDEX = "tests/fixtures/test_dpcm_index.json"
+
+    def test_type0_track_drums_excluded_from_triangle_and_pulse(self):
+        midi_events = {
+            'track_0': [
+                {'frame': 0, 'note': 72, 'velocity': 100, 'channel': 0},
+                {'frame': 5, 'note': 72, 'velocity': 0, 'channel': 0},
+                {'frame': 0, 'note': 36, 'velocity': 100, 'channel': 9},  # kick
+                {'frame': 2, 'note': 36, 'velocity': 0, 'channel': 9},
+                {'frame': 0, 'note': 42, 'velocity': 100, 'channel': 9},  # hihat
+                {'frame': 2, 'note': 42, 'velocity': 0, 'channel': 9},
+            ]
+        }
+
+        result = assign_tracks_to_nes_channels(midi_events, self.DPCM_INDEX)
+
+        # The melody note (channel 0) is the only thing on pulse1 -- no
+        # duplicated channel-9 hits.
+        self.assertEqual(
+            sorted(e['note'] for e in result['pulse1']), [72, 72]
+        )
+        # Channel-9 drum hits must never land on triangle/pulse2 just
+        # because their pitch numbers (36, 42) are low.
+        self.assertEqual(result['triangle'], [])
+        self.assertEqual(result['pulse2'], [])
+        for channel in ('pulse1', 'pulse2', 'triangle'):
+            self.assertTrue(
+                all(e.get('channel') != 9 for e in result[channel]),
+                f"channel-9 event leaked into {channel}"
+            )
+
+    def test_channel_less_events_unaffected_backward_compatible(self):
+        """Events with no `channel` key at all (the pre-#404 test fixture
+        shape) must route exactly as before -- _split_events_by_channel
+        keeps them in one unsplit group."""
+        midi_events = {
+            'solo': [
+                {'frame': 0, 'note': 72, 'velocity': 100},
+                {'frame': 5, 'note': 72, 'velocity': 0},
+                {'frame': 0, 'note': 36, 'velocity': 100},
+                {'frame': 2, 'note': 36, 'velocity': 0},
+            ]
+        }
+
+        result = assign_tracks_to_nes_channels(midi_events, self.DPCM_INDEX)
+
+        # Same pitch-based split as before #404: note 72 -> pulse1, note 36
+        # (< 48, no channel info to say otherwise) -> triangle.
+        self.assertEqual(
+            sorted(e['note'] for e in result['pulse1']), [72, 72]
+        )
+        self.assertEqual(
+            sorted(e['note'] for e in result['triangle']), [36, 36]
+        )
+
+    def test_multichannel_type1_track_splits_into_independent_candidates(self):
+        """A single named track that itself mixes two non-drum channels
+        (the SIBLING case #404 asks to check) must not have its average
+        pitch blended across both -- each channel becomes its own pitched
+        candidate for the multi-track heuristic, mirroring #329's
+        arranger-side per-channel treatment."""
+        midi_events = {
+            'merged': [
+                {'frame': 0, 'note': 84, 'velocity': 100, 'channel': 0},  # high melody
+                {'frame': 0, 'note': 40, 'velocity': 100, 'channel': 1},  # low bass
+            ]
+        }
+
+        result = assign_tracks_to_nes_channels(midi_events, self.DPCM_INDEX)
+
+        # Two independent pitched candidates -> multi-track heuristic path:
+        # highest average pitch (84) -> pulse1, lowest (40) -> pulse2 (only
+        # 2 candidates, so triangle's bass step never runs -- matches the
+        # existing 2-candidate behavior pinned in
+        # test_real_midi_two_track_pitch_ranking).
+        self.assertEqual([e['note'] for e in result['pulse1']], [84])
+        self.assertTrue(any(e['note'] == 40 for e in result['pulse2']))
+        self.assertEqual(result['triangle'], [])
+
+
 if __name__ == '__main__':
     unittest.main()
