@@ -195,6 +195,28 @@ class TestMIDIParserIntegration(unittest.TestCase):
         self.assertEqual(events[2]['type'], 'note_on')
         self.assertEqual(events[2]['note'], 64)
 
+    def test_non_default_ticks_per_beat_scales_frames_correctly(self):
+        """Regression (#396/TEMPO-19): parser.py built its EnhancedTempoMap
+        without passing ticks_per_beat, silently taking the constructor's
+        default of 480 instead of the real MIDI file's resolution (even
+        though `mid = mido.MidiFile(midi_path)` -- and therefore
+        mid.ticks_per_beat -- was already available two lines earlier). Every
+        frame index this tempo map produces for a non-480-PPQ file was wrong
+        by the ratio 480/actual_ticks_per_beat."""
+        messages = [
+            MetaMessage('set_tempo', tempo=500000, time=0),  # 120 BPM
+            Message('note_on', note=60, velocity=64, time=240),  # 1 beat @ 240 PPQ
+        ]
+        midi_path = self.create_test_midi(
+            'non_default_ppq.mid', messages, ticks_per_beat=240)
+        result = parse_midi_to_frames(midi_path)
+
+        events = result['events']['track_0']
+        # 240 ticks at the file's real 240 PPQ = 1 beat = 500ms at 120 BPM =
+        # frame 30 (60fps). The pre-fix bug (defaulting to ticks_per_beat=480)
+        # would treat 240 ticks as only half a beat (250ms -> frame 15).
+        self.assertEqual(events[0]['frame'], 30)
+
     def test_frame_aligned_tempo_changes(self):
         """Test that tempo changes are properly frame-aligned"""
         messages = [

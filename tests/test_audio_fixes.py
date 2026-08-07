@@ -231,10 +231,22 @@ class TestNoiseDpcmReachAPU(unittest.TestCase):
 
     def test_bytecode_dpcm_high_note_survives_tone_note_still_clamped(self):
         # Regression (D-04 / #67): the bytecode serializer's note clamp must be
-        # channel-aware — DPCM keeps its high sample-id note (bounded only by the
-        # byte format), while a tone channel still clamps to the 0-95 note range.
+        # channel-aware — DPCM keeps its own note value (not collapsed onto the
+        # tone-note range), while a tone channel still clamps to 0-95.
+        #
+        # #369/EXP-2026-07-19-1 narrowed how far "keeps its own note value" goes:
+        # a DPCM note is emitted through the very same length+note byte
+        # serializer the engine re-dispatches by range (< $60 note, $60-$7F
+        # length, >= $80 command), so #67's original fix -- letting DPCM notes
+        # grow all the way to the single-byte ceiling (255) -- could itself
+        # desync the stream for note >= $60. That case now raises instead of
+        # silently emitting an unclamped byte (see TestDpcmNoteRangeGuard in
+        # tests/test_ca65_export.py). This test uses a DPCM note within the
+        # still-valid ceiling ($5F/95) that is nonetheless "high" relative to
+        # the tone note beside it, to confirm DPCM notes stay independent of
+        # the tone-channel clamp within that range.
         frames = {
-            'dpcm':   {'0': {'note': 201, 'volume': 15}},   # sample_id 200
+            'dpcm':   {'0': {'note': 90, 'volume': 15}},    # sample_id 89 -- valid, high
             'pulse1': {'0': {'note': 100, 'volume': 8}},    # tone note > 95
         }
         patterns = {'p0': {'events': [{'note': 10, 'volume': 8}], 'positions': [0]}}
@@ -247,8 +259,8 @@ class TestNoiseDpcmReachAPU(unittest.TestCase):
             if os.path.exists(out):
                 os.remove(out)
         dpcm_block = content.split('dpcm_sequence:')[1].split('\n\n')[0]
-        self.assertIn('Note 201', dpcm_block)   # not collapsed to 95
-        self.assertIn('$C9', dpcm_block)         # 201 emitted as a single byte
+        self.assertIn('Note 90', dpcm_block)    # not touched by the tone clamp
+        self.assertIn('$5A', dpcm_block)         # 90 emitted as a single byte
         pulse_block = content.split('pulse1_sequence:')[1].split('_sequence:')[0]
         self.assertIn('Note 95', pulse_block)    # tone note still clamped
 

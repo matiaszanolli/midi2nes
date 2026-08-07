@@ -1180,15 +1180,37 @@ class CA65Exporter(BaseExporter):
                     note = 0
                     
                 # The DPCM channel's `note` is sample_id + 1, not a MIDI note, so
-                # it is bounded only by the single-byte frame format (<= 255), not
-                # the 0-95 tone-note range — clamping it to 95 collapsed high-id
-                # drums to one wrong sample (#67). Tone channels keep the note
-                # ceiling. Either way `note` stays a single byte so the `${note:02X}`
-                # operand below can never widen past two hex digits.
+                # it is NOT bounded by the 0-95 tone-note range -- clamping it to
+                # 95 collapsed high-id drums to one wrong sample (#67). But it
+                # cannot simply grow up to the single-byte ceiling (255) either:
+                # DPCM events are emitted through the *same* length+note
+                # serializer as tone channels (`.byte $6X, note`, see the
+                # sequence-bytecode loop below), and the engine's @read_next
+                # dispatcher (nes/audio_engine.asm) re-reads every stream byte by
+                # range -- only `< $60` is a note; `$60-$7F` is Length and `>=
+                # $80` is a Command. A DPCM note >= $60 (sample_id >= 95) would
+                # be misdispatched as a Length or Command byte, desyncing the
+                # entire DPCM stream from that point on, not just misplaying one
+                # hit (#369/EXP-2026-07-19-1). Fail loudly instead -- mirroring
+                # the bank-budget ValueError above -- rather than silently
+                # emitting a stream that decodes to garbage; the direct-export
+                # path has no such ceiling (its DPCM notes live in a dedicated
+                # byte table read by index, never re-dispatched), so only the
+                # bytecode path is limited: note must stay <= $5F (95), i.e.
+                # sample_id <= 94, so at most 95 distinct DPCM samples per song
+                # (ids 0-94).
                 orig_note = note
                 if channel == 'dpcm':
-                    if note > 255:
-                        note = 255
+                    if note >= 0x60:
+                        raise ValueError(
+                            f"DPCM sample id {note - 1} (note ${note:02X}) exceeds the "
+                            f"macro-bytecode engine's $00-$5F note range -- the "
+                            f"sequence-bytecode dispatcher would misread it as a Length "
+                            f"or Command byte, desyncing the DPCM stream. The bytecode "
+                            f"path supports at most 95 distinct DPCM samples per song "
+                            f"(sample ids 0-94); use --no-patterns (direct export) or "
+                            f"reduce the sample count."
+                        )
                 elif note > 95:
                     note = 95
                 elif channel != 'noise' and 0 < note < 24:

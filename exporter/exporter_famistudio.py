@@ -101,11 +101,16 @@ def generate_famistudio_txt(frames_data, project_name="MIDI2NES", author="", cop
             if str(frame) in events:
                 event = events[str(frame)]
                 if channel in ['pulse1', 'pulse2', 'triangle']:
-                    note = midi_note_to_famistudio(event['note'])
-                    volume = min(15, event['volume'])
+                    # .get() with the same defaults exporter_ca65.py uses
+                    # (#370/EXP-2026-07-19-2) -- a frame dict missing 'note'
+                    # or 'volume' used to raise KeyError here while the CA65
+                    # path tolerated it, so the two exporters disagreed on
+                    # what counts as a valid frames input.
+                    note = midi_note_to_famistudio(event.get('note', 0))
+                    volume = min(15, event.get('volume', 0))
                     current_pattern.append(f"{note} {volume}")
                 elif channel == 'noise':
-                    volume = min(15, event['volume'])
+                    volume = min(15, event.get('volume', 0))
                     current_pattern.append(f"F#4 {volume}")
                 elif channel == 'dpcm':
                     # The frames dict the rest of the pipeline produces encodes

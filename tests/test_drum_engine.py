@@ -12,6 +12,7 @@ import pytest
 import json
 import tempfile
 import os
+import runpy
 import sys
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
@@ -495,55 +496,70 @@ class TestDrumPatternAnalyzer:
 
 
 class TestDrumEngineMainExecution:
-    """Test main execution functionality."""
-    
-    def test_main_execution_insufficient_args(self):
-        """Test main execution with insufficient arguments."""
-        with patch('sys.argv', ['drum_engine.py']):
-            with patch('sys.exit') as mock_exit:
-                with patch('builtins.print') as mock_print:
-                    # Import and execute the main block
-                    from dpcm_sampler import drum_engine
-                    
-                    # Simulate the main execution
-                    if len(['drum_engine.py']) < 3:
-                        print("Usage: python drum_engine.py <parsed_midi.json> <dpcm_index.json>")
-                        sys.exit(1)
-                    
-                    mock_print.assert_called_with("Usage: python drum_engine.py <parsed_midi.json> <dpcm_index.json>")
-    
-    @patch('sys.argv', ['drum_engine.py', 'test_midi.json', 'test_dpcm.json'])
-    @patch('builtins.open')
-    @patch('json.load')
-    @patch('json.dumps')
-    @patch('dpcm_sampler.drum_engine.map_drums_to_dpcm')
-    @patch('builtins.print')
-    def test_main_execution_success(self, mock_print, mock_map_drums, mock_json_dumps, 
-                                   mock_json_load, mock_open):
-        """Test successful main execution."""
-        # Mock file operations
-        mock_json_load.return_value = {"test": "data"}
-        mock_map_drums.return_value = [{"frame": 0, "sample_id": 1}]
-        mock_json_dumps.return_value = '{"result": "success"}'
-        
-        # Simulate main execution
-        try:
-            # This would be the actual main block execution
-            with open('test_midi.json', 'r') as f:
-                midi_data = json.load(f)
-            
-            events = map_drums_to_dpcm(midi_data, 'test_dpcm.json')
-            print(json.dumps(events, indent=2))
-            
-            # Verify calls
-            mock_json_load.assert_called()
-            mock_map_drums.assert_called_once_with({"test": "data"}, 'test_dpcm.json')
-            mock_json_dumps.assert_called_once_with([{"frame": 0, "sample_id": 1}], indent=2)
-            mock_print.assert_called_with('{"result": "success"}')
-            
-        except Exception:
-            # Main execution might not be directly testable
-            pass
+    """Test main execution functionality.
+
+    Regression (#395/REG-25): both tests here used to reimplement the
+    `__main__` block's logic inline (with `builtins.open`/`json.load` mocked
+    so the literal 'test_midi.json' path was never touched) instead of
+    invoking the module, and wrapped the success case in a blanket
+    `try: ... except Exception: pass` that passed even if the reimplemented
+    logic diverged from the real block entirely. Both now execute
+    `dpcm_sampler/drum_engine.py` for real via `runpy.run_module`, so a
+    broken `sys.argv` handling, a wrong `map_drums_to_dpcm` call signature,
+    or a crash on real file I/O would actually fail the test.
+    """
+
+    # run_module (not run_path) so drum_engine.py's `from .enhanced_drum_mapper
+    # import ...` relative import resolves through the real dpcm_sampler
+    # package instead of raising ImportError as a detached top-level script.
+    DRUM_ENGINE_MODULE = "dpcm_sampler.drum_engine"
+
+    def _run_main(self):
+        # The module is already imported at this file's top (`from
+        # dpcm_sampler.drum_engine import ...`), so it's already in
+        # sys.modules; drop it first so run_module executes a genuinely
+        # fresh module body instead of just warning about the stale entry.
+        sys.modules.pop(self.DRUM_ENGINE_MODULE, None)
+        runpy.run_module(self.DRUM_ENGINE_MODULE, run_name="__main__")
+
+    def test_main_execution_insufficient_args(self, capsys, monkeypatch):
+        """Too few argv entries must print the usage line and exit(1)."""
+        monkeypatch.setattr(sys, "argv", ["drum_engine.py"])
+        with pytest.raises(SystemExit) as exc:
+            self._run_main()
+        assert exc.value.code == 1
+        assert ("Usage: python drum_engine.py <parsed_midi.json> "
+                "<dpcm_index.json>") in capsys.readouterr().out
+
+    def test_main_execution_success(self, tmp_path, capsys, monkeypatch):
+        """A real parsed-MIDI JSON + a real dpcm_index.json must run the
+        actual `__main__` block end-to-end and print valid JSON output."""
+        midi_json = tmp_path / "test_midi.json"
+        midi_json.write_text(json.dumps({
+            "9": [  # Drum channel
+                {"frame": 0, "note": 36, "velocity": 100},   # Kick
+                {"frame": 4, "note": 38, "velocity": 80},    # Snare
+            ]
+        }))
+        dpcm_index = tmp_path / "test_dpcm.json"
+        dpcm_index.write_text(json.dumps({
+            "kick": {"id": 0, "filename": "kick.dmc"},
+            "snare": {"id": 1, "filename": "snare.dmc"},
+        }))
+
+        monkeypatch.setattr(
+            sys, "argv",
+            ["drum_engine.py", str(midi_json), str(dpcm_index)])
+        self._run_main()
+
+        output = capsys.readouterr().out
+        events = json.loads(output)  # must be valid JSON, not garbage
+        # map_drums_to_dpcm returns (dpcm_events, noise_events).
+        assert isinstance(events, list)
+        assert len(events) == 2
+        dpcm_events, noise_events = events
+        assert isinstance(dpcm_events, list)
+        assert isinstance(noise_events, list)
 
 
 class TestDrumEngineIntegration:

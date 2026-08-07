@@ -29,6 +29,7 @@ def parse_midi_to_frames(midi_path):
     )
     tempo_map = EnhancedTempoMap(
         initial_tempo=500000,  # 120 BPM
+        ticks_per_beat=mid.ticks_per_beat,  # Use actual MIDI resolution (#396/TEMPO-19)
         validation_config=config,
         optimization_strategy=None  # Disable optimization
     )

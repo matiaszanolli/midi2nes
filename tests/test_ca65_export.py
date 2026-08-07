@@ -1213,6 +1213,45 @@ class TestNoteClampReporting(unittest.TestCase):
         self.assertEqual(self._export([100, 100, 100, 100]), {'high': 1, 'low': 0})
 
 
+class TestDpcmNoteRangeGuard(unittest.TestCase):
+    """Regression (#369/EXP-2026-07-19-1): the macro-bytecode path's DPCM
+    `note` (= sample_id + 1) used to be clamped only to the single-byte
+    ceiling (255), but DPCM events are emitted through the same length+note
+    serializer as tone channels and re-dispatched by the engine's
+    @read_next: only < $60 is a note, $60-$7F is Length, >= $80 is a
+    Command. A DPCM note >= $60 (sample_id >= 95) would be misdispatched,
+    desyncing the entire DPCM stream. Must now raise ValueError instead of
+    silently emitting a corrupt stream."""
+
+    def _export(self, sample_id):
+        note = sample_id + 1
+        frames = {'dpcm': {'0': {'note': note, 'volume': 15}}}
+        exp = CA65Exporter()
+        out = Path(tempfile.mktemp(suffix='.asm'))
+        try:
+            # Non-empty patterns selects the macro-bytecode path.
+            exp.export_tables_with_patterns(frames, {'x': 1}, {}, str(out))
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_max_valid_sample_id_exports_cleanly(self):
+        # note = 95 = $5F is the highest byte the dispatcher still reads as
+        # a note (< $60), so sample_id 94 is the last valid one.
+        self._export(94)  # must not raise
+
+    def test_first_invalid_sample_id_raises(self):
+        # note = 96 = $60 -- the dispatcher's Length range starts here.
+        with self.assertRaises(ValueError) as ctx:
+            self._export(95)
+        self.assertIn("95", str(ctx.exception))
+
+    def test_far_out_of_range_sample_id_raises(self):
+        # Confirms the old "clamp to 255" behavior (#67) no longer silently
+        # accepts a wildly out-of-range id -- it must raise, not clamp.
+        with self.assertRaises(ValueError):
+            self._export(254)
+
+
 class TestDirectExportPerChannelEmittersIsolated(unittest.TestCase):
     """Regression (#136/TD-11): export_direct_frames's per-channel table and
     playback-subroutine emission used to only be reachable through the full
