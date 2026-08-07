@@ -115,65 +115,20 @@ def map_drums_to_dpcm(midi_events, dpcm_index_path, use_advanced=True):
     return enhanced_map_drums(midi_events, dpcm_index_path, use_advanced)
 
 
-def optimize_dpcm_samples(dpcm_events, max_samples=16):
-    """
-    Optimize DPCM sample usage based on frequency and importance
-    
-    Args:
-        dpcm_events: List of DPCM events
-        max_samples: Maximum number of samples to use
-    """
-    sample_usage = {}
-    for event in dpcm_events:
-        sample_id = event['sample_id']
-        sample_usage[sample_id] = sample_usage.get(sample_id, 0) + 1
-    
-    # Sort by usage frequency
-    sorted_samples = sorted(sample_usage.items(), 
-                          key=lambda x: x[1], 
-                          reverse=True)
-    
-    # Keep only most used samples
-    allowed_samples = set(s[0] for s in sorted_samples[:max_samples])
-    
-    # Filter events
-    optimized_events = []
-    noise_fallback = []
-    
-    for event in dpcm_events:
-        if event['sample_id'] in allowed_samples:
-            optimized_events.append(event)
-        else:
-            noise_fallback.append({
-                "frame": event['frame'],
-                "velocity": event['velocity']
-            })
-    
-    return optimized_events, noise_fallback
-
-
-class DrumPatternAnalyzer:
-    def __init__(self):
-        self.pattern_cache = {}
-        self.groove_patterns = []
-        
-    def analyze_drum_track(self, midi_events):
-        """Analyzes drum patterns and returns optimized mapping suggestions"""
-        patterns = self.detect_patterns(midi_events)
-        groove = self.detect_groove(midi_events)
-        return self.optimize_mapping(patterns, groove)
-        
-    def detect_patterns(self, midi_events):
-        """Detects common drum patterns and fills"""
-        # Implementation here
-        
-    def detect_groove(self, midi_events):
-        """Analyzes groove patterns and timing variations"""
-        # Implementation here
-        
-    def optimize_mapping(self, patterns, groove):
-        """Returns optimized channel and sample assignments"""
-        # Implementation here
+# optimize_dpcm_samples and DrumPatternAnalyzer were removed here (#368/
+# DP-DPCM-06): both were imported only by tests, never by any production
+# caller (confirmed by grep -- no docs/ROADMAP.md entry planned wiring
+# either in). DrumPatternAnalyzer's detect_patterns/detect_groove/
+# optimize_mapping were empty stub bodies (implicit `return None`);
+# analyze_drum_track just fed those Nones forward, so the class could not
+# do anything. optimize_dpcm_samples's noise fallback built
+# {"frame": ..., "velocity": ...} with no 'note' key, contradicting the
+# live noise-event contract map_drums honors (#195/NH-26:
+# process_all_tracks derives the noise period from 'note' via
+# midi_to_nes_pitch()) -- reachable only as a KeyError/mis-pitch if this
+# had ever been wired in. Removed rather than fixed since nothing consumes
+# either; see git history for the prior implementation if a real
+# consumer materializes.
 
 
 if __name__ == "__main__":

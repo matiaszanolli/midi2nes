@@ -93,6 +93,43 @@ class TestChannelAssignment(unittest.TestCase):
         self.assertEqual(plan.triangle_tracks, [2])
         self.assertEqual(plan.dropped_tracks, [])
 
+    def test_harmony_track_no_longer_steals_triangle_from_higher_priority_melody(self):
+        """Regression (#409/ARR-2026-08-06-2): the triangle-overflow fallback
+        used to be gated on `role != MELODY` (any non-MELODY role, including
+        HARMONY/DECORATIVE, could claim it), not `role == BASS`. Because the
+        exclusion was role-based rather than priority-based, a
+        HIGHER-priority MELODY track processed earlier could be dropped for
+        lack of a channel while a LOWER-priority HARMONY track processed
+        later still claimed the now-idle triangle -- the opposite of
+        create_arrangement_plan's own "highest priority survives" policy
+        (plan.tracks is priority-sorted before _assign_channels runs, so the
+        passed order here already reflects that sort: 3 MELODY tracks ahead
+        of 1 HARMONY track, no BASS)."""
+        plan = self._assign(
+            self._track(0, NESChannel.PULSE1, MusicalRole.MELODY),
+            self._track(1, NESChannel.PULSE1, MusicalRole.MELODY),
+            self._track(2, NESChannel.PULSE1, MusicalRole.MELODY),
+            self._track(3, NESChannel.ANY_PULSE, MusicalRole.HARMONY),
+        )
+        self.assertEqual(plan.pulse1_tracks, [0])
+        self.assertEqual(plan.pulse2_tracks, [1])
+        # Triangle must stay empty -- no BASS track exists to claim it.
+        self.assertEqual(plan.triangle_tracks, [])
+        # Both the MELODY overflow AND the HARMONY track must drop; neither
+        # survives at the other's expense.
+        self.assertEqual(plan.dropped_tracks, [2, 3])
+
+    def test_decorative_track_also_cannot_claim_triangle(self):
+        """Sibling of the above for DECORATIVE, the other role that used to
+        be eligible for the triangle-overflow fallback."""
+        plan = self._assign(
+            self._track(0, NESChannel.PULSE1, MusicalRole.MELODY),
+            self._track(1, NESChannel.PULSE1, MusicalRole.MELODY),
+            self._track(2, NESChannel.PULSE2, MusicalRole.DECORATIVE),
+        )
+        self.assertEqual(plan.triangle_tracks, [])
+        self.assertEqual(plan.dropped_tracks, [2])
+
     def test_drum_track_claims_noise_and_dpcm(self):
         plan = self._assign(
             self._track(0, role=MusicalRole.PERCUSSION, is_drum=True)

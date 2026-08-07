@@ -2,6 +2,7 @@ import unittest
 import re
 import subprocess
 import tempfile
+import pytest
 from pathlib import Path
 from exporter.exporter_ca65 import CA65Exporter, TRIANGLE_CONTROL_ON
 from nes.project_builder import NESProjectBuilder
@@ -703,6 +704,7 @@ def _compile_and_link(project_path):
         return False, f"Error during compilation: {str(e)}"
 
 
+@pytest.mark.requires_cc65
 class TestCA65CompilationIntegration(unittest.TestCase):
     def setUp(self):
         self.exporter = CA65Exporter()
