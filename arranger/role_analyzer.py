@@ -380,6 +380,12 @@ class VoiceRoleAnalyzer:
                         assigned = True
                         plan.notes.append(f"Track {track.track_id} ({track.name}): Pulse2 full, using Pulse1")
 
+                # Live/reachable, unlike the BASS recheck below (#410): #408
+                # made GM's own ANY_PULSE curation (gm_instruments.py, e.g.
+                # Electric Piano 1/HARMONY, Electric Grand Piano/MELODY)
+                # survive into preferred_channel whenever the detected role
+                # agrees with GM's role hint, so this branch is exercised by
+                # the live pipeline for those instruments, not test-only.
                 elif track.preferred_channel in (NESChannel.ANY_PULSE, NESChannel.FLEXIBLE):
                     if not pulse1_assigned:
                         plan.pulse1_tracks.append(track.track_id)
@@ -392,6 +398,22 @@ class VoiceRoleAnalyzer:
 
                 # If still not assigned, try any available channel
                 if not assigned:
+                    # #410/ARR-2026-08-06-3: this BASS/triangle recheck is
+                    # unreachable from the live analyze_midi_events ->
+                    # create_arrangement_plan pipeline. Every GM instrument
+                    # mapped to MusicalRole.BASS (gm_instruments.py) is
+                    # curated to NESChannel.TRIANGLE, and _determine_role
+                    # forces preferred_channel to TRIANGLE for any track it
+                    # scores as BASS regardless of GM agreement (:275 above)
+                    # -- so a live BASS track always takes the TRIANGLE
+                    # branch above (:355-359) first; reaching this fallback
+                    # with triangle_assigned still False is impossible for
+                    # it. Kept (not removed) because tests/test_role_analyzer.py
+                    # exercises _assign_channels directly with hand-built
+                    # TrackAnalysis(preferred_channel=PULSE1, role=BASS)
+                    # combinations _determine_role itself never produces --
+                    # this recheck is real defense for that non-pipeline
+                    # input, not dead weight to delete.
                     if track.role == MusicalRole.BASS and not triangle_assigned:
                         plan.triangle_tracks.append(track.track_id)
                         triangle_assigned = True

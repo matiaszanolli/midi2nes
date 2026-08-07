@@ -221,8 +221,10 @@ class EnhancedDrumMapper:
         self.sample_index = self._load_sample_index()
         # Real on-disk sizes for allocate_sample (#341/DP-DPCM-02), keyed by
         # sample name so a drum reused many times in one song only costs one
-        # os.path.getsize call.
-        self._sample_size_cache: Dict[str, int] = {}
+        # os.path.getsize call. An unresolvable sample is cached as None too
+        # (#413/DP-DPCM-07) so a repeated miss doesn't re-run the resolution
+        # probe on every occurrence.
+        self._sample_size_cache: Dict[str, Optional[int]] = {}
 
     def _real_sample_size(self, sample_name: str, sample_data: Dict) -> Optional[int]:
         """Real on-disk size (bytes) for a catalog sample, or None if it
@@ -241,9 +243,18 @@ class EnhancedDrumMapper:
             return self._sample_size_cache[sample_name]
         filename = sample_data.get('filename')
         if not filename:
+            # Cache the miss too (#413/DP-DPCM-07): without this, a catalog
+            # sample that never resolves (missing 'filename', or a 'filename'
+            # that doesn't resolve to an existing file below) re-ran the full
+            # resolve_dpcm_sample_path candidate-path probe on every single
+            # occurrence of that drum in the song instead of just the first.
+            # `dict.__contains__` doesn't care that the cached value is None,
+            # so the fast-path check above still short-circuits correctly.
+            self._sample_size_cache[sample_name] = None
             return None
         path = resolve_dpcm_sample_path(filename, self.dpcm_index_path)
         if path is None:
+            self._sample_size_cache[sample_name] = None
             return None
         size = os.path.getsize(path)
         self._sample_size_cache[sample_name] = size

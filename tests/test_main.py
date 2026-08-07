@@ -1028,6 +1028,31 @@ class TestRunExport:
             shutil.rmtree(tmp, ignore_errors=True)
 
     @patch('main.CA65Exporter')
+    def test_run_export_missing_dpcm_index_prints_info_line(self, mock_exporter_class):
+        """Regression (#411/SAFE-2026-08-06-1): a missing dpcm_index.json used
+        to print zero feedback in run_export -- `if dpcm_pack_warning:` is
+        None when index_found is False, so the only output was the generic
+        success line, indistinguishable from a genuinely drum-free song.
+        run_full_pipeline already had this exact info line; run_export must
+        print the same wording."""
+        import shutil
+        mock_exporter_class.return_value = Mock()
+        cwd = os.getcwd()
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            # No dpcm_index.json in this cwd.
+            os.chdir(tmp)
+            args = Namespace(input=str(self.test_input), output=str(self.test_output),
+                              format="ca65", patterns=None)
+            with patch('builtins.print') as mock_print:
+                run_export(args)
+            messages = [str(c.args[0]) for c in mock_print.call_args_list if c.args]
+            assert any("No dpcm_index.json found, skipping DPCM packing" in m for m in messages)
+        finally:
+            os.chdir(cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @patch('main.CA65Exporter')
     def test_run_export_partial_dpcm_miss_labeled_distinctly(self, mock_exporter_class):
         """Regression (#367/DP-DPCM-05): a partial DPCM miss (some, not all,
         referenced samples resolve) must not be mislabeled "NO DRUMS" --

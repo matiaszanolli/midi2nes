@@ -628,3 +628,37 @@ class TestSampleManagerBackfillsRealSize:
         for _ in range(5):
             mapper._allocate("kick", sample_data)
         assert mapper._sample_size_cache["kick"] == 200
+
+    def test_repeated_unresolvable_sample_only_probes_once(self, dpcm_index_path):
+        """Regression (#413/DP-DPCM-07): an unresolvable sample (missing
+        'filename', or a 'filename' that doesn't resolve to an existing file)
+        used to skip the cache write on both early-return paths, so a drum
+        that never resolves re-ran the full resolve_dpcm_sample_path
+        candidate-path probe on every single occurrence in the song instead
+        of just the first."""
+        import dpcm_sampler.enhanced_drum_mapper as edm
+        from unittest.mock import patch
+
+        mapper = EnhancedDrumMapper(dpcm_index_path=dpcm_index_path)
+        sample_data = {"id": 99, "filename": "missing.dmc"}
+
+        with patch.object(edm, "resolve_dpcm_sample_path",
+                           wraps=edm.resolve_dpcm_sample_path) as mock_resolve:
+            for _ in range(5):
+                assert mapper._real_sample_size("ghost", sample_data) is None
+            assert mock_resolve.call_count == 1, \
+                "resolve_dpcm_sample_path must only run once for a repeated unresolvable sample"
+        assert mapper._sample_size_cache["ghost"] is None
+
+    def test_repeated_no_filename_sample_never_probes(self, dpcm_index_path):
+        """Sibling of the above for the other early-return path: a catalog
+        entry with no 'filename' key at all must also be cached as a miss,
+        not just the 'filename' -> resolution-failure path."""
+        mapper = EnhancedDrumMapper(dpcm_index_path=dpcm_index_path)
+        sample_data = {"id": 99}  # no 'filename' key
+
+        assert mapper._real_sample_size("no_filename", sample_data) is None
+        assert "no_filename" in mapper._sample_size_cache
+        assert mapper._sample_size_cache["no_filename"] is None
+        # Second call must hit the cache fast-path, not re-derive anything.
+        assert mapper._real_sample_size("no_filename", sample_data) is None

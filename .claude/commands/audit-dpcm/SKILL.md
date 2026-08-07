@@ -84,7 +84,7 @@ The index is loaded in the same three places, still against two different shapes
   DP-DPCM-02 is CLOSED for `length`**, though: it used to fall back to the same 1024-byte
   placeholder for every sample, making memory-limit/eviction accounting operate on
   identical fictional sizes. `_allocate` (`enhanced_drum_mapper.py:252-261`) now resolves
-  each sample's real on-disk size via `_real_sample_size` (`:226-247`, mirrors
+  each sample's real on-disk size via `_real_sample_size` (`:229-260`, mirrors
   `generate_dpcm_index.resolve_dpcm_sample_path` — the same resolution the packer itself
   uses, cached per sample name in `self._sample_size_cache` so a drum reused many times in
   one song costs one `os.path.getsize` call) and injects it into `sample_data['length']`
@@ -94,13 +94,22 @@ The index is loaded in the same three places, still against two different shapes
   eviction machinery still has no effect on what actually gets packed into the ROM
   (packing is driven by frame references via `pack_dpcm_into_asm`, not
   `sample_manager.active_samples`); that remains unchanged and out of scope here.
-  Verify-the-fix: confirm `_real_sample_size` returns `None` (falls back to the 1024
-  placeholder, not a crash) when `resolve_dpcm_sample_path` can't find the file, and that
-  `data`/`frequency` are still correctly understood as permanent placeholders, not a
-  second instance of the same bug. What *did* change earlier (#70/#71, see Dimension 7)
-  is that the sample manager uses one consistent accounting formula for those remaining
-  defaults instead of two divergent ones, and the now-dead similarity/dedup code that also
-  depended on `data` was removed outright rather than left silently inert.
+  **#413/DP-DPCM-07 is CLOSED**: the "costs one `os.path.getsize` call" cache guarantee
+  above only held for the successfully-resolved case -- both early-return `None` paths (no
+  `filename` key, and `resolve_dpcm_sample_path` returning `None`) returned directly
+  without writing to `self._sample_size_cache`, so a catalog sample that never resolves
+  (a `.dmc` moved/deleted from the `dmc/` root) re-ran the full candidate-path probe (up to
+  3 `Path.exists()` stats) on every occurrence in the song, not just the first. Both paths
+  now cache `None` before returning; the cache-hit check (`sample_name in
+  self._sample_size_cache`) already worked correctly for a cached `None` since
+  `dict.__contains__` doesn't inspect the stored value. Verify-the-fix: confirm
+  `_real_sample_size` returns `None` (falls back to the 1024 placeholder, not a crash) when
+  `resolve_dpcm_sample_path` can't find the file, and that `data`/`frequency` are still
+  correctly understood as permanent placeholders, not a second instance of the same bug.
+  What *did* change earlier (#70/#71, see Dimension 7) is that the sample manager uses one
+  consistent accounting formula for those remaining defaults instead of two divergent ones,
+  and the now-dead similarity/dedup code that also depended on `data` was removed outright
+  rather than left silently inert.
 - The packer path moved: `dpcm_sampler/generate_dpcm_index.py:load_dpcm_index_into_packer`
   (lines 38-79) is now called from a single shared `main.py:pack_dpcm_into_asm`
   helper (`main.py:126-215`), not duplicated inline at the two call sites. **#380/TD-28

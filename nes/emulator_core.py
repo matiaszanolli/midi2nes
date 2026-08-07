@@ -1,6 +1,5 @@
 from collections import defaultdict
 from .pitch_table import PitchProcessor
-from collections import defaultdict
 from .envelope_processor import (
     EnvelopeProcessor,
     velocity_to_volume,
