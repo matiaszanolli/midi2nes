@@ -270,31 +270,32 @@ Work done more than once across the pipeline because results are not passed forw
 PERF-08 (#119) is now **CLOSED** — the discarded per-pattern tempo *analysis* is now
 skipped (`analyze_tempo=False`), so what remains below is cheap redundant *construction*
 and an event round-trip, not the wasteful analysis the issue was about:
-- The tempo map is rebuilt independently in `tracker/parser_fast.py`
-  (`parse_midi_to_frames`), again in `parse_midi_to_frames_with_analysis`, and a *fresh*
+- **#376/PERF-A-06 is CLOSED as won't-fix** (documented, not code-changed): the tempo
+  map is rebuilt independently in `tracker/parser_fast.py` (`parse_midi_to_frames`),
+  again in `parse_midi_to_frames_with_analysis`, and a *fresh*
   `EnhancedTempoMap(initial_tempo=500000)` is constructed **twice more** in `main.py` —
   once in the `detect-patterns` subcommand handler (`run_detect_patterns`) and once
-  inline in `run_full_pipeline`'s pattern-detection step (these two are mutually
-  exclusive per single invocation, but neither reuses the other) — plus again in
-  `benchmarks/performance_suite.py`'s `benchmark_pattern_detection`. None of these
-  reuse the tempo data already computed at parse time (it is not serialized into the
-  parse JSON — `parse_midi_to_frames` returns `"metadata": {}`). Both of `main.py`'s
-  fresh tempo maps also default to `ticks_per_beat=480` rather than the source file's
-  actual resolution, but since the pattern detectors only read `note`/`volume` from
-  events (not tempo), this was a wasted construction rather than an incorrect one. #119
-  resolved the expensive half by passing `analyze_tempo=False` to
-  `EnhancedPatternDetector` in `run_detect_patterns` (`main.py:624`), so its per-pattern
-  tempo analysis no longer runs; the bare `EnhancedTempoMap(...)` object is still
-  *constructed* at each site (a cheap, still-redundant allocation) and tempo is still
-  not threaded through the parse JSON — note the remaining recompute, but it is no
-  longer the costly path.
+  inline in `detect_patterns_or_direct_export` (extracted from `run_full_pipeline` by
+  #406) — plus again in `benchmarks/performance_suite.py`'s
+  `benchmark_pattern_detection`. Both `main.py` sites now carry a `#376/PERF-A-06
+  (won't-fix)` comment explaining why: the allocation is genuinely free
+  (`EnhancedPatternDetector`/`ParallelPatternDetector` never read `tempo_map` when
+  `analyze_tempo=False`), and a real fix for either half of the issue fights an
+  existing design decision on purpose — threading real tempo forward needs a
+  parse-JSON contract change (`parse_midi_to_frames` returns `"metadata": {}` by
+  design), and skipping the events↔frames round-trip means NOT `del`eting
+  `mapped`/`midi_data` early in `run_full_pipeline`, reversing #371/PERF-A-01's
+  deliberate memory-freeing. Verify-the-fix: if a future change threads tempo through
+  the parse JSON or restructures `run_full_pipeline`'s memory lifecycle, re-open this
+  as live tech debt rather than assuming the won't-fix rationale still holds — the
+  trade-off, not the redundancy itself, was the reason it was left alone.
 - Frame data is re-derived from events at frames stage, then events are *re-extracted
   from frames* in the pattern-detection stage — confirmed in both `main.py`'s
-  `run_detect_patterns` (`main.py:628`) and the inline pattern-detection block of
-  `run_full_pipeline` (`main.py:815`), each of which rebuilds an `events` list out of
-  the `frames` dict via the shared `frames_to_events` helper (`nes/emulator_core.py`,
-  #261). The round-trip (events → frames → events) still stands; the shared extractor
-  only de-duplicated the flattening code, it did not remove the recompute.
+  `run_detect_patterns` and `detect_patterns_or_direct_export`, each of which rebuilds
+  an `events` list out of the `frames` dict via the shared `frames_to_events` helper
+  (`nes/emulator_core.py`, #261). The round-trip (events → frames → events) still
+  stands (see #376 above — left as-is on purpose); the shared extractor only
+  de-duplicated the flattening code, it did not remove the recompute.
 
 ## Cross-Dimension Dedup
 A single root cause can surface in several dimensions. The #114 fix collapsed what used
