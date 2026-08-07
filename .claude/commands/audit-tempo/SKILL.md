@@ -167,10 +167,28 @@ Boundary correctness:
   matching note-off event where available (lines ~76-86), falling back to `sustain_frames` only
   when unpaired.
 - Frame-alignment tolerance consolidation (**TEMPO-07, #99, now fixed**): `is_frame_aligned`
-  (line ~254), `_validate_frame_boundaries` (line ~468), and `_check_frame_alignment` (line ~830) all
+  (line ~263), `_validate_frame_boundaries` (line ~477), and `_check_frame_alignment` (line ~863) all
   now reference the single `FRAME_ALIGNMENT_TOLERANCE_MS = 0.5` constant (line ~23) instead of
   independent hardcoded thresholds. The dead `_frame_cache` (assigned but never read) was removed in
-  the same fix. Verify fix completeness:
+  the same fix.
+  **#382/TEMPO-17 is CLOSED** — #99 only unified the *tolerance value*; the three predicates still
+  computed alignment three different (and contradictory) ways for the same tick.
+  `is_frame_aligned` was the correct one: symmetric nearest-boundary distance,
+  `abs(time_ms - round(time_ms/FRAME_MS)*FRAME_MS) < TOL`, on the true cumulative time
+  (`calculate_time_ms(0, tick)`). `_validate_frame_boundaries` instead checked
+  `remainder = time_ms % FRAME_MS; remainder > TOL` — asymmetric, since `remainder` only measures
+  distance *above* the lower boundary (range `[0, FRAME_MS)`), so a tick just below the *next*
+  boundary had `remainder ≈ FRAME_MS` and was wrongly rejected. `_check_frame_alignment` had the same
+  asymmetric test *and* derived time from a single-segment `change.tick * (prev_tempo /
+  ticks_per_beat)` basis that assumed the whole song ran at the tempo immediately preceding the
+  change — wrong for any song with an earlier tempo change. Both now delegate to
+  `is_frame_aligned(tick)` and, on failure, report the same symmetric `abs(time_ms - frame_number *
+  FRAME_MS)` distance as `off_by` in their `TempoValidationError` message; `_check_frame_alignment`
+  no longer computes its own single-segment time at all. Verify-the-fix: for a multi-tempo-change
+  song, confirm all three predicates still agree at a tick sitting just below a frame boundary in a
+  *later* tempo segment (not just the first) — that was the exact case the single-segment basis got
+  wrong, and it's the easiest regression to reintroduce if either method is edited independently
+  again. Verify fix completeness (#99, unchanged from before):
   - `add_tempo_change`'s best-effort re-snap search (lines ~299, 319, 328) still uses its own
     hardcoded tolerances (`1.0`, `2.0` ms) — this is called out in the code comment (lines ~21-22) as
     deliberately separate because it *adjusts* ticks rather than *verdicts* alignment. Confirm this
