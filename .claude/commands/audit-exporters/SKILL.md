@@ -171,8 +171,18 @@ Cross-check the bytes `export_tables_with_patterns` emits against
 - Length+note encoding: code emits `${(write_dur - 1) + 0x60:02X}, ${note:02X}`
   (`:1259`) with `write_dur = min(rem_dur, 32)` (`:1258`). Spec §3 Length Commands are
   `$60–$7F` = length `value-$60+1` (1–32 frames) — verify the cap of 32 and the `-1` bias
-  match, and that notes still fall in the `$00–$5F` note range so the engine doesn't read
-  a note as a length/command.
+  match. **#369/EXP-2026-07-19-1 is CLOSED**: the "notes still fall in `$00–$5F`" half of
+  this used to be unverified for DPCM specifically — DPCM's `note` (= `sample_id + 1`) was
+  clamped only to the single-byte ceiling (255, citing #67's fix against the wrong
+  tone-note collapse), not the `$00–$5F` dispatch range, so a DPCM `note` >= `$60`
+  (`sample_id` >= 95) was misdispatched as a Length or Command byte by the engine's
+  `@read_next`, desyncing the whole DPCM stream. `export_tables_with_patterns`
+  (`exporter/exporter_ca65.py`, the DPCM branch of the per-frame clamp loop) now raises
+  `ValueError` for `note >= 0x60` instead of emitting the out-of-range byte — the bytecode
+  path supports at most 95 distinct DPCM samples per song (ids 0-94); `--no-patterns`
+  (direct export) has no such ceiling. Verify-the-fix: confirm the guard still fires before
+  any byte is written (not after), and that a legitimate DPCM note at the boundary
+  (`sample_id` 94, `note` `$5F`) still exports cleanly rather than off-by-one rejecting it.
 - **Verify fix (#83, closed) — EXP-07**: the doc/code gap on `$FE` is resolved. The
   exporter's *live* command set is `$80` (`CMD_INSTRUMENT`, matches spec §3), `$FE`+bank+
   ptr_lo+ptr_hi (a **sequence-level bank jump**, `:1239`), and the `$FF` end-of-stream
@@ -249,7 +259,15 @@ file exists in the repo anymore.) Check:
   DPCM triggers as `note = sample_id + 1`, not a `sample_id` key). Cross-check against
   `CA65Exporter.midi_note_to_timer_value`'s valid range (24–119, `exporter_ca65.py:46`) —
   confirm a note in range for one exporter is still in range (post-clamp) for the other,
-  not silently re-pitched to a different octave than the ROM plays.
+  not silently re-pitched to a different octave than the ROM plays. **#370/
+  EXP-2026-07-19-2 is CLOSED**: the tone-channel branch (`pulse1`/`pulse2`/`triangle`) had
+  the same class of gap #82 fixed for dpcm but wasn't itself hardened — it read
+  `event['note']`/`event['volume']` via direct subscript, raising `KeyError` on a frame
+  dict missing either key, while the CA65 exporter tolerates it
+  (`frame_data.get('note', 0)`/`.get('volume', 0)`). Now reads `event.get('note',
+  0)`/`event.get('volume', 0)`, matching both the CA65 path and this file's own dpcm
+  branch. Verify-the-fix: confirm no exporter still has a bare `event[...]`/`frame_data[...]`
+  subscript for an optional frame field — grep is the fastest check.
 - This dimension overlaps `/audit-tech-debt` Dimension 1 (the exporters duplicating
   serialization). Report duplication there; report *behavioral divergence* here.
 
