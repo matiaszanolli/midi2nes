@@ -426,10 +426,26 @@ class VoiceRoleAnalyzer:
                         plan.pulse2_tracks.append(track.track_id)
                         pulse2_assigned = True
                         assigned = True
-                    elif not triangle_assigned and track.role != MusicalRole.MELODY:
-                        plan.triangle_tracks.append(track.track_id)
-                        triangle_assigned = True
-                        assigned = True
+                    # #409/ARR-2026-08-06-2 (CLOSED): this used to be
+                    # `elif not triangle_assigned and track.role !=
+                    # MusicalRole.MELODY:`, letting any non-MELODY role
+                    # (HARMONY, DECORATIVE) claim triangle as a last resort --
+                    # not just BASS, contradicting the "triangle is reserved
+                    # for bass" invariant tests/test_role_analyzer.py already
+                    # documented. Because plan.tracks is sorted by priority
+                    # descending (create_arrangement_plan) but this exclusion
+                    # was role-based rather than priority-based, a
+                    # HIGHER-priority MELODY track processed earlier could be
+                    # dropped for lack of a channel while a LOWER-priority
+                    # HARMONY/DECORATIVE track processed later still grabbed
+                    # the now-idle triangle -- the opposite of "highest
+                    # priority survives". Triangle overflow for a non-BASS
+                    # role is no longer offered here at all; the BASS branch
+                    # above this if/elif chain is the only path onto triangle
+                    # once pulse1/pulse2 are full, restoring the documented
+                    # BASS-only invariant. A non-BASS track that can't fit now
+                    # correctly falls through to dropped_tracks below, same as
+                    # any other overflow.
 
             # Track couldn't be assigned
             if not assigned:

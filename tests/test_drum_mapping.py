@@ -3,7 +3,7 @@ import json
 import os
 import tempfile
 import unittest
-from dpcm_sampler.drum_engine import map_drums_to_dpcm, optimize_dpcm_samples
+from dpcm_sampler.drum_engine import map_drums_to_dpcm
 
 class TestDrumMapping(unittest.TestCase):
     def setUp(self):
