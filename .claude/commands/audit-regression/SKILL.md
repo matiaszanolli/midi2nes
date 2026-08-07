@@ -110,7 +110,17 @@ compression is MEDIUM (it guards a CRITICAL failure mode).
   dispatch (`nes/audio_engine.asm:204-213`, `bcs`+`jmp` instead of the out-of-range
   `bcc`) — confirmed: all 9 tests in `TestCA65CompilationIntegration` pass with the
   toolchain present. Re-verify this stays green; a relative-branch regression here is
-  silent until an assembler is actually invoked.
+  silent until an assembler is actually invoked. **#414/REG-26 is CLOSED**: this class
+  was the last CC65-shelling-out suite still missing the `@pytest.mark.requires_cc65`
+  gate the other suites in this dimension already use — its `_compile_and_link` helper
+  swallowed `FileNotFoundError` into a normal `(False, ...)` return, so a contributor
+  without `ca65`/`ld65` on `PATH` saw 9 real test FAILUREs (via `assertTrue(success,
+  ...)`) indistinguishable from a genuine ROM-compile regression, not a clean skip. Now
+  gated class-level, matching `TestPipelineFailureRecovery`'s pattern; verified both
+  ways (all 9 pass with the toolchain present, cleanly skip with `ca65`/`ld65` removed
+  from `PATH`). Re-verify any *new* CC65-shelling-out test class in this file or others
+  gets the marker from the start — that's the exact gap that let this drift for as long
+  as it did.
 - **Fixed (REG-10/#128)**: `tests/test_rom_validation_integration.py` is the designated
   "compile a real ROM and validate its bytes" gate. It previously had 5 of 9 tests SKIP
   even with `ca65`/`ld65` present, because the hand-written `music.asm` fixture defined

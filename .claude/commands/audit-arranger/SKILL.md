@@ -124,9 +124,25 @@ Checklist:
   most one track** (boolean `*_assigned` flags). With >4 pitched tracks, surplus tracks land
   in `plan.dropped_tracks`. Verify the drop order is priority-sorted
   (`plan.tracks.sort(key=lambda t: t.priority, reverse=True)` at line 288) and musically
-  defensible — e.g. that BASS is not dropped while a DECORATIVE voice survives. Cross-ref
-  Dimension 4's note on `get_role_priority()` being unused here (ARR-05, #88) — the sort key
-  is `TrackAnalysis.priority`, not that function.
+  defensible. Cross-ref Dimension 4's note on `get_role_priority()` being unused here
+  (ARR-05, #88) — the sort key is `TrackAnalysis.priority`, not that function.
+  **#409/ARR-2026-08-06-2 is CLOSED**: the priority-sort invariant above used to be violated
+  by the last-resort triangle-overflow fallback specifically — it was gated on `track.role !=
+  MusicalRole.MELODY` (any non-MELODY role, including HARMONY/DECORATIVE, could claim
+  triangle as a last resort), not `track.role == MusicalRole.BASS`, contradicting the
+  "triangle is reserved for bass" invariant `tests/test_role_analyzer.py` already documented.
+  Because the exclusion was role-based rather than priority-based, a HIGHER-priority MELODY
+  track processed earlier could be dropped for lack of a channel while a LOWER-priority
+  HARMONY/DECORATIVE track processed later still grabbed the now-idle triangle — the exact
+  "drop order isn't musically defensible" failure mode this checklist item warns about, just
+  with MELODY/HARMONY rather than the BASS/DECORATIVE pairing the old wording used as its
+  example. The non-BASS branch of that fallback is now removed entirely — only the
+  BASS-and-triangle-still-free branch earlier in the same if/elif chain can claim triangle: a
+  non-BASS track that can't fit on pulse1/pulse2 now falls straight through to
+  `dropped_tracks`, same as any other overflow. Verify-the-fix: confirm a mixed-role scenario
+  (multiple MELODY/HARMONY/DECORATIVE tracks, no BASS) always drops in strict priority order
+  with triangle staying empty, and that a genuine BASS track still spills to triangle
+  correctly when pulse1/pulse2 are full.
 - Drum tracks claim BOTH `noise` and `dpcm` (`arranger/role_analyzer.py:303-320`).
   **#205/ARR-10 is CLOSED**: a second drum track finding both already taken used to hit an
   unconditional `continue`, vanishing with no `dropped_tracks` entry and no `plan.notes`
