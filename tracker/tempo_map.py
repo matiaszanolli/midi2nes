@@ -105,6 +105,17 @@ class TempoMap:
                 f"an SMPTE-division MIDI header (mido returns ticks_per_beat < 0 "
                 f"for SMPTE timing) and would produce negative frame indices."
             )
+        # initial_tempo is the numerator of every tick->time conversion (see
+        # _build_tempo_index/_cumulative_ms), so a non-positive value is
+        # invalid: EnhancedTempoMap already guards this before its BPM
+        # division (#317/TEMPO-14), but the base class silently accepted it --
+        # zero collapses every tick to time 0.0 (frame 0) with no error, and a
+        # negative value would divide time backwards (#383/TEMPO-18).
+        if initial_tempo <= 0:
+            raise TempoValidationError(
+                f"initial_tempo must be a positive microseconds-per-beat "
+                f"value, got {initial_tempo!r}"
+            )
         self.tempo_changes = [(0, initial_tempo)]
         self.ticks_per_beat = ticks_per_beat
         self._time_cache = {}
@@ -476,11 +487,18 @@ class EnhancedTempoMap(TempoMap):
 
     def _validate_frame_boundaries(self, tick: int, tempo: int):
         """Validate that tempo changes align with frame boundaries"""
-        frame_time = self.calculate_time_ms(0, tick)
-        remainder = frame_time % FRAME_MS
-        if remainder > FRAME_ALIGNMENT_TOLERANCE_MS:
+        # Reuse is_frame_aligned's symmetric nearest-boundary distance
+        # (#382/TEMPO-17) rather than an asymmetric `% FRAME_MS` test:
+        # `remainder = time % FRAME_MS` only measures distance *above* the
+        # lower frame boundary (range [0, FRAME_MS)), so a time just below
+        # the *next* boundary had remainder ~= FRAME_MS and was wrongly
+        # judged misaligned, contradicting is_frame_aligned for the same tick.
+        if not self.is_frame_aligned(tick):
+            time_ms = self.calculate_time_ms(0, tick)
+            frame_number = np.round(time_ms / FRAME_MS)
+            off_by = abs(time_ms - frame_number * FRAME_MS)
             raise TempoValidationError(
-                f"Tempo change at tick {tick} does not align with frame boundary (off by {remainder:.3f}ms)"
+                f"Tempo change at tick {tick} does not align with frame boundary (off by {off_by:.3f}ms)"
             )
                     
     def _create_gradual_change_steps(self, change: TempoChange):
@@ -863,16 +881,20 @@ class EnhancedTempoMap(TempoMap):
     def _check_frame_alignment(self, change: TempoChange):
         """Check if a tempo change aligns with frame boundaries"""
         if change.tick > 0:
-            # Calculate frame alignment using microsecond precision
-            prev_tempo = self.get_tempo_at_tick(change.tick - 1)
-            us_per_tick = prev_tempo / self.ticks_per_beat
-            time_us = change.tick * us_per_tick
-            remainder_us = time_us % (FRAME_MS * 1000)
-
-            if remainder_us > FRAME_ALIGNMENT_TOLERANCE_MS * 1000:
+            # Reuse is_frame_aligned's symmetric nearest-boundary distance on
+            # the true cumulative time (#382/TEMPO-17), rather than the old
+            # single-segment `change.tick * (prev_tempo / ticks_per_beat)`
+            # basis, which assumed the whole song from tick 0 ran at the
+            # tempo immediately preceding this change -- wrong for any song
+            # with an earlier tempo change -- combined with the same
+            # asymmetric `% FRAME_MS` test fixed in _validate_frame_boundaries.
+            if not self.is_frame_aligned(change.tick):
+                time_ms = self.calculate_time_ms(0, change.tick)
+                frame_number = np.round(time_ms / FRAME_MS)
+                off_by = abs(time_ms - frame_number * FRAME_MS)
                 raise TempoValidationError(
                     f"Tempo change at tick {change.tick} not aligned with frame "
-                    f"boundary (off by {remainder_us/1000:.3f}ms)"
+                    f"boundary (off by {off_by:.3f}ms)"
                 )
 
 

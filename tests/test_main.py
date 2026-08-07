@@ -2274,6 +2274,80 @@ class TestFullPipelineBackupCleanup:
             assert backup_path.exists(), ".nes.backup must be kept on unexpected exception"
             assert output_rom.read_bytes() == original, "original ROM must be restored on unexpected exception"
 
+    def test_missing_dpcm_index_exits_cleanly_in_legacy_mode(self):
+        """Regression (#381/SAFE-2026-07-19-1): legacy-mode mapping used to let
+        a missing dpcm_index.json raise a bare FileNotFoundError, relayed only
+        as the generic "[ERROR] Pipeline failed: ..." line -- aborting the
+        whole 7-step build less actionably than run_map's dedicated guard
+        (#256/D-18). It must exit cleanly with the same message and never
+        reach assign_tracks_to_nes_channels."""
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            input_midi = tdp / "song.mid"
+            input_midi.write_bytes(b"MThd")
+            output_rom = tdp / "song.nes"
+            # No dpcm_index.json in this cwd.
+
+            os.chdir(tdp)
+            try:
+                with patch('tracker.parser_fast.parse_midi_to_frames') as mock_parse, \
+                     patch('main.assign_tracks_to_nes_channels') as mock_assign, \
+                     patch('builtins.print') as mock_print:
+                    mock_parse.return_value = {"events": {"0": [{"frame": 0, "note": 60}]}}
+                    with pytest.raises(SystemExit) as exc:
+                        run_full_pipeline(self._make_args(input_midi, output_rom))
+            finally:
+                os.chdir(cwd)
+
+        assert exc.value.code == 1
+        mock_assign.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list if c.args)
+        assert "[ERROR]" in printed and "DPCM index not found" in printed
+        assert "Pipeline failed" not in printed
+
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('dpcm_sampler.dpcm_packer.DpcmPacker')
+    @patch('main.CA65Exporter')
+    @patch('main.NESEmulatorCore')
+    @patch('main.assign_tracks_to_nes_channels')
+    @patch('tracker.parser_fast.parse_midi_to_frames')
+    def test_typed_error_and_unexpected_defect_logged_distinctly(
+            self, mock_parse, mock_assign, mock_emu_cls, mock_exporter_cls,
+            mock_packer_cls, mock_builder_cls, mock_compile):
+        """Regression (#384/SAFE-2026-07-19-2): the pipeline's single
+        `except Exception` flattened a typed MIDI2NESError and a genuinely
+        unexpected defect to the same generic line. A typed error must still
+        print "Pipeline failed" (unchanged, actionable message); an
+        unexpected exception must be flagged distinctly."""
+        self._common_mocks(mock_parse, mock_assign, mock_emu_cls,
+                           mock_exporter_cls, mock_packer_cls, mock_builder_cls)
+
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            input_midi = tdp / "song.mid"
+            input_midi.write_bytes(b"MThd")
+
+            # Typed MIDI2NESError -> "Pipeline failed"
+            mock_builder_cls.return_value.prepare_project.side_effect = ConfigurationError("bad config")
+            with patch('builtins.print') as mock_print:
+                with pytest.raises(SystemExit) as exc:
+                    run_full_pipeline(self._make_args(input_midi, tdp / "typed.nes"))
+            assert exc.value.code == 1
+            typed_printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list if c.args)
+            assert "[ERROR] Pipeline failed: bad config" in typed_printed
+
+            # Unexpected exception -> "Unexpected pipeline failure"
+            mock_builder_cls.return_value.prepare_project.side_effect = RuntimeError("boom")
+            with patch('builtins.print') as mock_print:
+                with pytest.raises(SystemExit) as exc:
+                    run_full_pipeline(self._make_args(input_midi, tdp / "unexpected.nes"))
+            assert exc.value.code == 1
+            unexpected_printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list if c.args)
+            assert "[ERROR] Unexpected pipeline failure: boom" in unexpected_printed
+            assert "[ERROR] Pipeline failed" not in unexpected_printed
+
 
 class TestParserSelection:
     """Regression (#112/P-04): main.py must parse only via the fast parser.
