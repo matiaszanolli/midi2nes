@@ -60,25 +60,20 @@ producer key matches each consumer's read. Concrete checks in `main.py`:
   out of `run_full_pipeline`, which calls it for Step 4), not inline in `run_full_pipeline`
   itself any more. The `detect-patterns` subcommand omission above is a separate, still-open
   question.)
-- **The old "references-format gap" is now moot, for a different reason than expected**:
-  `main.py` no longer builds a position→frame `ca65_references` map anywhere.
-  `run_full_pipeline` passes a bare empty dict `{}` for `references` regardless of what
-  pattern detection produced — this call now lives in `export_frames_and_resolve_mapper`
-  (the stage helper `run_full_pipeline` calls for Steps 5-5.5 since #406), not inline in
-  `run_full_pipeline` itself; `run_export` passes the detector's native
-  `{'pattern_id': [positions]}` shape straight through unmodified. Both are
-  inert: `CA65Exporter.export_tables_with_patterns` (`exporter/exporter_ca65.py:962-971`)
-  explicitly documents that its `references` argument is **not consumed** — "retained for
-  call-site compatibility" (F-01/#4, confirmed **intentional, documented behavior** per
-  CLAUDE.md's Assembly Export section, not a bug to report). **Caveat:** the 2026-08-06
-  patterns audit (PAT-2026-08-06-B, #379, reopened) flagged this same divergence as a
-  forward-looking risk worth unifying rather than fully "moot" — reconcile that framing
-  with this paragraph on the next `/audit-pipeline` pass rather than trusting either in
-  isolation. There is therefore no live
-  format mismatch. The only residual risk worth a note: if `references` is ever wired up to
-  actually affect output, the two call sites currently pass different shapes (`{}` vs.
-  detector-native) — flag that latent inconsistency as a forward-looking risk, not a current
-  finding.
+- **#379/PIPE-2026-07-19-3 is CLOSED**: `export_frames_and_resolve_mapper` (the stage
+  helper `run_full_pipeline` calls for Steps 5-5.5 since #406) used to hardcode a bare
+  empty dict `{}` for `references` regardless of what pattern detection produced, while
+  `run_export` passes the detector's native `{'pattern_id': [positions]}` shape
+  (`pattern_data['references']`) straight through unmodified. Both entry points now pass
+  `pattern_result['references']` — the real dict, not a hardcoded stand-in. This was
+  already inert either way (`CA65Exporter.export_tables_with_patterns`,
+  `exporter/exporter_ca65.py:962-971`, still documents `references` as **not
+  consumed** — "retained for call-site compatibility", F-01/#4, confirmed
+  **intentional** per CLAUDE.md's Assembly Export section), so the fix is
+  forward-compatibility only: it does not change any emitted byte today. Verify-the-fix:
+  if `references` is ever wired up to affect output, confirm both entry points still
+  derive it from the same `pattern_result`/`pattern_data` source rather than drifting
+  apart again — that was the exact shape of the original bug.
 - `grep` each contract key (`events`, `patterns`, `references`, `stats`, `compression_ratio`)
   across producer and consumer; a key renamed on one side only is the finding.
 

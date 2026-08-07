@@ -26,7 +26,7 @@ from tracker.pattern_detector import (
 from tracker.tempo_map import EnhancedTempoMap
 from dpcm_sampler.enhanced_drum_mapper import DrumMapperConfig
 from config.config_manager import ConfigManager
-from core.exceptions import ConfigurationError
+from core.exceptions import ConfigurationError, MIDI2NESError
 from benchmarks.performance_suite import PerformanceBenchmark
 from utils.profiling import get_memory_usage, log_memory_usage
 from compiler import compile_rom
@@ -739,6 +739,13 @@ def run_detect_patterns(args):
     # below are already-quantized frame positions, not MIDI ticks), so its
     # per-pattern tempo analysis would only produce a discarded constant
     # result — skip it (analyze_tempo=False) rather than pay for it (#119).
+    # #376/PERF-A-06 (won't-fix): this always defaults to ticks_per_beat=480
+    # rather than the source file's actual resolution, since parse_midi_to_frames
+    # returns an empty `metadata` by design and this stage only has `frames`
+    # (no MIDI ticks) to work from. Threading the real value through would
+    # require widening the parse-stage JSON contract for a value
+    # analyze_tempo=False never reads (EnhancedPatternDetector only touches
+    # tempo_map when analyze_tempo is True) -- not worth the contract churn.
     tempo_map = EnhancedTempoMap(initial_tempo=500000)  # 120 BPM default
     detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH,
                                        max_pattern_length=PATTERN_MAX_LENGTH,
@@ -947,6 +954,11 @@ def detect_patterns_or_direct_export(frames, use_patterns, args):
     # frame-indexed (tempo was applied upstream), so this map carries no real
     # tempo changes and the default ticks_per_beat is irrelevant. Mirrors the
     # documented construction in run_detect_patterns (#119).
+    # #376/PERF-A-06 (won't-fix, mirrors run_detect_patterns above): the
+    # `mapped`/`midi_data` this song's real events came from are already
+    # `del`eted by this point (#371/PERF-A-01's deliberate early free), so
+    # there is nothing left here to derive a real tempo map or a pre-frame
+    # event list from without reversing that memory-freeing on purpose.
     tempo_map = EnhancedTempoMap(initial_tempo=500000)
 
     # Convert frames to events for pattern detection (shared extractor skips
@@ -965,6 +977,7 @@ def detect_patterns_or_direct_export(frames, use_patterns, args):
         print(f"  🚀 Proceeding with improved pattern detection...")
 
     # Use parallel pattern detection with position mapping fix
+    fallback_sampled = False
     try:
         from tracker.pattern_detector_parallel import ParallelPatternDetector
         detector = ParallelPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH, max_pattern_events=max_pattern_events)
@@ -982,8 +995,8 @@ def detect_patterns_or_direct_export(frames, use_patterns, args):
         # actually retained, not a larger sample the detector would silently
         # re-cut (#100).
         fallback_count = len(events)
-        events, was_sampled = sample_events_for_detection(events, max_events)
-        if was_sampled:
+        events, fallback_sampled = sample_events_for_detection(events, max_events)
+        if fallback_sampled:
             pattern_loss_warning = (
                 f"pattern detection fell back to the sequential detector and "
                 f"sampled {fallback_count:,} events down to {len(events):,} for "
@@ -992,8 +1005,14 @@ def detect_patterns_or_direct_export(frames, use_patterns, args):
             )
             print(f"  ⚠️  NOTE: {pattern_loss_warning}")
         pattern_result = detector.detect_patterns(events)
+        # events is already sampled to the detector's cap by the time it
+        # reaches detect_patterns, so the detector's own internal re-sample
+        # (tracker/pattern_detector.py) is a no-op and detector.was_sampled
+        # stays False -- checking only that flag below used to silently drop
+        # the "(lossy...)" coverage suffix even though coverage genuinely was
+        # computed over this sampled subset (#378/PIPE-2026-07-19-2).
 
-    if detector.was_sampled:
+    if detector.was_sampled or fallback_sampled:
         # Uniform sampling can put retained samples out of phase with the
         # song's period, collapsing coverage_ratio well below what the full
         # song would report (#312/PAT-11) -- label it so the number isn't
@@ -1042,12 +1061,15 @@ def export_frames_and_resolve_mapper(frames, pattern_result, music_asm, use_patt
     # The CA65 exporter emits every byte from `frames`; the detector's
     # pattern `references` are analysis/metrics only and are never read by
     # export_tables_with_patterns (#4). `patterns` truthiness merely selects
-    # the macro-bytecode serializer over direct export, so pass an empty
-    # references dict rather than building a table nothing consumes.
+    # the macro-bytecode serializer over direct export -- `references` has no
+    # effect on emitted bytes either way, but pass the real dict (mirroring
+    # run_export, #379/PIPE-2026-07-19-3) rather than a hardcoded `{}` so the
+    # two entry points stay forward-compatible if `references` is ever wired
+    # up to affect output.
     exporter.export_tables_with_patterns(
         frames,
         pattern_result['patterns'],
-        {},
+        pattern_result['references'],
         str(music_asm),
         standalone=False,  # We'll create our own project structure
         mapper=mapper
@@ -1173,6 +1195,17 @@ def run_full_pipeline(args):
                 # Step 2: Map tracks to NES channels (legacy mode)
                 print("[2/7] Mapping tracks to NES channels...")
                 dpcm_index_path = 'dpcm_index.json'
+                # Same guard as run_map (#256/D-18): without it, a missing
+                # index makes assign_tracks_to_nes_channels raise a bare
+                # FileNotFoundError that the outer except below only relays
+                # as a generic "[ERROR] Pipeline failed: ..." line, aborting
+                # the whole 7-step build for what step 5.5's DPCM packing
+                # treats as optional (#381/SAFE-2026-07-19-1). Surface the
+                # same actionable message here instead.
+                if not Path(dpcm_index_path).exists():
+                    print(f"[ERROR] DPCM index not found: {dpcm_index_path} "
+                          f"(pass --dpcm-index <path>, or restore dpcm_index.json)")
+                    sys.exit(1)
                 mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
                 # midi_data's data is now fully captured in mapped; step 3
                 # below never reads midi_data again (#371/PERF-A-01).
@@ -1241,8 +1274,26 @@ def run_full_pipeline(args):
             if backup_path:
                 backup_path.unlink(missing_ok=True)
 
-        except Exception as e:
+        except MIDI2NESError as e:
+            # Every typed failure surface underneath (InvalidMIDIError,
+            # ConfigurationError, ToolchainError, CompilationError,
+            # ValidationError, ...) derives from this common base -- these
+            # are expected user-facing errors whose message is already
+            # actionable (#384/SAFE-2026-07-19-2). Narrowed from a single
+            # blanket `except Exception` so a caller/test can tell an
+            # expected error apart from a genuinely unexpected defect below,
+            # mirroring config_manager's precedent (#125/SAFE-08).
             print(f"\n[ERROR] Pipeline failed: {str(e)}")
+            if args.verbose:
+                import traceback
+                print("\nFull traceback:")
+                traceback.print_exc()
+            sys.exit(1)
+
+        except Exception as e:
+            # An unexpected defect (not one of our typed errors) -- flagged
+            # distinctly so it isn't mistaken for an expected user error.
+            print(f"\n[ERROR] Unexpected pipeline failure: {str(e)}")
             if args.verbose:
                 import traceback
                 print("\nFull traceback:")

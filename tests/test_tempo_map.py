@@ -47,6 +47,19 @@ class TestTempoMap(unittest.TestCase):
         # A valid resolution still constructs fine.
         self.assertEqual(TempoMap(ticks_per_beat=96).ticks_per_beat, 96)
 
+    def test_non_positive_initial_tempo_rejected(self):
+        # Regression (#383/TEMPO-18): EnhancedTempoMap already guards
+        # initial_tempo <= 0 (#317/TEMPO-14), but the base TempoMap silently
+        # accepted it -- initial_tempo is the numerator of every
+        # tick->time conversion, so 0 collapses every tick to time 0.0
+        # (frame 0) with no error, e.g. TempoMap(initial_tempo=0)
+        # .get_frame_for_tick(1000) used to return 0 instead of raising.
+        for bad in (0, -1, -500000):
+            with self.assertRaises(TempoValidationError):
+                TempoMap(initial_tempo=bad)
+        # A valid tempo still constructs fine.
+        self.assertEqual(TempoMap(initial_tempo=400000).tempo_changes[0], (0, 400000))
+
     def test_add_tempo_change(self):
         """Test adding tempo changes"""
         self.tempo_map.add_tempo_change(480, 400000)
@@ -720,6 +733,35 @@ class TestEnhancedTempoMap(unittest.TestCase):
         # Tick 0 is exactly on a boundary — accepted by the same tolerance.
         self.assertTrue(tempo_map.is_frame_aligned(0))
         tempo_map._validate_frame_boundaries(0, 500000)  # must not raise
+
+    def test_alignment_predicates_agree_just_below_a_boundary_multi_tempo(self):
+        """Regression (#382/TEMPO-17): the three alignment predicates used to
+        disagree for a tick sitting just BELOW a frame boundary under
+        multi-tempo input.
+
+        - `_validate_frame_boundaries` used an asymmetric `% FRAME_MS` test
+          (only measures distance *above* the lower boundary), so a time
+          just below the *next* boundary had remainder ~= FRAME_MS and was
+          wrongly judged misaligned.
+        - `_check_frame_alignment` had the same asymmetric test *and* derived
+          time from a single-segment `tick * (prev_tempo / ticks_per_beat)`
+          basis that ignores any earlier tempo change.
+
+        With a tempo change 500000 -> 300000 at tick 480, tick 506's true
+        cumulative time (516.250ms) sits 0.417ms below frame boundary 31
+        (516.667ms) -- inside tolerance, so all three must agree "aligned".
+        """
+        tempo_map = EnhancedTempoMap(
+            initial_tempo=500000,
+            ticks_per_beat=480,
+            validation_config=self.default_config,
+        )
+        tempo_map.add_tempo_change(480, 300000)
+        tick = 506
+
+        self.assertTrue(tempo_map.is_frame_aligned(tick))
+        tempo_map._validate_frame_boundaries(tick, 300000)  # must not raise
+        tempo_map._check_frame_alignment(TempoChange(tick, 300000))  # must not raise
 
     def test_validation_edge_cases(self):
         """Test validation edge cases and error conditions"""

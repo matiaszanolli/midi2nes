@@ -33,20 +33,25 @@ abort (and instead produces a broken or silently-wrong ROM). Grep:
 ```bash
 grep -rnE 'except\s*:|except Exception' --include='*.py' main.py tracker/ nes/ exporter/ compiler/ config/
 ```
-Hot spots to confirm: `run_full_pipeline` in `main.py` still wraps the entire 8-step
-pipeline in one broad `try`/`except Exception as e` (`main.py:1142`–`1237`) that prints
-the message and `sys.exit(1)`, without discriminating by exception type. Since #406,
+**#384/SAFE-2026-07-19-2 is CLOSED**: `run_full_pipeline` in `main.py` used to wrap the
+entire 8-step pipeline in one broad `try`/`except Exception as e`, unable to
+discriminate by exception type — a caller/test couldn't tell an expected typed error
+apart from a genuinely unexpected defect. It now narrows into two clauses: `except
+MIDI2NESError as e` (the typed base every failure surface underneath raises —
+`InvalidMIDIError`, `ConfigurationError`, `ToolchainError`, `CompilationError`,
+`ValidationError`, ...) prints `"[ERROR] Pipeline failed: ..."` unchanged, and a final
+`except Exception as e` for anything else prints the distinct `"[ERROR] Unexpected
+pipeline failure: ..."` (`main.py`, both clauses immediately after the `try` covering
+the 8-step body, `finally:` restore-backup logic unchanged below both). Since #406,
 three of the steps this wraps are extracted stage helpers (`detect_patterns_or_direct_export`,
 `export_frames_and_resolve_mapper`, `build_and_validate_rom`, all defined just above
 `run_full_pipeline`) that raise on failure rather than calling `sys.exit` themselves —
-this single `except` is still the only place that decides how to report it, now for
-more of the pipeline's logic than before, not less. This is less concerning than it
-looks: every failure surface underneath now raises a specific, informative typed
-exception (`InvalidMIDIError`, `ConfigurationError`, `ToolchainError`,
-`CompilationError`, `ValidationError`) whose message this catch-all simply relays, so
-the user-facing output is meaningful even though the `except` clause itself still can't
-distinguish failure classes programmatically — still worth a LOW–MEDIUM finding
-(defense-in-depth / testability), not a live "swallows a real bug" bug.
+these two clauses are still the only place that decides how to report it. Verify-the-fix:
+confirm every raise site under `run_full_pipeline` that is meant to be "expected" (not a
+defect) actually derives from `MIDI2NESError` — a new failure surface that raises a bare
+`ValueError`/`RuntimeError` instead would silently fall into the "Unexpected pipeline
+failure" branch even though it's a normal user-facing error, which is a regression of
+this fix's intent, not a crash.
 **#380/TD-28 is CLOSED**: the DPCM-pack block that used to be copy-pasted separately
 into `run_export` and `run_full_pipeline` (and had already diverged — `run_export`
 never passed `verbose=`) is now a single shared `pack_dpcm_into_asm(frames, asm_path,
@@ -241,10 +246,23 @@ hand-written block), with the warning echoed again in the final summary. Check t
 backup-restore on compile/validate failure: now
 centralized in the single `finally` block described in Dimension 6
 (`main.py:743`–`747`) rather than duplicated at multiple call sites — confirm it still
-restores the prior good ROM and never leaves the broken one in place (it does). Flag
-any writer that opens the final output path directly and can raise before completing
-it (e.g. `exporter/exporter_ca65.py`'s `with open(output_path, 'w')` sites) as a
-lower-priority hardening item if not already covered above.
+restores the prior good ROM and never leaves the broken one in place (it does).
+**#385/SAFE-2026-07-19-3 is CLOSED**: `exporter/exporter_ca65.py`'s two final-output
+writers (`export_direct_frames`, `export_tables_with_patterns`) used to open the
+final output path directly (`with open(output_path, 'w') as f: f.write(...)`), so a
+failed write (disk full, killed process) could leave a truncated `.asm` at the user's
+output path, or overwrite a prior good file with a partial one on a re-export. Both
+now go through a shared `atomic_write_text(output_path, content)` helper
+(`exporter/base_exporter.py`): it writes to a sibling temp file in the same directory
+and `os.replace()`s it into place, so a reader only ever sees the old complete file or
+the new complete file, never a partial one; on failure the temp file is removed and
+`output_path` is left untouched. The sibling `exporter/exporter_famistudio.py`
+writers (`FamiStudioExporter.export`, `export_famistudio`) were switched to the same
+helper for consistency, even though that format is not currently reachable from the
+CLI (`--format` only accepts `ca65`, main.py). Verify-the-fix: flag any *new* writer
+that opens a final output path directly with `open(...)`/`Path(...).write_text(...)`
+instead of `atomic_write_text` — that's a regression of this exact pattern, not a new
+bug.
 
 ## Cross-Dimension Dedup
 One root cause can surface across dimensions (the unguarded `json.loads` is both a

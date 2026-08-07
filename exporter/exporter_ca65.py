@@ -1,4 +1,4 @@
-from exporter.base_exporter import BaseExporter
+from exporter.base_exporter import BaseExporter, atomic_write_text
 from nes.pitch_table import NES_NOTE_TABLE, NES_TRIANGLE_TABLE
 from core.exceptions import ExportError
 
@@ -992,9 +992,11 @@ class CA65Exporter(BaseExporter):
             lines.append('    .word reset')
             lines.append('    .word irq')
 
-        # Write assembly file
-        with open(output_path, 'w') as f:
-            f.write('\n'.join(lines))
+        # Write assembly file atomically (#385/SAFE-2026-07-19-3): a failed
+        # write (disk full, killed process) must never leave a truncated
+        # .asm at output_path or overwrite a prior good one with a partial
+        # write.
+        atomic_write_text(output_path, '\n'.join(lines))
 
         # Calculate total data size (4 tables per channel: note, control, timer_lo, timer_hi)
         total_bytes = (max_frame + 1) * 4 * len(all_channels)
@@ -1427,8 +1429,8 @@ class CA65Exporter(BaseExporter):
                 ''
             ])
             
-        with open(output_path, 'w') as f:
-            f.write('\n'.join(lines))
+        # Atomic write (#385/SAFE-2026-07-19-3) -- see export_direct_frames above.
+        atomic_write_text(output_path, '\n'.join(lines))
 
         # Expose the clamp tally for callers/tests; report it so an out-of-range
         # song does not get silently re-pitched (#298/EXP-10).
