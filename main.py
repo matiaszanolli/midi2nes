@@ -868,6 +868,248 @@ def load_config(config_path: Optional[str] = None) -> DrumMapperConfig:
         return DrumMapperConfig.from_file(config_path)
     return DrumMapperConfig()
 
+
+# =============================================================================
+# run_full_pipeline stage helpers (#406/TD-11-FOLLOWUP)
+# =============================================================================
+#
+# These three functions extract run_full_pipeline's three most self-contained
+# stages -- the ones with real inline logic worth testing in isolation, not
+# just a call-through to an already-separate subsystem class. Steps 1-3
+# (parse + map/arrange + frame generation) deliberately stay inline in
+# run_full_pipeline itself: the `del midi_data` / `del mapped` calls that trim
+# peak memory between them (#371/PERF-A-01, pinned by
+# TestRunFullPipelineMemoryOverhead's source-inspection tests) only free
+# anything if they execute in the same frame that holds the last reference --
+# moving that code into a callee would silently break the memory contract
+# without changing behavior in an obviously-visible way, so it isn't worth
+# the risk for stages that are already short, mostly straight-line branching.
+#
+# Each helper below raises on failure instead of calling sys.exit itself.
+# run_full_pipeline's single existing try/except/finally is the one and only
+# place that decides how to report an error and whether to restore a backup
+# (#26) -- these helpers don't need to know that policy exists.
+
+def detect_patterns_or_direct_export(frames, use_patterns, args):
+    """Step 4: run pattern detection for compression, or build the
+    unpatterned direct-export stats stub.
+
+    Returns (pattern_result, pattern_loss_warning, coverage_lossy_note).
+    pattern_loss_warning is set when the sequential fallback had to sample
+    events down for compression analysis only (#176/PL-03) --  every
+    emitted ROM byte still derives from the full `frames` dict regardless.
+    coverage_lossy_note is a short banner suffix for the same reason
+    (#312/PAT-11).
+    """
+    pattern_loss_warning = None
+    coverage_lossy_note = ""
+
+    if not use_patterns:
+        print("[4/7] Skipping pattern detection (direct export mode)...")
+        print(f"  📊 Processing direct frame export for complete data preservation")
+        # Dummy pattern result for direct export. The stats must use the SAME
+        # schema the detectors emit (original_size/compressed_size/
+        # compression_ratio/unique_patterns/total_events/patterned_events/
+        # coverage_ratio) so any consumer sees one shape regardless of path
+        # (#104). Direct export applies no pattern compression, so ratio is
+        # 0% reduction (#17) and coverage is 0% -- nothing is patterned
+        # (#169/PAT-03).
+        direct_size = sum(len(ch) for ch in frames.values())
+        pattern_result = {
+            'patterns': {},
+            'references': {},
+            'stats': {
+                'original_size': direct_size,
+                'compressed_size': direct_size,
+                'compression_ratio': 0,
+                'unique_patterns': 0,
+                'total_events': direct_size,
+                'patterned_events': 0,
+                'coverage_ratio': 0
+            },
+            # Match the 4-key top-level envelope both detectors emit so a
+            # consumer doing pattern_result['variations'] can't KeyError only
+            # on the --no-patterns path (#258/PAT-09).
+            'variations': {}
+        }
+        return pattern_result, pattern_loss_warning, coverage_lossy_note
+
+    print("[4/7] Detecting patterns for compression...")
+    # Analysis-only tempo map (#98/TEMPO-06): the detector requires a
+    # tempo_map constructor arg, but the events below are already
+    # frame-indexed (tempo was applied upstream), so this map carries no real
+    # tempo changes and the default ticks_per_beat is irrelevant. Mirrors the
+    # documented construction in run_detect_patterns (#119).
+    tempo_map = EnhancedTempoMap(initial_tempo=500000)
+
+    # Convert frames to events for pattern detection (shared extractor skips
+    # the dpcm_sample_map side table -- #261).
+    events = frames_to_events(frames)
+
+    # Sampling caps + advisory large-file threshold, optionally overridden in
+    # lockstep by --config (#219, #334/PERF-14).
+    max_events, max_pattern_events, large_file_threshold = get_pattern_detection_caps(
+        getattr(args, 'config', None))
+
+    # Heads-up only -- does not alter detection (that's what
+    # max_pattern_events actually caps).
+    if len(events) > large_file_threshold:
+        print(f"  ⚠️  Large MIDI file ({len(events):,} events) detected")
+        print(f"  🚀 Proceeding with improved pattern detection...")
+
+    # Use parallel pattern detection with position mapping fix
+    try:
+        from tracker.pattern_detector_parallel import ParallelPatternDetector
+        detector = ParallelPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH, max_pattern_events=max_pattern_events)
+        print(f"  Using parallel pattern detection with {len(events):,} events")
+        pattern_result = detector.detect_patterns(events)
+    except Exception as e:
+        print(f"  Parallel detection failed, using fallback: {e}")
+        from tracker.pattern_detector import EnhancedPatternDetector
+        # tempo_map here has no real tempo-change data for the same reason as
+        # run_detect_patterns's fallback (#119).
+        detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH, max_events=max_events, analyze_tempo=False)
+        # Sequential fallback can only handle the detector's internal cap, so
+        # sample uniformly straight to max_events. This keeps song structure
+        # (not a head cut) AND makes the warning below report the count
+        # actually retained, not a larger sample the detector would silently
+        # re-cut (#100).
+        fallback_count = len(events)
+        events, was_sampled = sample_events_for_detection(events, max_events)
+        if was_sampled:
+            pattern_loss_warning = (
+                f"pattern detection fell back to the sequential detector and "
+                f"sampled {fallback_count:,} events down to {len(events):,} for "
+                f"compression analysis only — compression stats are approximate; "
+                f"ROM content is unaffected (#176/PL-03)."
+            )
+            print(f"  ⚠️  NOTE: {pattern_loss_warning}")
+        pattern_result = detector.detect_patterns(events)
+
+    if detector.was_sampled:
+        # Uniform sampling can put retained samples out of phase with the
+        # song's period, collapsing coverage_ratio well below what the full
+        # song would report (#312/PAT-11) -- label it so the number isn't
+        # read as a property of the full song.
+        coverage_lossy_note = (
+            " (lossy — measured over the sampled subset, "
+            "detection quality reduced)"
+        )
+
+    return pattern_result, pattern_loss_warning, coverage_lossy_note
+
+
+def export_frames_and_resolve_mapper(frames, pattern_result, music_asm, use_patterns, args):
+    """Steps 5-5.5: export frames to CA65 assembly, pack DPCM samples, and
+    resolve the target --mapper.
+
+    Mapper resolution timing genuinely differs by path: a direct-export
+    (bank-switching-aware) build must know its mapper *before* exporting so
+    frame tables can be bin-packed and bank-switches emitted
+    (#255/MAP-2026-07-05-1); the patterned/macro-bytecode path is always
+    forced to MMC3 regardless of choice, so it's cheaper (and matches the
+    prior behavior) to resolve it *after* export, from the written
+    music.asm's size. Both orderings converge here so run_full_pipeline's
+    orchestration doesn't need to know the difference.
+
+    Raises ValueError on an invalid or oversized mapper choice.
+
+    Returns (mapper, pack_result).
+    """
+    print("[5/7] Exporting to CA65 assembly...")
+    exporter = CA65Exporter()
+
+    mapper = None
+    if not use_patterns:
+        from mappers.factory import MapperFactory
+        mapper_choice = get_mapper_choice(args)
+        if mapper_choice == 'auto':
+            estimated_size = exporter.estimate_direct_export_size(frames)
+            mapper = MapperFactory.auto_select(estimated_size, direct=True)
+        else:
+            mapper = MapperFactory.get_mapper(mapper_choice)
+        # Direct-export DPCM is MMC3-only: force MMC3 for 'auto', reject an
+        # explicit non-MMC3 mapper (#281/#282).
+        mapper = enforce_direct_export_dpcm_mapper(mapper, mapper_choice, frames)
+
+    # The CA65 exporter emits every byte from `frames`; the detector's
+    # pattern `references` are analysis/metrics only and are never read by
+    # export_tables_with_patterns (#4). `patterns` truthiness merely selects
+    # the macro-bytecode serializer over direct export, so pass an empty
+    # references dict rather than building a table nothing consumes.
+    exporter.export_tables_with_patterns(
+        frames,
+        pattern_result['patterns'],
+        {},
+        str(music_asm),
+        standalone=False,  # We'll create our own project structure
+        mapper=mapper
+    )
+
+    # Pack DPCM samples (#380/TD-28: extracted helper shared with run_export,
+    # so a fix to one path can't silently miss the other).
+    print("[5.5/7] Packing DPCM samples...")
+    pack_result = pack_dpcm_into_asm(frames, music_asm, verbose=args.verbose)
+
+    if not pack_result.index_found:
+        print("  ℹ️ No dpcm_index.json found, skipping DPCM packing.")
+    elif pack_result.warning:
+        print(f"  ⚠️ Warning: {pack_result.warning}")
+        if args.verbose and pack_result.traceback_text:
+            print(pack_result.traceback_text)
+    elif pack_result.loaded_samples > 0:
+        print(f"  ✓ Packed {pack_result.loaded_samples} DPCM samples "
+              f"across {pack_result.bank_count} banks")
+    else:
+        print("  ℹ️ No DPCM samples referenced by this song.")
+
+    # --mapper (#217/MAP-6): 'auto' picks the smallest mapper that fits this
+    # song's data via MapperFactory.auto_select(), previously reachable only
+    # from tests/test_mappers.py. Defaults to mmc3, matching prior hardcoded
+    # behavior for callers who don't pass --mapper. Already resolved above
+    # for a direct-export build (#255/MAP-2026-07-05-1); only the
+    # bytecode/pattern path (always forced to MMC3) still resolves here,
+    # after export.
+    if mapper is None:
+        mapper = resolve_mapper(get_mapper_choice(args), str(music_asm))
+
+    return mapper, pack_result
+
+
+def build_and_validate_rom(mapper, music_asm, project_path, output_rom,
+                            debug_mode, skip_validation, args):
+    """Steps 6-8: PRG capacity pre-flight, NES project prep, ROM compile,
+    and (unless skipped) ROM validation.
+
+    Raises ValueError (capacity) or RuntimeError (prepare/compile/validate)
+    on failure -- run_full_pipeline's single try/except/finally is still the
+    only place that decides how to report it and whether to restore a
+    backup (#26).
+
+    Returns the music.asm data size in bytes (post capacity check).
+    """
+    # Capacity pre-flight (#11): catch an oversized song with a clear message
+    # before ld65 reports a raw region overflow.
+    data_size = check_mapper_capacity(str(music_asm), mapper)
+    print(f"  ✓ Music data {data_size:,} bytes fits the {mapper.name} PRG regions")
+
+    print("[6/7] Preparing NES project...")
+    builder = NESProjectBuilder(str(project_path), debug_mode=debug_mode, mapper=mapper)
+    if not builder.prepare_project(str(music_asm)):
+        raise RuntimeError("Failed to prepare NES project")
+
+    print("[7/7] Compiling NES ROM...")
+    if not compile_rom(project_path, output_rom, verbose=args.verbose, mapper=mapper):
+        raise RuntimeError("ROM compilation failed")
+
+    if not skip_validation:
+        print("[8/8] Validating ROM...")
+        if not validate_rom(output_rom):
+            raise RuntimeError("ROM validation failed")
+
+    return data_size
+
+
 def run_full_pipeline(args):
     """Run the complete MIDI to NES ROM pipeline"""
     input_midi = Path(args.input)
@@ -938,226 +1180,28 @@ def run_full_pipeline(args):
                 # frames (its output) simultaneously (#371/PERF-A-01).
                 del mapped
             
-            # Step 4: Pattern detection or direct export
-            # Tracks any lossy event sampling so the success banner can note that
-            # compression stats are approximate (#176/PL-03). Sampling only feeds
-            # pattern detection/compression metrics -- every emitted ROM byte
-            # still derives from the full `frames` dict, so the ROM itself is
-            # never incomplete because of this.
-            pattern_loss_warning = None
-            coverage_lossy_note = ""
-            if use_patterns:
-                print("[4/7] Detecting patterns for compression...")
-                # Analysis-only tempo map (#98/TEMPO-06): the detector requires a
-                # tempo_map constructor arg, but the events below are already
-                # frame-indexed (tempo was applied upstream), so this map carries
-                # no real tempo changes and the default ticks_per_beat is
-                # irrelevant. ParallelPatternDetector never reads it, and the
-                # sequential fallback below sets analyze_tempo=False, so it never
-                # feeds frame timing -- do not derive timing from it. Mirrors the
-                # documented construction in run_detect_patterns (#119).
-                tempo_map = EnhancedTempoMap(initial_tempo=500000)
-
-                # Convert frames to events for pattern detection (shared
-                # extractor skips the dpcm_sample_map side table — #261).
-                events = frames_to_events(frames)
-
-                # Sampling caps + advisory large-file threshold, optionally
-                # overridden in lockstep by --config (#219, #334/PERF-14).
-                max_events, max_pattern_events, large_file_threshold = get_pattern_detection_caps(
-                    getattr(args, 'config', None))
-
-                # Heads-up only -- does not alter detection (that's what
-                # max_pattern_events actually caps).
-                if len(events) > large_file_threshold:
-                    print(f"  ⚠️  Large MIDI file ({len(events):,} events) detected")
-                    print(f"  🚀 Proceeding with improved pattern detection...")
-
-                # Use parallel pattern detection with position mapping fix
-                try:
-                    from tracker.pattern_detector_parallel import ParallelPatternDetector
-                    detector = ParallelPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH, max_pattern_events=max_pattern_events)
-                    print(f"  Using parallel pattern detection with {len(events):,} events")
-                    pattern_result = detector.detect_patterns(events)
-                except Exception as e:
-                    print(f"  Parallel detection failed, using fallback: {e}")
-                    from tracker.pattern_detector import EnhancedPatternDetector
-                    # tempo_map here has no real tempo-change data for the
-                    # same reason as run_detect_patterns's fallback (#119).
-                    detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH, max_events=max_events, analyze_tempo=False)
-                    # Sequential fallback can only handle the detector's internal
-                    # cap, so sample uniformly straight to max_events. This
-                    # keeps song structure (not a head cut) AND makes the warning
-                    # below report the count actually retained, not a larger sample
-                    # the detector would silently re-cut (#100).
-                    fallback_count = len(events)
-                    events, was_sampled = sample_events_for_detection(events, max_events)
-                    if was_sampled:
-                        pattern_loss_warning = (
-                            f"pattern detection fell back to the sequential detector and "
-                            f"sampled {fallback_count:,} events down to {len(events):,} for "
-                            f"compression analysis only — compression stats are approximate; "
-                            f"ROM content is unaffected (#176/PL-03)."
-                        )
-                        print(f"  ⚠️  NOTE: {pattern_loss_warning}")
-                    pattern_result = detector.detect_patterns(events)
-
-                if detector.was_sampled:
-                    # Uniform sampling can put retained samples out of phase
-                    # with the song's period, collapsing coverage_ratio well
-                    # below what the full song would report (#312/PAT-11) --
-                    # label it so the number isn't read as a property of the
-                    # full song.
-                    coverage_lossy_note = (
-                        " (lossy — measured over the sampled subset, "
-                        "detection quality reduced)"
-                    )
-
-                # Detection is done and its result is captured in pattern_result;
-                # the intermediate events list is dead. `frames` must stay alive
-                # (the exporter derives every ROM byte from it), so free only
-                # events here to trim the pattern-stage peak (#115/PERF-04).
-                del events
-            else:
-                print("[4/7] Skipping pattern detection (direct export mode)...")
-                print(f"  📊 Processing direct frame export for complete data preservation")
-                # Create dummy pattern result for direct export. The stats must
-                # use the SAME schema the detectors emit (original_size /
-                # compressed_size / compression_ratio / unique_patterns /
-                # total_events / patterned_events / coverage_ratio) so any
-                # consumer sees one shape regardless of path (#104). Direct export
-                # applies no pattern compression, so ratio is 0% reduction (#17)
-                # and coverage is 0% -- nothing is patterned (#169/PAT-03).
-                direct_size = sum(len(ch) for ch in frames.values())
-                pattern_result = {
-                    'patterns': {},
-                    'references': {},
-                    'stats': {
-                        'original_size': direct_size,
-                        'compressed_size': direct_size,
-                        'compression_ratio': 0,
-                        'unique_patterns': 0,
-                        'total_events': direct_size,
-                        'patterned_events': 0,
-                        'coverage_ratio': 0
-                    },
-                    # Match the 4-key top-level envelope both detectors emit so a
-                    # consumer doing pattern_result['variations'] can't KeyError
-                    # only on the --no-patterns path (#258/PAT-09).
-                    'variations': {}
-                }
-                events = []  # Not needed for direct export
-            
-            # Step 5: Export to CA65 assembly
-            print("[5/7] Exporting to CA65 assembly...")
-            music_asm = temp_path / "music.asm"
-            exporter = CA65Exporter()
-
-            # Resolve --mapper BEFORE exporting for a direct (no-patterns)
-            # build: a bank-switching-aware export (MMC1, #255/MAP-2026-07-05-1)
-            # must know the target mapper up front to bin-pack frame tables and
-            # emit bank-switches, unlike the bytecode/pattern path below (always
-            # forced to MMC3, which does its own bank-switching internally, so
-            # resolving it later at Step 6 -- as before -- is fine there).
-            mapper = None
-            if not use_patterns:
-                from mappers.factory import MapperFactory
-                mapper_choice = get_mapper_choice(args)
-                try:
-                    if mapper_choice == 'auto':
-                        estimated_size = exporter.estimate_direct_export_size(frames)
-                        mapper = MapperFactory.auto_select(estimated_size, direct=True)
-                    else:
-                        mapper = MapperFactory.get_mapper(mapper_choice)
-                    # Direct-export DPCM is MMC3-only: force MMC3 for 'auto',
-                    # reject an explicit non-MMC3 mapper (#281/#282).
-                    mapper = enforce_direct_export_dpcm_mapper(mapper, mapper_choice, frames)
-                except ValueError as e:
-                    print(f"[ERROR] {e}")
-                    sys.exit(1)
-
-            # The CA65 exporter emits every byte from `frames`; the detector's
-            # pattern `references` are analysis/metrics only and are never read by
-            # export_tables_with_patterns (#4). `patterns` truthiness merely
-            # selects the macro-bytecode serializer over direct export, so pass an
-            # empty references dict rather than building a table nothing consumes.
-            exporter.export_tables_with_patterns(
-                frames,
-                pattern_result['patterns'],
-                {},
-                str(music_asm),
-                standalone=False,  # We'll create our own project structure
-                mapper=mapper
+            # Steps 4-8 are extracted into stage helpers (#406/TD-11-FOLLOWUP)
+            # defined just above this function -- see their docstrings for
+            # what each one owns. `frames` is the only large object still
+            # alive by this point (mapped/midi_data are already gone above),
+            # so there is no further #371-style del-ordering to preserve
+            # here; each helper raises on failure straight into this
+            # function's single try/except/finally.
+            pattern_result, pattern_loss_warning, coverage_lossy_note = (
+                detect_patterns_or_direct_export(frames, use_patterns, args)
             )
-            
-            # Step 5.5: Pack DPCM samples (#380/TD-28: extracted helper
-            # shared with run_export, so a fix to one path can't silently
-            # miss the other).
-            print("[5.5/7] Packing DPCM samples...")
-            pack_result = pack_dpcm_into_asm(frames, music_asm, verbose=args.verbose)
+
+            music_asm = temp_path / "music.asm"
+            mapper, pack_result = export_frames_and_resolve_mapper(
+                frames, pattern_result, music_asm, use_patterns, args)
             dpcm_pack_warning = pack_result.warning
 
-            if not pack_result.index_found:
-                print("  ℹ️ No dpcm_index.json found, skipping DPCM packing.")
-            elif pack_result.warning:
-                print(f"  ⚠️ Warning: {pack_result.warning}")
-                if args.verbose and pack_result.traceback_text:
-                    print(pack_result.traceback_text)
-            elif pack_result.loaded_samples > 0:
-                print(f"  ✓ Packed {pack_result.loaded_samples} DPCM samples "
-                      f"across {pack_result.bank_count} banks")
-            else:
-                print("  ℹ️ No DPCM samples referenced by this song.")
-
-            # Step 6: Prepare NES project
-            print("[6/7] Preparing NES project...")
             project_path = temp_path / "nes_project"
-
-            # Enable debug mode if requested
             debug_mode = hasattr(args, 'debug') and args.debug
-
-            # --mapper (#217/MAP-6): 'auto' picks the smallest mapper that fits
-            # this song's data via MapperFactory.auto_select(), previously
-            # reachable only from tests/test_mappers.py. Defaults to mmc3,
-            # matching prior hardcoded behavior for callers who don't pass
-            # --mapper. Already resolved above for a direct-export build
-            # (#255/MAP-2026-07-05-1); only the bytecode/pattern path (always
-            # forced to MMC3) still resolves here, after export.
-            if mapper is None:
-                try:
-                    mapper = resolve_mapper(get_mapper_choice(args), str(music_asm))
-                except ValueError as e:
-                    print(f"[ERROR] {e}")
-                    sys.exit(1)
-
-            # Capacity pre-flight (#11): catch an oversized song with a clear
-            # message before ld65 reports a raw region overflow.
-            try:
-                data_size = check_mapper_capacity(str(music_asm), mapper)
-                print(f"  ✓ Music data {data_size:,} bytes fits the {mapper.name} PRG regions")
-            except ValueError as e:
-                print(f"[ERROR] {e}")
-                sys.exit(1)
-
-            builder = NESProjectBuilder(str(project_path), debug_mode=debug_mode, mapper=mapper)
-
-            if not builder.prepare_project(str(music_asm)):
-                print("[ERROR] Failed to prepare NES project")
-                sys.exit(1)
-            
-            # Step 7: Compile ROM
-            print("[7/7] Compiling NES ROM...")
-            if not compile_rom(project_path, output_rom, verbose=args.verbose, mapper=mapper):
-                print("[ERROR] ROM compilation failed")
-                sys.exit(1)  # finally handles restore
-
-            # Step 8: Validate ROM — shared with the `compile` subcommand (#15)
-            # so step-by-step ROMs get the same boot-fatal gate (#6).
             skip_validation = hasattr(args, 'skip_validation') and args.skip_validation
-            if not skip_validation:
-                print("[8/8] Validating ROM...")
-                if not validate_rom(output_rom):
-                    sys.exit(1)  # finally handles restore
+            build_and_validate_rom(
+                mapper, music_asm, project_path, output_rom,
+                debug_mode, skip_validation, args)
 
             # Success!
             rom_size = output_rom.stat().st_size

@@ -813,10 +813,14 @@ class TestPatternParameterConsistency(unittest.TestCase):
         import main
 
         src_detect = inspect.getsource(main.run_detect_patterns)
-        src_pipeline = inspect.getsource(main.run_full_pipeline)
+        # run_full_pipeline's pattern-detection step was extracted into its
+        # own testable function (#406/TD-11-FOLLOWUP); the shared-constant
+        # usage this test pins now lives there, not in run_full_pipeline
+        # itself.
+        src_pipeline = inspect.getsource(main.detect_patterns_or_direct_export)
 
         for src, name in ((src_detect, 'run_detect_patterns'),
-                          (src_pipeline, 'run_full_pipeline')):
+                          (src_pipeline, 'detect_patterns_or_direct_export')):
             self.assertIn('PATTERN_MIN_LENGTH', src,
                           f"{name} must use the shared min-length constant")
             self.assertIn('PATTERN_MAX_LENGTH', src,
@@ -1143,11 +1147,12 @@ class TestStatsSchemaConsistency(unittest.TestCase):
         self.assertEqual(set(par_stats), self.CANONICAL_KEYS)
 
     def test_no_patterns_stub_uses_canonical_stats_keys(self):
-        # The stub lives inline in run_full_pipeline; assert it emits the four
-        # canonical keys and none of the old bespoke ones (#104).
+        # The stub was extracted into detect_patterns_or_direct_export
+        # (#406/TD-11-FOLLOWUP); assert it emits the four canonical keys and
+        # none of the old bespoke ones (#104).
         import inspect
         import main
-        src = inspect.getsource(main.run_full_pipeline)
+        src = inspect.getsource(main.detect_patterns_or_direct_export)
         for key in self.CANONICAL_KEYS:
             self.assertIn(f"'{key}'", src, f"stub missing canonical stats key {key}")
         self.assertNotIn("'original_events'", src)
@@ -1170,11 +1175,12 @@ class TestStatsSchemaConsistency(unittest.TestCase):
     def test_no_patterns_stub_emits_variations_key(self):
         # The stub previously returned only {patterns, references, stats}; a
         # consumer doing pattern_result['variations'] would KeyError only on the
-        # --no-patterns path (#258/PAT-09). Pin that the inline stub now carries
-        # the top-level 'variations' key like both detectors.
+        # --no-patterns path (#258/PAT-09). Pin that the stub (now extracted
+        # into detect_patterns_or_direct_export, #406/TD-11-FOLLOWUP) still
+        # carries the top-level 'variations' key like both detectors.
         import inspect
         import main
-        src = inspect.getsource(main.run_full_pipeline)
+        src = inspect.getsource(main.detect_patterns_or_direct_export)
         self.assertIn("'variations'", src,
                       "--no-patterns stub must emit the top-level 'variations' key")
 
