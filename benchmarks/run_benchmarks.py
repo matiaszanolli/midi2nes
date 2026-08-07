@@ -2,6 +2,7 @@
 """CLI runner for MIDI2NES performance benchmarks."""
 
 import sys
+import json
 import argparse
 from pathlib import Path
 from typing import List
@@ -9,18 +10,32 @@ from typing import List
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from benchmarks.performance_suite import PerformanceBenchmark
+from benchmarks.performance_suite import (
+    PerformanceBenchmark,
+    compare_to_baseline,
+    load_baseline,
+    DEFAULT_BASELINE_REGRESSION_MARGIN,
+)
 from utils.profiling import log_memory_usage
+
+# Deterministic fixture set (#373/PERF-A-03): the old test_dirs glob over
+# test_data/examples/samples/. benchmarked whatever happened to be present
+# on the machine running it, so results were not comparable across
+# runs/machines -- undermining any baseline gate (#372/PERF-A-02) built on
+# top of it. These few small, committed .mid files are the sole default
+# source now, independent of the working tree.
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+BASELINE_PATH = Path(__file__).parent / "baseline.json"
 
 
 def find_test_files(directory: str, pattern: str = "*.mid") -> List[str]:
     """
     Find MIDI test files in a directory.
-    
+
     Args:
         directory: Directory to search
         pattern: File pattern to match
-        
+
     Returns:
         List of matching file paths
     """
@@ -28,91 +43,85 @@ def find_test_files(directory: str, pattern: str = "*.mid") -> List[str]:
     if not search_dir.exists():
         print(f"Warning: Directory {directory} does not exist")
         return []
-    
+
     # Sorted so results are deterministic across runs/platforms (#117) —
     # Path.glob's traversal order is filesystem-dependent otherwise.
     files = sorted(search_dir.glob(pattern))
     return [str(f) for f in files if f.is_file()]
 
 
-def create_synthetic_midi(output_path: str) -> bool:
-    """
-    Create a simple synthetic MIDI file for testing.
-    
-    Args:
-        output_path: Path to save the synthetic MIDI file
-        
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        # This would require a MIDI library like mido
-        # For now, just create a placeholder
-        print(f"Note: Synthetic MIDI generation not implemented yet")
-        print(f"      Add real MIDI files to test with instead")
-        return False
-    except Exception as e:
-        print(f"Failed to create synthetic MIDI: {e}")
-        return False
+def run_baseline_benchmark(
+    check_baseline: bool = True,
+    update_baseline: bool = False,
+    margin: float = DEFAULT_BASELINE_REGRESSION_MARGIN,
+) -> bool:
+    """Run the baseline benchmark against the deterministic fixture set.
 
-
-def run_baseline_benchmark():
-    """Run a baseline benchmark to establish system performance characteristics."""
+    Returns True if the run completed with no detected regression (or
+    `check_baseline` is False / `update_baseline` is True), False if a
+    stage regressed past `margin` versus the checked-in baseline — the
+    caller should exit non-zero on False so a regression actually fails a
+    CI/local run instead of only printing a warning (#372/PERF-A-02).
+    """
     print("=== MIDI2NES Baseline Performance Benchmark ===")
-    
+
     # Check system resources
     log_memory_usage("System baseline")
-    
+
     # Create benchmark instance
     benchmark = PerformanceBenchmark(output_dir="benchmark_results")
-    
-    # Look for test files
-    test_dirs = ["test_data", "examples", "samples", "."]
-    test_files = []
-    
-    for test_dir in test_dirs:
-        found_files = find_test_files(test_dir, "*.mid")
-        test_files.extend(found_files)
-        if found_files:
-            print(f"Found {len(found_files)} MIDI files in {test_dir}/")
-    
+
+    test_files = find_test_files(str(FIXTURES_DIR), "*.mid")
     if not test_files:
-        print("\nNo MIDI test files found. Trying common locations:")
-        for test_dir in test_dirs:
-            print(f"  - {test_dir}/*.mid")
-        
-        # Try to create a synthetic file for basic testing
-        print("\nAttempting to create synthetic test file...")
-        if create_synthetic_midi("test_synthetic.mid"):
-            test_files = ["test_synthetic.mid"]
-        else:
-            print("Cannot run benchmarks without test files.")
-            print("\nTo run benchmarks:")
-            print("1. Add MIDI files to test_data/ directory")
-            print("2. Or specify files with --files option")
-            return
-    
-    # Limit number of test files for initial run
-    if len(test_files) > 5:
-        print(f"Limiting benchmark to first 5 files (found {len(test_files)} total)")
-        test_files = test_files[:5]
-    
-    print(f"\nRunning benchmarks on {len(test_files)} files:")
+        print(f"\nNo fixture MIDI files found in {FIXTURES_DIR}/ — "
+              "benchmarks/fixtures/ should ship with the repo (#373/PERF-A-03).")
+        print("To run against a different set instead, use --files or --directory.")
+        return False
+
+    print(f"\nRunning benchmarks on {len(test_files)} fixture files:")
     for i, file in enumerate(test_files, 1):
         print(f"  {i}. {file}")
-    
+
     print("\nStarting benchmark run...")
     log_memory_usage("Pre-benchmark")
-    
+
     # Run benchmarks
     results = benchmark.run_batch_benchmarks(test_files)
-    
+
     log_memory_usage("Post-benchmark")
-    
+
     # Generate report
     report_path = "benchmark_results/performance_report.json"
     report = benchmark.generate_report(report_path)
-    
+
+    regression_free = True
+
+    # Baseline comparison (#372/PERF-A-02): the report alone greenlit a
+    # silent 2x slowdown -- compare this run's per-stage median against the
+    # checked-in baseline and fail loudly if a stage regressed. `report` is
+    # None only when every file in the batch failed (generate_report's own
+    # early-return guard) -- nothing to compare in that case either.
+    if report is None:
+        print("\nNo benchmark results to compare against the baseline.")
+        regression_free = False
+    elif update_baseline:
+        BASELINE_PATH.write_text(json.dumps(report['summary_statistics'], indent=2) + "\n")
+        print(f"\nBaseline updated: {BASELINE_PATH}")
+    elif check_baseline:
+        baseline = load_baseline(BASELINE_PATH)
+        if not baseline:
+            print(f"\nNo baseline found at {BASELINE_PATH} yet — "
+                  "run with --update-baseline to create one.")
+        else:
+            regressions = compare_to_baseline(report['summary_statistics'], baseline, margin)
+            if regressions:
+                regression_free = False
+                print("\n⚠ PERFORMANCE REGRESSIONS DETECTED (vs baseline):")
+                for r in regressions:
+                    print(f"  - {r}")
+            else:
+                print("\n✅ No performance regressions vs baseline.")
+
     # Print additional analysis
     if results:
         print(f"\n=== DETAILED ANALYSIS ===")
@@ -163,9 +172,11 @@ def run_baseline_benchmark():
         
         print(f"\nBenchmark completed successfully!")
         print(f"Results saved to: {report_path}")
-    
+
     else:
         print("No successful benchmark results to analyze.")
+
+    return regression_free
 
 
 def run_custom_benchmark(files: List[str], output_dir: str = "benchmark_results"):
@@ -256,26 +267,53 @@ Examples:
         action="store_true",
         help="Enable verbose output"
     )
-    
+
+    parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="Write this run's per-stage medians as the new checked-in baseline "
+             "(benchmarks/baseline.json) instead of comparing against it (#372/PERF-A-02)"
+    )
+
+    parser.add_argument(
+        "--no-baseline-check",
+        action="store_true",
+        help="Skip the baseline regression comparison (report-only, like the old behavior)"
+    )
+
+    parser.add_argument(
+        "--baseline-margin",
+        type=float,
+        default=DEFAULT_BASELINE_REGRESSION_MARGIN,
+        help=f"Fail if a stage's median exceeds baseline * margin "
+             f"(default: {DEFAULT_BASELINE_REGRESSION_MARGIN})"
+    )
+
     args = parser.parse_args()
-    
+
     # Determine which files to benchmark
     files_to_benchmark = []
-    
+
     if args.files:
         files_to_benchmark = args.files
     elif args.directory:
         files_to_benchmark = find_test_files(args.directory, args.pattern)
     else:
-        # Run baseline benchmark
-        run_baseline_benchmark()
-        return
-    
+        # Run baseline benchmark against the deterministic fixture set,
+        # exiting non-zero on a detected regression so this actually fails a
+        # CI/local run (#372/PERF-A-02) rather than only printing a warning.
+        ok = run_baseline_benchmark(
+            check_baseline=not args.no_baseline_check,
+            update_baseline=args.update_baseline,
+            margin=args.baseline_margin,
+        )
+        sys.exit(0 if ok else 1)
+
     # Apply limit if specified
     if args.limit and len(files_to_benchmark) > args.limit:
         print(f"Limiting benchmark to {args.limit} files (found {len(files_to_benchmark)})")
         files_to_benchmark = files_to_benchmark[:args.limit]
-    
+
     # Run custom benchmark
     if files_to_benchmark:
         run_custom_benchmark(files_to_benchmark, args.output)

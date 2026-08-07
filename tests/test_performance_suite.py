@@ -91,7 +91,7 @@ class TestPerformanceProfiler:
         assert profiler.process is not None
         assert profiler._start_time is None
         assert profiler._start_memory is None
-        assert profiler._start_cpu is None
+        assert profiler._start_cpu_times is None  # renamed from _start_cpu (#374/PERF-A-04)
         assert profiler._peak_memory == 0
     
     @patch('utils.profiling.tracemalloc')
@@ -137,6 +137,49 @@ class TestPerformanceProfiler:
 
         mock_tracemalloc.start.assert_called_once()
         mock_tracemalloc.stop.assert_called_once()
+
+    @patch('utils.profiling.tracemalloc')
+    @patch('benchmarks.performance_suite.time.perf_counter')
+    def test_cpu_percent_computed_from_cpu_times_delta(self, mock_time, mock_tracemalloc):
+        """Regression (#374/PERF-A-04): cpu_percent must come from cpu_times()
+        deltas / wall time, not the interval-less cpu_percent() reading that
+        used to measure CPU since an unrelated previous call rather than
+        since this stage began."""
+        import utils.profiling as profiling_module
+        profiling_module._tracemalloc_depth = 0  # isolate from other tests (#118)
+        mock_tracemalloc.is_tracing.side_effect = [False, True]
+        mock_tracemalloc.get_traced_memory.return_value = (1024 * 1024, 2 * 1024 * 1024)
+
+        profiler = PerformanceProfiler()
+        mock_time.side_effect = [0.0, 2.0]  # 2s wall time
+        profiler.process.memory_info = Mock(return_value=Mock(rss=50 * 1024 * 1024))
+        # 1.0s of combined user+system CPU over the 2s wall time -> 50%.
+        profiler.process.cpu_times = Mock(side_effect=[
+            Mock(user=1.0, system=0.5),
+            Mock(user=1.6, system=0.9),
+        ])
+
+        with profiler.profile("test_stage") as handle:
+            pass
+
+        assert handle.result.cpu_percent == pytest.approx(50.0)
+
+    def test_cpu_percent_zero_when_elapsed_time_is_zero(self):
+        """Guards the elapsed_seconds > 0 branch: a zero-duration stage must
+        report 0.0 rather than raising ZeroDivisionError."""
+        profiler = PerformanceProfiler()
+        profiler._start_time = 5.0
+        profiler._start_memory = 10.0
+        profiler._start_cpu_times = Mock(user=1.0, system=0.5)
+        profiler.process.memory_info = Mock(return_value=Mock(rss=10 * 1024 * 1024))
+        profiler.process.cpu_times = Mock(return_value=Mock(user=1.0, system=0.5))
+
+        with patch('benchmarks.performance_suite.time.perf_counter', return_value=5.0):
+            with patch('benchmarks.performance_suite.tracemalloc.get_traced_memory',
+                        return_value=(0, 0)):
+                result = profiler._end_profiling("zero_duration", True)
+
+        assert result.cpu_percent == 0.0
 
 
 class TestPerformanceBenchmark:
@@ -465,6 +508,81 @@ class TestBenchmarkDrumFramesRegression:
         assert 'patterns' in result   # real detector output, stage completed
         assert profile_result.stage == 'pattern_detection'
         assert profile_result.success
+
+
+class TestBaselineRegressionGate:
+    """Regression tests for #372/PERF-A-02: the benchmark harness used to
+    only emit a JSON report with nothing to compare against -- a benchmark
+    with no comparison can't catch a 2x slowdown."""
+
+    def test_load_baseline_missing_file_returns_empty_dict(self, tmp_path):
+        from benchmarks.performance_suite import load_baseline
+        assert load_baseline(tmp_path / "missing.json") == {}
+
+    def test_load_baseline_reads_checked_in_json(self, tmp_path):
+        from benchmarks.performance_suite import load_baseline
+        baseline_path = tmp_path / "baseline.json"
+        baseline_path.write_text(json.dumps({"parse": {"median_duration_ms": 5.0}}))
+        assert load_baseline(baseline_path) == {"parse": {"median_duration_ms": 5.0}}
+
+    def test_compare_to_baseline_no_regression_within_margin(self):
+        from benchmarks.performance_suite import compare_to_baseline
+        baseline = {"parse": {"median_duration_ms": 10.0}}
+        current = {"parse": {"median_duration_ms": 14.0}}  # 1.4x, under the 1.5x default margin
+        assert compare_to_baseline(current, baseline) == []
+
+    def test_compare_to_baseline_flags_regression_past_margin(self):
+        from benchmarks.performance_suite import compare_to_baseline
+        baseline = {"parse": {"median_duration_ms": 10.0}}
+        current = {"parse": {"median_duration_ms": 20.0}}  # 2x, past the 1.5x default margin
+        regressions = compare_to_baseline(current, baseline)
+        assert len(regressions) == 1
+        assert "parse" in regressions[0]
+
+    def test_compare_to_baseline_respects_custom_margin(self):
+        from benchmarks.performance_suite import compare_to_baseline
+        baseline = {"parse": {"median_duration_ms": 10.0}}
+        current = {"parse": {"median_duration_ms": 25.0}}  # 2.5x
+        assert compare_to_baseline(current, baseline, margin=3.0) == []
+        assert len(compare_to_baseline(current, baseline, margin=2.0)) == 1
+
+    def test_compare_to_baseline_ignores_stage_absent_from_baseline(self):
+        """A newly added pipeline stage has nothing to compare against yet
+        -- must not be flagged as a regression."""
+        from benchmarks.performance_suite import compare_to_baseline
+        baseline = {"parse": {"median_duration_ms": 10.0}}
+        current = {
+            "parse": {"median_duration_ms": 10.0},
+            "new_stage": {"median_duration_ms": 99999.0},
+        }
+        assert compare_to_baseline(current, baseline) == []
+
+    def test_compare_to_baseline_empty_baseline_flags_nothing(self):
+        from benchmarks.performance_suite import compare_to_baseline
+        current = {"parse": {"median_duration_ms": 99999.0}}
+        assert compare_to_baseline(current, {}) == []
+
+
+class TestDeterministicFixtures:
+    """Regression tests for #373/PERF-A-03: the baseline benchmark's input
+    set used to depend on whatever *.mid files happened to exist under
+    test_data/examples/samples/. on the machine running it, making results
+    incomparable across runs/machines."""
+
+    def test_fixtures_directory_has_committed_midi_files(self):
+        from benchmarks.run_benchmarks import FIXTURES_DIR
+        assert FIXTURES_DIR.exists(), f"{FIXTURES_DIR} must exist and be committed"
+        fixture_files = sorted(FIXTURES_DIR.glob("*.mid"))
+        assert len(fixture_files) >= 1, "at least one deterministic fixture .mid must be committed"
+
+    def test_run_baseline_benchmark_uses_fixtures_dir_not_cwd(self, tmp_path, monkeypatch):
+        """The benchmark must find its files via FIXTURES_DIR regardless of
+        the working tree's own *.mid files (or lack thereof) -- run from an
+        empty tmp_path to prove it isn't relying on cwd-relative discovery."""
+        from benchmarks.run_benchmarks import find_test_files, FIXTURES_DIR
+        monkeypatch.chdir(tmp_path)
+        found = find_test_files(str(FIXTURES_DIR), "*.mid")
+        assert len(found) >= 1
 
 
 if __name__ == "__main__":

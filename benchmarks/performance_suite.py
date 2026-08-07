@@ -34,6 +34,10 @@ class BenchmarkResult:
     duration_ms: float
     memory_peak_mb: float
     memory_delta_mb: float
+    # % of one core used during this stage, from cpu_times() deltas / wall
+    # time (#374/PERF-A-04) -- a real per-stage figure, not the interval-less
+    # cpu_percent() reading this field used to hold (which measured CPU since
+    # the previous unrelated cpu_percent() call, not since this stage began).
     cpu_percent: float
     success: bool
     error_message: str = ""
@@ -72,7 +76,7 @@ class PerformanceProfiler:
         self.process = psutil.Process()
         self._start_time = None
         self._start_memory = None
-        self._start_cpu = None
+        self._start_cpu_times = None
         self._peak_memory = 0
 
     @contextmanager
@@ -103,16 +107,28 @@ class PerformanceProfiler:
         # Record initial state
         self._start_time = time.perf_counter()
         self._start_memory = self.process.memory_info().rss / 1024 / 1024  # MB
-        self._start_cpu = self.process.cpu_percent()
+        # cpu_times() (cumulative process CPU seconds) instead of cpu_percent()
+        # (#374/PERF-A-04): psutil's cpu_percent() with no interval= returns
+        # 0.0 on a process's first-ever call and, on every later call,
+        # measures CPU used since the *previous* cpu_percent() call -- not
+        # since _start_profiling() -- so it was advisory noise, not a
+        # per-stage figure. cpu_times() deltas divided by wall time below
+        # give a real, non-blocking utilization percentage for exactly this
+        # profiled interval.
+        self._start_cpu_times = self.process.cpu_times()
         self._peak_memory = self._start_memory
 
     def _end_profiling(self, stage_name: str, success: bool, error_msg: str = "") -> BenchmarkResult:
         """End profiling and create result."""
         # Calculate metrics
-        duration = (time.perf_counter() - self._start_time) * 1000  # ms
+        elapsed_seconds = time.perf_counter() - self._start_time
+        duration = elapsed_seconds * 1000  # ms
         current_memory = self.process.memory_info().rss / 1024 / 1024  # MB
         memory_delta = current_memory - self._start_memory
-        cpu_percent = self.process.cpu_percent()
+        end_cpu_times = self.process.cpu_times()
+        cpu_seconds = ((end_cpu_times.user - self._start_cpu_times.user)
+                        + (end_cpu_times.system - self._start_cpu_times.system))
+        cpu_percent = (cpu_seconds / elapsed_seconds) * 100 if elapsed_seconds > 0 else 0.0
 
         # Get memory tracing info
         try:
@@ -473,6 +489,68 @@ class PerformanceBenchmark:
                   f"{stats['success_rate']*100:5.1f}% success")
         
         return report
+
+
+# ---------------------------------------------------------------------------
+# Baseline regression gate (#372/PERF-A-02)
+#
+# The benchmark harness used to only *emit* a JSON report with no comparison
+# — a report with nothing to compare against greenlights a 2x slowdown
+# silently. These functions compare a run's per-stage median duration
+# against a checked-in baseline (see benchmarks/baseline.json, generated
+# against the deterministic fixture set in benchmarks/fixtures/ — #373/
+# PERF-A-03) and flag any stage that regressed past a configurable margin.
+# ---------------------------------------------------------------------------
+
+# A stage's median duration failing more than 50% slower than the checked-in
+# baseline is treated as a performance regression by default.
+DEFAULT_BASELINE_REGRESSION_MARGIN = 1.5
+
+
+def load_baseline(baseline_path) -> Dict[str, Dict[str, float]]:
+    """Load the checked-in performance baseline (#372/PERF-A-02).
+
+    Returns {} if the file doesn't exist yet (e.g. before a baseline has
+    ever been generated) rather than raising — callers should treat a
+    missing baseline as "nothing to compare against yet", not a hard error.
+    """
+    path = Path(baseline_path)
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+def compare_to_baseline(
+    summary_stats: Dict[str, Dict[str, Any]],
+    baseline: Dict[str, Dict[str, float]],
+    margin: float = DEFAULT_BASELINE_REGRESSION_MARGIN,
+) -> List[str]:
+    """Compare this run's per-stage median duration against a baseline.
+
+    Returns a list of human-readable regression messages; empty if nothing
+    regressed (including when the baseline is empty). A stage present in
+    `summary_stats` but absent from `baseline` (e.g. a newly added pipeline
+    stage) is not flagged — there is nothing to compare it against yet, and
+    a missing/zero median on either side is skipped rather than raising.
+    """
+    regressions = []
+    for stage, current in summary_stats.items():
+        baseline_stage = baseline.get(stage)
+        if not baseline_stage:
+            continue
+        baseline_median = baseline_stage.get('median_duration_ms')
+        current_median = current.get('median_duration_ms')
+        if not baseline_median or not current_median:
+            continue
+        threshold = baseline_median * margin
+        if current_median > threshold:
+            pct_slower = (current_median / baseline_median - 1) * 100
+            regressions.append(
+                f"{stage}: median {current_median:.1f}ms is {pct_slower:.0f}% slower than "
+                f"baseline {baseline_median:.1f}ms (threshold: {threshold:.1f}ms, "
+                f"margin: {margin}x)"
+            )
+    return regressions
 
 
 if __name__ == "__main__":

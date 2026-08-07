@@ -86,6 +86,11 @@ dist/
 !examples/**/*.asm
 !examples/**/*.cfg
 !test_data/**/*.mid
+# Deterministic benchmark fixture set (#373/PERF-A-03) -- committed so
+# `benchmark.run_baseline_benchmark`'s default results are comparable across
+# runs/machines instead of depending on whatever .mid files happen to be
+# present in the working tree.
+!benchmarks/fixtures/**/*.mid
 .aider*
 
 # New additions for storage directory
