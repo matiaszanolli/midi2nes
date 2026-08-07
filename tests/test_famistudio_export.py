@@ -46,6 +46,23 @@ class TestFamiStudioExport(unittest.TestCase):
         output = generate_famistudio_txt(frames)  # must not raise
         self.assertIn("C-4 3", output)
         
+    def test_tone_channel_missing_note_or_volume_does_not_raise(self):
+        # Regression (#370/EXP-2026-07-19-2): pulse1/pulse2/triangle read
+        # event['note']/event['volume'] via direct subscript, raising
+        # KeyError on a frame dict missing either key -- unlike the CA65
+        # exporter (frame_data.get('note', 0)/.get('volume', 0)) and this
+        # same function's dpcm branch (already hardened in #82), which both
+        # tolerate it. The two exporters must agree on what's a valid frame.
+        frames = {
+            'pulse1': {'0': {'volume': 15}},   # missing 'note'
+            'pulse2': {'0': {'note': 60}},     # missing 'volume'
+            'triangle': {'0': {}},             # missing both
+        }
+        output = generate_famistudio_txt(frames)  # must not raise
+        self.assertIn('PATTERN "pulse1_0"', output)
+        self.assertIn('PATTERN "pulse2_0"', output)
+        self.assertIn('PATTERN "triangle_0"', output)
+
     def test_generate_famistudio_txt(self):
         output = generate_famistudio_txt(
             self.test_frames,
