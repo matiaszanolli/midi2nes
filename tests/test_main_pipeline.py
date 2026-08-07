@@ -1641,6 +1641,39 @@ class TestDetectPatternsOrDirectExport:
 
         assert "lossy" in lossy_note
 
+    @patch('main.get_pattern_detection_caps')
+    def test_fallback_path_sets_lossy_note_when_only_externally_sampled(self, mock_caps):
+        """Regression (#378/PIPE-2026-07-19-2): the fallback branch pre-samples
+        events down to max_events (main.py) *before* calling
+        detector.detect_patterns, so the detector's own internal re-sample
+        (tracker/pattern_detector.py) is a no-op and detector.was_sampled stays
+        False even though the events genuinely were sampled. The coverage
+        suffix must still key off the fallback's own local was_sampled flag,
+        not only detector.was_sampled."""
+        from main import detect_patterns_or_direct_export
+        mock_caps.return_value = (2, 15000, 15000)  # max_events=2 -> forces external sampling
+        frames = {"pulse1": {str(i): {"note": 60, "volume": 100} for i in range(5)}}
+        args = Namespace(verbose=False, config=None)
+
+        with patch('tracker.pattern_detector_parallel.ParallelPatternDetector') as mock_parallel:
+            mock_parallel.side_effect = Exception("parallel unavailable")
+            with patch('tracker.pattern_detector.EnhancedPatternDetector') as mock_fallback_cls:
+                mock_fallback = Mock()
+                # The detector's own internal sampling is a no-op here (events
+                # already at the cap by the time detect_patterns receives them).
+                mock_fallback.was_sampled = False
+                mock_fallback.detect_patterns.return_value = {
+                    'patterns': {}, 'references': {},
+                    'stats': {'compression_ratio': 0, 'total_events': 2, 'coverage_ratio': 100.0},
+                }
+                mock_fallback_cls.return_value = mock_fallback
+
+                result, loss_warning, lossy_note = detect_patterns_or_direct_export(
+                    frames, use_patterns=True, args=args)
+
+        assert loss_warning is not None
+        assert "lossy" in lossy_note
+
 
 class TestExportFramesAndResolveMapper:
     """Coverage for the #406/TD-11-FOLLOWUP extraction of run_full_pipeline's
@@ -1661,7 +1694,7 @@ class TestExportFramesAndResolveMapper:
         mock_exporter_cls.return_value = mock_exporter
         music_asm = self.temp_dir / "music.asm"
         args = Namespace(verbose=False, mapper=None)
-        pattern_result = {'patterns': {}}
+        pattern_result = {'patterns': {}, 'references': {}}
         frames = {"pulse1": []}
 
         call_order = []
@@ -1689,7 +1722,7 @@ class TestExportFramesAndResolveMapper:
         mock_exporter_cls.return_value = mock_exporter
         music_asm = self.temp_dir / "music.asm"
         args = Namespace(verbose=False, mapper='mmc1')
-        pattern_result = {'patterns': {}}
+        pattern_result = {'patterns': {}, 'references': {}}
         frames = {"pulse1": []}
 
         resolved_mapper = Mock(name='mmc1-instance')
@@ -1708,6 +1741,34 @@ class TestExportFramesAndResolveMapper:
         # Resolved BEFORE export -- the export call itself already received
         # the concrete mapper, not None.
         assert mock_exporter.export_tables_with_patterns.call_args.kwargs['mapper'] is resolved_mapper
+
+    @patch('main.CA65Exporter')
+    def test_passes_pattern_result_references_through_to_exporter(self, mock_exporter_cls):
+        """Regression (#379/PIPE-2026-07-19-3): run_full_pipeline's export
+        step used to hardcode an empty `{}` for the exporter's `references`
+        arg regardless of what pattern detection produced, while run_export
+        (the step-by-step entry point) passes the detector's real
+        `pattern_data['references']` through unmodified -- a latent
+        divergence between the two entry points. Both must now feed the
+        exporter the same `pattern_result['references']` value."""
+        from main import export_frames_and_resolve_mapper
+        mock_exporter = Mock()
+        mock_exporter_cls.return_value = mock_exporter
+        music_asm = self.temp_dir / "music.asm"
+        args = Namespace(verbose=False, mapper=None)
+        real_references = {'pattern_0': [0, 16, 32]}
+        pattern_result = {'patterns': {'pattern_0': [1, 2, 3]}, 'references': real_references}
+        frames = {"pulse1": []}
+
+        with patch('main.resolve_mapper') as mock_resolve, \
+             patch('main.pack_dpcm_into_asm') as mock_pack:
+            mock_resolve.return_value = Mock(name='mmc3')
+            mock_pack.return_value = DpcmPackResult(index_found=False)
+
+            export_frames_and_resolve_mapper(
+                frames, pattern_result, music_asm, use_patterns=True, args=args)
+
+        assert mock_exporter.export_tables_with_patterns.call_args.args[2] == real_references
 
     @patch('main.CA65Exporter')
     def test_raises_on_invalid_mapper_choice(self, mock_exporter_cls):

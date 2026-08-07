@@ -1,7 +1,6 @@
 # New file: exporter/exporter_famistudio.py
 
-from pathlib import Path
-from exporter.base_exporter import BaseExporter
+from exporter.base_exporter import BaseExporter, atomic_write_text
 
 def generate_famistudio_txt(frames_data, project_name="MIDI2NES", author="", copyright=""):
     """
@@ -191,9 +190,9 @@ class FamiStudioExporter(BaseExporter):
     def export(self, frames_data, output_path, project_name="MIDI2NES", author="", copyright=""):
         """Export frame data to FamiStudio text format"""
         output = generate_famistudio_txt(frames_data, project_name, author, copyright)
-        Path(output_path).write_text(output)
+        atomic_write_text(output_path, output)  # #385/SAFE-2026-07-19-3
 
 def export_famistudio(frames_data, output_path, project_name="MIDI2NES", author="", copyright=""):
     """Export frame data to FamiStudio text format"""
     output = generate_famistudio_txt(frames_data, project_name, author, copyright)
-    Path(output_path).write_text(output)
+    atomic_write_text(output_path, output)  # #385/SAFE-2026-07-19-3

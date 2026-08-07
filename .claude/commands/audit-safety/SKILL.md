@@ -240,10 +240,23 @@ hand-written block), with the warning echoed again in the final summary. Check t
 backup-restore on compile/validate failure: now
 centralized in the single `finally` block described in Dimension 6
 (`main.py:743`–`747`) rather than duplicated at multiple call sites — confirm it still
-restores the prior good ROM and never leaves the broken one in place (it does). Flag
-any writer that opens the final output path directly and can raise before completing
-it (e.g. `exporter/exporter_ca65.py`'s `with open(output_path, 'w')` sites) as a
-lower-priority hardening item if not already covered above.
+restores the prior good ROM and never leaves the broken one in place (it does).
+**#385/SAFE-2026-07-19-3 is CLOSED**: `exporter/exporter_ca65.py`'s two final-output
+writers (`export_direct_frames`, `export_tables_with_patterns`) used to open the
+final output path directly (`with open(output_path, 'w') as f: f.write(...)`), so a
+failed write (disk full, killed process) could leave a truncated `.asm` at the user's
+output path, or overwrite a prior good file with a partial one on a re-export. Both
+now go through a shared `atomic_write_text(output_path, content)` helper
+(`exporter/base_exporter.py`): it writes to a sibling temp file in the same directory
+and `os.replace()`s it into place, so a reader only ever sees the old complete file or
+the new complete file, never a partial one; on failure the temp file is removed and
+`output_path` is left untouched. The sibling `exporter/exporter_famistudio.py`
+writers (`FamiStudioExporter.export`, `export_famistudio`) were switched to the same
+helper for consistency, even though that format is not currently reachable from the
+CLI (`--format` only accepts `ca65`, main.py). Verify-the-fix: flag any *new* writer
+that opens a final output path directly with `open(...)`/`Path(...).write_text(...)`
+instead of `atomic_write_text` — that's a regression of this exact pattern, not a new
+bug.
 
 ## Cross-Dimension Dedup
 One root cause can surface across dimensions (the unguarded `json.loads` is both a

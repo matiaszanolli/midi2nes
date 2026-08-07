@@ -732,6 +732,13 @@ def run_detect_patterns(args):
     # below are already-quantized frame positions, not MIDI ticks), so its
     # per-pattern tempo analysis would only produce a discarded constant
     # result — skip it (analyze_tempo=False) rather than pay for it (#119).
+    # #376/PERF-A-06 (won't-fix): this always defaults to ticks_per_beat=480
+    # rather than the source file's actual resolution, since parse_midi_to_frames
+    # returns an empty `metadata` by design and this stage only has `frames`
+    # (no MIDI ticks) to work from. Threading the real value through would
+    # require widening the parse-stage JSON contract for a value
+    # analyze_tempo=False never reads (EnhancedPatternDetector only touches
+    # tempo_map when analyze_tempo is True) -- not worth the contract churn.
     tempo_map = EnhancedTempoMap(initial_tempo=500000)  # 120 BPM default
     detector = EnhancedPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH,
                                        max_pattern_length=PATTERN_MAX_LENGTH,
@@ -940,6 +947,11 @@ def detect_patterns_or_direct_export(frames, use_patterns, args):
     # frame-indexed (tempo was applied upstream), so this map carries no real
     # tempo changes and the default ticks_per_beat is irrelevant. Mirrors the
     # documented construction in run_detect_patterns (#119).
+    # #376/PERF-A-06 (won't-fix, mirrors run_detect_patterns above): the
+    # `mapped`/`midi_data` this song's real events came from are already
+    # `del`eted by this point (#371/PERF-A-01's deliberate early free), so
+    # there is nothing left here to derive a real tempo map or a pre-frame
+    # event list from without reversing that memory-freeing on purpose.
     tempo_map = EnhancedTempoMap(initial_tempo=500000)
 
     # Convert frames to events for pattern detection (shared extractor skips
@@ -958,6 +970,7 @@ def detect_patterns_or_direct_export(frames, use_patterns, args):
         print(f"  🚀 Proceeding with improved pattern detection...")
 
     # Use parallel pattern detection with position mapping fix
+    fallback_sampled = False
     try:
         from tracker.pattern_detector_parallel import ParallelPatternDetector
         detector = ParallelPatternDetector(tempo_map, min_pattern_length=PATTERN_MIN_LENGTH, max_pattern_length=PATTERN_MAX_LENGTH, max_pattern_events=max_pattern_events)
@@ -975,8 +988,8 @@ def detect_patterns_or_direct_export(frames, use_patterns, args):
         # actually retained, not a larger sample the detector would silently
         # re-cut (#100).
         fallback_count = len(events)
-        events, was_sampled = sample_events_for_detection(events, max_events)
-        if was_sampled:
+        events, fallback_sampled = sample_events_for_detection(events, max_events)
+        if fallback_sampled:
             pattern_loss_warning = (
                 f"pattern detection fell back to the sequential detector and "
                 f"sampled {fallback_count:,} events down to {len(events):,} for "
@@ -985,8 +998,14 @@ def detect_patterns_or_direct_export(frames, use_patterns, args):
             )
             print(f"  ⚠️  NOTE: {pattern_loss_warning}")
         pattern_result = detector.detect_patterns(events)
+        # events is already sampled to the detector's cap by the time it
+        # reaches detect_patterns, so the detector's own internal re-sample
+        # (tracker/pattern_detector.py) is a no-op and detector.was_sampled
+        # stays False -- checking only that flag below used to silently drop
+        # the "(lossy...)" coverage suffix even though coverage genuinely was
+        # computed over this sampled subset (#378/PIPE-2026-07-19-2).
 
-    if detector.was_sampled:
+    if detector.was_sampled or fallback_sampled:
         # Uniform sampling can put retained samples out of phase with the
         # song's period, collapsing coverage_ratio well below what the full
         # song would report (#312/PAT-11) -- label it so the number isn't
@@ -1035,12 +1054,15 @@ def export_frames_and_resolve_mapper(frames, pattern_result, music_asm, use_patt
     # The CA65 exporter emits every byte from `frames`; the detector's
     # pattern `references` are analysis/metrics only and are never read by
     # export_tables_with_patterns (#4). `patterns` truthiness merely selects
-    # the macro-bytecode serializer over direct export, so pass an empty
-    # references dict rather than building a table nothing consumes.
+    # the macro-bytecode serializer over direct export -- `references` has no
+    # effect on emitted bytes either way, but pass the real dict (mirroring
+    # run_export, #379/PIPE-2026-07-19-3) rather than a hardcoded `{}` so the
+    # two entry points stay forward-compatible if `references` is ever wired
+    # up to affect output.
     exporter.export_tables_with_patterns(
         frames,
         pattern_result['patterns'],
-        {},
+        pattern_result['references'],
         str(music_asm),
         standalone=False,  # We'll create our own project structure
         mapper=mapper
