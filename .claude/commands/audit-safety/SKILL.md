@@ -64,10 +64,16 @@ samples resolve) produced no warning at all, so a song could ship with a silentl
 dropped drum. `pack_dpcm_into_asm` now distinguishes the two: both call sites label the
 same `warning` string "NO DRUMS" when `loaded_samples == 0` and "PARTIAL DPCM MISS"
 otherwise (`main.py:719` / `:1183`, mirrored at both sites so a fix to the label logic
-in one can't silently miss the other now that it's one function). Verify: does the
-warning fire on *every* path that can leave DPCM unpacked or partially unpacked, or is
-there a code path inside the `try` that could still exit early without setting
-`warning`? The parallel→sequential fallback (`main.py:557`–`580`, catches bare
+in one can't silently miss the other now that it's one function). **#411/SAFE-2026-08-06-1
+is CLOSED**: the missing-index case (`index_found=False`, `warning=None`) was the one gap
+this parity didn't cover — `run_export` only ever checked `if dpcm_pack_warning:`, which
+is `None` when the index is simply absent, so it printed nothing at all (identical output
+to a genuinely drum-free song), while `run_full_pipeline` already branched on
+`not pack_result.index_found` to print an info line. `run_export` now has the same branch
+with matching wording ("No dpcm_index.json found, skipping DPCM packing."). Verify: does
+the warning/info line fire on *every* path that can leave DPCM unpacked or partially
+unpacked, or is there a code path inside the `try` that could still exit early without
+setting `warning`? The parallel→sequential fallback (`main.py:557`–`580`, catches bare
 `Exception` at `:562`) is unchanged behavior (just line-shifted) — confirm it is still
 the *documented* fallback (`_audit-common.md` Multiprocessing rule) and not masking a
 real bug, and that the lossy-resample warning (`:573`–`579`) still fires whenever the
