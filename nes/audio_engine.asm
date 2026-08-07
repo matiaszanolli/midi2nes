@@ -408,7 +408,8 @@ audio_update:
     sta $4002
     lda ntsc_period_high, y
     adc temp_pitch_hi
-    ora #$08      ; Length counter halt
+    ora #$08      ; Set length reload for new notes (harmless: halted via
+                  ; $4000/#$30 control byte, not this $4003 length-load field)
 @p1_write_hi:
     ; $4003 always restarts the pulse sequencer phase, so only write it when
     ; the value actually changed -- otherwise a held note re-clicks every

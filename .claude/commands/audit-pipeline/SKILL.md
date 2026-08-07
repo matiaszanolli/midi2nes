@@ -55,18 +55,26 @@ producer key matches each consumer's read. Concrete checks in `main.py`:
   `tracker/pattern_detector_parallel.py`) return. Confirm no consumer (`run_export`,
   `main.py:519-561`; `CA65Exporter.export_tables_with_patterns`) ever needs it — unresolved
   question, not a filed bug; keep checking on each audit pass. (Note the `--no-patterns` stub
-  in `run_full_pipeline` now *does* carry `'variations': {}` at `main.py:880`, closing the
-  narrower one-path-only KeyError gap #258/PAT-09; the `detect-patterns` subcommand omission
-  above is a separate, still-open question.)
+  now *does* carry `'variations': {}`, closing the narrower one-path-only KeyError gap
+  #258/PAT-09; the stub lives in `detect_patterns_or_direct_export` since #406 (extracted
+  out of `run_full_pipeline`, which calls it for Step 4), not inline in `run_full_pipeline`
+  itself any more. The `detect-patterns` subcommand omission above is a separate, still-open
+  question.)
 - **The old "references-format gap" is now moot, for a different reason than expected**:
   `main.py` no longer builds a position→frame `ca65_references` map anywhere.
-  `run_full_pipeline` (`main.py:917-924`) passes a bare empty dict `{}` for `references`
-  regardless of what pattern detection produced; `run_export` (`main.py:554-561`) passes the
-  detector's native `{'pattern_id': [positions]}` shape straight through unmodified. Both are
+  `run_full_pipeline` passes a bare empty dict `{}` for `references` regardless of what
+  pattern detection produced — this call now lives in `export_frames_and_resolve_mapper`
+  (the stage helper `run_full_pipeline` calls for Steps 5-5.5 since #406), not inline in
+  `run_full_pipeline` itself; `run_export` passes the detector's native
+  `{'pattern_id': [positions]}` shape straight through unmodified. Both are
   inert: `CA65Exporter.export_tables_with_patterns` (`exporter/exporter_ca65.py:962-971`)
   explicitly documents that its `references` argument is **not consumed** — "retained for
   call-site compatibility" (F-01/#4, confirmed **intentional, documented behavior** per
-  CLAUDE.md's Assembly Export section, not a bug to report). There is therefore no live
+  CLAUDE.md's Assembly Export section, not a bug to report). **Caveat:** the 2026-08-06
+  patterns audit (PAT-2026-08-06-B, #379, reopened) flagged this same divergence as a
+  forward-looking risk worth unifying rather than fully "moot" — reconcile that framing
+  with this paragraph on the next `/audit-pipeline` pass rather than trusting either in
+  isolation. There is therefore no live
   format mismatch. The only residual risk worth a note: if `references` is ever wired up to
   actually affect output, the two call sites currently pass different shapes (`{}` vs.
   detector-native) — flag that latent inconsistency as a forward-looking risk, not a current
@@ -83,13 +91,14 @@ producer key matches each consumer's read. Concrete checks in `main.py`:
   is gone. Verify no other stage reintroduces a third parser (see Dimension 8 — song-bank
   ingestion was independently fixed to use `parser_fast` too).
 - **Pattern-detector parameter divergence (F-08/#19, closed)**: `main.py` now defines shared
-  module-level constants `PATTERN_MIN_LENGTH = 3` / `PATTERN_MAX_LENGTH = 12` (`main.py:36-37`),
-  and both `run_detect_patterns` (`main.py:622-624`) and `run_full_pipeline`'s parallel/
-  fallback detector construction (`main.py:829`, `main.py:837`) use these same constants.
-  Verify no other call site (arranger path, any test-only helper) still hardcodes different
-  bounds that could reintroduce the drift.
-- **`stats` schema divergence (fixed)**: the `--no-patterns` stub in `run_full_pipeline`
-  (`main.py:854-882`) now uses exactly the key set both detectors emit —
+  module-level constants `PATTERN_MIN_LENGTH = 3` / `PATTERN_MAX_LENGTH = 12`, and both
+  `run_detect_patterns` and the parallel/fallback detector construction `run_full_pipeline`
+  calls into (`detect_patterns_or_direct_export`, extracted from `run_full_pipeline` since
+  #406) use these same constants. Verify no other call site (arranger path, any test-only
+  helper) still hardcodes different bounds that could reintroduce the drift.
+- **`stats` schema divergence (fixed)**: the `--no-patterns` stub — now living in
+  `detect_patterns_or_direct_export` since #406, not inline in `run_full_pipeline` — uses
+  exactly the key set both detectors emit —
   `original_size`/`compressed_size`/`compression_ratio`/`unique_patterns`
   (`tracker/pattern_detector.py:884-889`) — not the old `original_events`/`patterns_found`
   mismatch. Verify every `stats` reader (success banner `main.py:1046-1049`,
@@ -157,8 +166,10 @@ user expects a good one.
     burying it (SAFE-04/#123, closed); the ROM still builds without drums. **#380/TD-28
     closed**: the pack logic used to be duplicated inline in both `run_full_pipeline` and
     `run_export`; it now lives in one shared `pack_dpcm_into_asm` helper (`main.py:126-215`,
-    `except Exception as e:` at `:194`) called from both (`main.py:709` / `:1097`), so this
-    check only needs verifying once instead of per call site. **#367/DP-DPCM-05 closed**: the
+    `except Exception as e:` at `:194`) called from both (`run_export` at `main.py:709`;
+    `export_frames_and_resolve_mapper` at `:1052` — the stage helper `run_full_pipeline`
+    calls for this since #406), so this check only needs verifying once instead of per call
+    site. **#367/DP-DPCM-05 closed**: the
     warning used to fire only on an all-samples-missing pack; a partial miss (some but not all
     referenced samples resolve) now also warns, labeled "PARTIAL DPCM MISS" vs "NO DRUMS"
     (`main.py:719` / `:1183`) so a silently-dropped single drum isn't mistaken for "no
@@ -200,11 +211,12 @@ user expects a good one.
 ### Dimension 5: Temp-File / Intermediate Handling
 The default path writes intermediates into a `tempfile.TemporaryDirectory(prefix="midi2nes_")`
 (`main.py:770`); the step-by-step path writes user-named JSON/asm files.
-- Confirm the temp dir is the parent of `music.asm` (`main.py:886`) and `nes_project/`
-  (`main.py:988`), and that `compile_rom(project_path, output_rom)` (`main.py:1024`) writes the
-  final ROM to `output_rom` — the user's path, outside the temp dir — so it survives
-  `TemporaryDirectory` cleanup. Confirmed by reading the call; no late read of anything inside
-  `temp_path` after the `with` block observed.
+- Confirm the temp dir is the parent of `music.asm` and `nes_project/` (both still assigned
+  directly in `run_full_pipeline`), and that `compile_rom(project_path, output_rom)` — called
+  from `build_and_validate_rom` since #406, the stage helper `run_full_pipeline` calls for
+  Steps 6-8 — writes the final ROM to `output_rom` — the user's path, outside the temp dir —
+  so it survives `TemporaryDirectory` cleanup. Confirmed by reading the call; no late read of
+  anything inside `temp_path` after the `with` block observed.
 - **DPCM append-mode double-write (F-10/#23, closed)**: both call sites append via the shared
   `pack_dpcm_into_asm` helper's `with open(asm_path, 'a') as f` (`main.py:168`, extracted in
   #380/TD-28 — previously two separate inline `open(..., 'a')` sites, one per call site).

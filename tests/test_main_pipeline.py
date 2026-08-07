@@ -17,7 +17,7 @@ import sys
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-from main import run_full_pipeline, compile_rom, main
+from main import run_full_pipeline, compile_rom, main, DpcmPackResult
 
 
 class TestCompileRomErrorPaths:
@@ -844,9 +844,13 @@ class TestRunFullPipelineMemoryOverhead:
         src = inspect.getsource(main.run_full_pipeline)
         # Isolate the legacy (non-arranger) branch's source between the two
         # step markers so this doesn't false-positive on the arranger
-        # branch's own `del midi_data`.
+        # branch's own `del midi_data`. Steps 4-8 were extracted into stage
+        # helpers (#406/TD-11-FOLLOWUP); steps 1-3 deliberately stay inline
+        # in run_full_pipeline itself (see that extraction's own comment) so
+        # this del-ordering contract keeps being checked against the actual
+        # code that implements it.
         legacy_start = src.index('# Step 2: Map tracks to NES channels')
-        legacy_end = src.index('# Step 4: Pattern detection')
+        legacy_end = src.index('# Steps 4-8 are extracted into stage helpers')
         legacy_branch = src[legacy_start:legacy_end]
 
         assign_idx = legacy_branch.index('assign_tracks_to_nes_channels(')
@@ -1566,6 +1570,265 @@ class TestPreparePath(object):
             with pytest.raises(SystemExit) as exc:
                 main_entry()
             assert exc.value.code == 1
+
+
+class TestDetectPatternsOrDirectExport:
+    """Coverage for the #406/TD-11-FOLLOWUP extraction of run_full_pipeline's
+    Step 4 into its own testable function."""
+
+    def test_direct_export_returns_matching_schema_stub(self):
+        from main import detect_patterns_or_direct_export
+        frames = {"pulse1": [1, 2, 3], "triangle": [4, 5]}
+        args = Namespace(verbose=False, config=None)
+
+        result, loss_warning, lossy_note = detect_patterns_or_direct_export(
+            frames, use_patterns=False, args=args)
+
+        # Same schema every real detector emits (#104), zero compression
+        # and zero coverage since direct export applies none (#17, #169).
+        assert result['patterns'] == {}
+        assert result['references'] == {}
+        assert result['variations'] == {}
+        assert result['stats']['original_size'] == 5
+        assert result['stats']['compression_ratio'] == 0
+        assert result['stats']['coverage_ratio'] == 0
+        assert loss_warning is None
+        assert lossy_note == ""
+
+    @patch('main.get_pattern_detection_caps')
+    def test_patterns_path_returns_detector_result(self, mock_caps):
+        from main import detect_patterns_or_direct_export
+        mock_caps.return_value = (1000, 15000, 15000)
+        frames = {"pulse1": {"0": {"note": 60, "volume": 100}}}
+        args = Namespace(verbose=False, config=None)
+
+        with patch('tracker.pattern_detector_parallel.ParallelPatternDetector') as mock_cls:
+            mock_detector = Mock()
+            mock_detector.was_sampled = False
+            mock_detector.detect_patterns.return_value = {
+                'patterns': {'p0': []}, 'references': {},
+                'stats': {'compression_ratio': 3.0, 'total_events': 5, 'coverage_ratio': 80.0},
+            }
+            mock_cls.return_value = mock_detector
+
+            result, loss_warning, lossy_note = detect_patterns_or_direct_export(
+                frames, use_patterns=True, args=args)
+
+        assert result['patterns'] == {'p0': []}
+        assert loss_warning is None
+        assert lossy_note == ""
+
+    @patch('main.get_pattern_detection_caps')
+    def test_fallback_path_sets_lossy_note_when_sampled(self, mock_caps):
+        from main import detect_patterns_or_direct_export
+        mock_caps.return_value = (1000, 15000, 15000)
+        frames = {"pulse1": {"0": {"note": 60, "volume": 100}}}
+        args = Namespace(verbose=False, config=None)
+
+        with patch('tracker.pattern_detector_parallel.ParallelPatternDetector') as mock_parallel:
+            mock_parallel.side_effect = Exception("parallel unavailable")
+            with patch('tracker.pattern_detector.EnhancedPatternDetector') as mock_fallback_cls:
+                mock_fallback = Mock()
+                mock_fallback.was_sampled = True  # collapses coverage_ratio (#312/PAT-11)
+                mock_fallback.detect_patterns.return_value = {
+                    'patterns': {}, 'references': {},
+                    'stats': {'compression_ratio': 0, 'total_events': 1, 'coverage_ratio': 10.0},
+                }
+                mock_fallback_cls.return_value = mock_fallback
+
+                result, loss_warning, lossy_note = detect_patterns_or_direct_export(
+                    frames, use_patterns=True, args=args)
+
+        assert "lossy" in lossy_note
+
+
+class TestExportFramesAndResolveMapper:
+    """Coverage for the #406/TD-11-FOLLOWUP extraction of run_full_pipeline's
+    Steps 5-5.5. Pins the mapper-resolution timing that differs by path
+    (#255/MAP-2026-07-05-1): direct-export resolves before exporting,
+    patterned/bytecode resolves after, from the written music.asm."""
+
+    def setup_method(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+
+    def teardown_method(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    @patch('main.CA65Exporter')
+    def test_patterns_path_resolves_mapper_after_export(self, mock_exporter_cls):
+        from main import export_frames_and_resolve_mapper
+        mock_exporter = Mock()
+        mock_exporter_cls.return_value = mock_exporter
+        music_asm = self.temp_dir / "music.asm"
+        args = Namespace(verbose=False, mapper=None)
+        pattern_result = {'patterns': {}}
+        frames = {"pulse1": []}
+
+        call_order = []
+        mock_exporter.export_tables_with_patterns.side_effect = (
+            lambda *a, **kw: call_order.append('export'))
+
+        with patch('main.resolve_mapper') as mock_resolve, \
+             patch('main.pack_dpcm_into_asm') as mock_pack:
+            mock_resolve.side_effect = lambda *a, **kw: (call_order.append('resolve'), Mock(name='mmc3'))[1]
+            mock_pack.return_value = DpcmPackResult(index_found=False)
+
+            mapper, pack_result = export_frames_and_resolve_mapper(
+                frames, pattern_result, music_asm, use_patterns=True, args=args)
+
+        assert call_order == ['export', 'resolve']
+        # Exported with mapper=None -- resolution genuinely happens after,
+        # not just called-after with a value already known.
+        assert mock_exporter.export_tables_with_patterns.call_args.kwargs['mapper'] is None
+
+    @patch('main.CA65Exporter')
+    def test_direct_export_resolves_mapper_before_export(self, mock_exporter_cls):
+        from main import export_frames_and_resolve_mapper
+        mock_exporter = Mock()
+        mock_exporter.estimate_direct_export_size.return_value = 100
+        mock_exporter_cls.return_value = mock_exporter
+        music_asm = self.temp_dir / "music.asm"
+        args = Namespace(verbose=False, mapper='mmc1')
+        pattern_result = {'patterns': {}}
+        frames = {"pulse1": []}
+
+        resolved_mapper = Mock(name='mmc1-instance')
+
+        with patch('mappers.factory.MapperFactory') as mock_factory, \
+             patch('main.enforce_direct_export_dpcm_mapper') as mock_enforce, \
+             patch('main.pack_dpcm_into_asm') as mock_pack:
+            mock_factory.get_mapper.return_value = resolved_mapper
+            mock_enforce.return_value = resolved_mapper
+            mock_pack.return_value = DpcmPackResult(index_found=False)
+
+            mapper, pack_result = export_frames_and_resolve_mapper(
+                frames, pattern_result, music_asm, use_patterns=False, args=args)
+
+        assert mapper is resolved_mapper
+        # Resolved BEFORE export -- the export call itself already received
+        # the concrete mapper, not None.
+        assert mock_exporter.export_tables_with_patterns.call_args.kwargs['mapper'] is resolved_mapper
+
+    @patch('main.CA65Exporter')
+    def test_raises_on_invalid_mapper_choice(self, mock_exporter_cls):
+        from main import export_frames_and_resolve_mapper
+        mock_exporter_cls.return_value = Mock()
+        music_asm = self.temp_dir / "music.asm"
+        args = Namespace(verbose=False, mapper='mmc1')
+        frames = {"pulse1": []}
+
+        with patch('mappers.factory.MapperFactory') as mock_factory:
+            mock_factory.get_mapper.side_effect = ValueError("unknown mapper")
+
+            with pytest.raises(ValueError):
+                export_frames_and_resolve_mapper(
+                    frames, {'patterns': {}}, music_asm, use_patterns=False, args=args)
+
+
+class TestBuildAndValidateRom:
+    """Coverage for the #406/TD-11-FOLLOWUP extraction of run_full_pipeline's
+    Steps 6-8. Each failure mode raises instead of calling sys.exit itself
+    -- run_full_pipeline's own try/except/finally is still the only place
+    that decides how to report it and whether to restore a backup (#26)."""
+
+    def setup_method(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.music_asm = self.temp_dir / "music.asm"
+        self.music_asm.write_text(".byte 1, 2, 3\n")
+        self.project_path = self.temp_dir / "nes_project"
+        self.output_rom = self.temp_dir / "out.nes"
+        self.mapper = Mock(name="mmc3")
+        self.mapper.name = "MMC3"
+
+    def teardown_method(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    @patch('main.check_mapper_capacity')
+    def test_raises_valueerror_on_capacity_overflow(self, mock_capacity):
+        from main import build_and_validate_rom
+        mock_capacity.side_effect = ValueError("music data exceeds capacity")
+        args = Namespace(verbose=False)
+
+        with pytest.raises(ValueError):
+            build_and_validate_rom(
+                self.mapper, self.music_asm, self.project_path, self.output_rom,
+                debug_mode=False, skip_validation=True, args=args)
+
+    @patch('main.NESProjectBuilder')
+    @patch('main.check_mapper_capacity')
+    def test_raises_runtimeerror_on_prepare_failure(self, mock_capacity, mock_builder_cls):
+        from main import build_and_validate_rom
+        mock_capacity.return_value = 3
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = False
+        mock_builder_cls.return_value = mock_builder
+        args = Namespace(verbose=False)
+
+        with pytest.raises(RuntimeError, match="prepare"):
+            build_and_validate_rom(
+                self.mapper, self.music_asm, self.project_path, self.output_rom,
+                debug_mode=False, skip_validation=True, args=args)
+
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('main.check_mapper_capacity')
+    def test_raises_runtimeerror_on_compile_failure(
+        self, mock_capacity, mock_builder_cls, mock_compile
+    ):
+        from main import build_and_validate_rom
+        mock_capacity.return_value = 3
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_cls.return_value = mock_builder
+        mock_compile.return_value = False
+        args = Namespace(verbose=False)
+
+        with pytest.raises(RuntimeError, match="compilation"):
+            build_and_validate_rom(
+                self.mapper, self.music_asm, self.project_path, self.output_rom,
+                debug_mode=False, skip_validation=True, args=args)
+
+    @patch('main.validate_rom')
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('main.check_mapper_capacity')
+    def test_raises_runtimeerror_on_validation_failure(
+        self, mock_capacity, mock_builder_cls, mock_compile, mock_validate
+    ):
+        from main import build_and_validate_rom
+        mock_capacity.return_value = 3
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_cls.return_value = mock_builder
+        mock_compile.return_value = True
+        mock_validate.return_value = False
+        args = Namespace(verbose=False)
+
+        with pytest.raises(RuntimeError, match="validation"):
+            build_and_validate_rom(
+                self.mapper, self.music_asm, self.project_path, self.output_rom,
+                debug_mode=False, skip_validation=False, args=args)
+
+    @patch('main.validate_rom')
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    @patch('main.check_mapper_capacity')
+    def test_skip_validation_never_calls_validate_rom(
+        self, mock_capacity, mock_builder_cls, mock_compile, mock_validate
+    ):
+        from main import build_and_validate_rom
+        mock_capacity.return_value = 3
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_cls.return_value = mock_builder
+        mock_compile.return_value = True
+        args = Namespace(verbose=False)
+
+        build_and_validate_rom(
+            self.mapper, self.music_asm, self.project_path, self.output_rom,
+            debug_mode=False, skip_validation=True, args=args)
+
+        mock_validate.assert_not_called()
 
 
 if __name__ == "__main__":

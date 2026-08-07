@@ -121,23 +121,29 @@ one half is now closed, the other explicitly deferred:
   gone). Verify-the-fix: confirm the 8 emitters stay focused (one channel's table or
   proc each) and a future edit doesn't re-inline them back into
   `export_direct_frames`.
-- **`main.py` remains OPEN — deliberately deferred, tracked as #406**: still
-  argparse-based dispatch (`main()`, from line 1207) layered with hand-rolled
-  pre-subcommand argv scanning for global flags like `--arranger`/`--debug`/
-  `--verbose`. `run_full_pipeline` (`main.py:871-1206`) alone is still ~335 lines
-  threading parse → map/arrange → frames → patterns → export → DPCM-pack → prepare →
-  compile → validate inline; `main.py` is now ~1610 lines total (grew further from the
-  `pack_dpcm_into_asm` extraction, #380, and the `__all__` fix, #393 — neither touched
-  `run_full_pipeline`'s own structure). This half was investigated alongside the
-  exporter refactor and *intentionally* not attempted in the same pass: unlike
-  `export_direct_frames`, `run_full_pipeline` entangles a single try/except/finally
-  gating backup/restore-on-failure (#26), deliberate `del` calls trimming peak memory
-  (#371/PERF-A-01, see `/audit-performance`), mapper-resolution timing that genuinely
-  differs by code path, and inline `sys.exit(1)` validation — no clean byte-for-byte
-  verification story the way `export_direct_frames` had. #406 files the specific
-  design contract for this split (memory-profile comparison against #371's baseline,
-  preserved single-recovery-point semantics, stages raising instead of calling
-  `sys.exit` inline) — check #406's status before re-reporting this as a fresh finding.
+- **`main.py`'s `run_full_pipeline` half is now CLOSED** (#406): three of its stages
+  were extracted into independently-testable module-level functions, all defined just
+  above `run_full_pipeline` (`main.py:871-1250`) — `detect_patterns_or_direct_export`
+  (`:893`, Step 4: parallel/sequential pattern detection with fallback + sampling, or
+  the direct-export stats stub), `export_frames_and_resolve_mapper` (`:1002`, Steps
+  5-5.5: CA65 export, DPCM packing, and `--mapper` resolution — unifying the two
+  resolution-timing paths that used to be split across two different points in
+  `run_full_pipeline`), and `build_and_validate_rom` (`:1079`, Steps 6-8: capacity
+  pre-flight, project prep, compile, validate). `run_full_pipeline` itself
+  (`main.py:1113-1249`) dropped from ~335 to ~137 lines. `main.py` is now ~1654 lines
+  total (grew further from the helper extraction's own boilerplate and docstrings —
+  the same pattern the exporter half's extraction showed, see #136 above — but the one
+  oversized function is gone). Each extracted helper raises instead of calling
+  `sys.exit` itself; `run_full_pipeline`'s single try/except/finally (still gating
+  backup/restore-on-failure, #26) is the only place that decides how to report a
+  failure. Steps 1-3 (parse → map/arrange → frames) deliberately remain inline in
+  `run_full_pipeline` — the `del midi_data`/`del mapped` calls trimming peak memory
+  (#371/PERF-A-01, see `/audit-performance`) only free anything if they execute in the
+  frame holding the last reference, so extracting that code into a callee would
+  silently break the memory contract. Verify-the-fix: confirm the three extracted
+  helpers stay focused on their named steps and aren't re-inlined back into
+  `run_full_pipeline`; confirm a future stage addition also raises rather than calling
+  `sys.exit` inline, keeping the single-recovery-point contract intact.
 
 Report the split that would help, not just the line count — and flag if either has
 grown further since the numbers above.

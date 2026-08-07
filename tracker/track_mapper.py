@@ -1,6 +1,7 @@
 import random
 from collections import defaultdict
 from dpcm_sampler.drum_engine import map_drums_to_dpcm
+from arranger.pipeline_integration import _split_events_by_channel
 
 
 # Simplified initial mapping strategy
@@ -246,10 +247,44 @@ def assign_tracks_to_nes_channels(midi_events, dpcm_index_path):
         'dpcm': []
     }
 
+    # Split each input track by MIDI channel before the pitch-based routing
+    # below, mirroring the arranger's #329/ARR-NEW-5 fix
+    # (arranger.pipeline_integration._split_events_by_channel): parser_fast
+    # groups events by MIDI *track* only, so a Type-0 MIDI (one track
+    # carrying every channel, including channel-9 drums) -- or any
+    # multi-channel Type-1 track -- would otherwise reach the pitch
+    # split/heuristic below as one merged voice, duplicating drum hits onto
+    # triangle/pulse alongside genuine bass/melody notes purely because
+    # their raw pitch numbers happen to fall in that range
+    # (#404/ARR-NEW-5-LEGACY). Channel-9 sub-tracks are excluded from this
+    # pitched view entirely -- they still reach DPCM/noise via
+    # map_drums_to_dpcm below, which is intentionally left scanning the
+    # full, unsplit `midi_events` unchanged (its own broader, channel-
+    # optional drum detection is a separate concern from this split).
+    # A track with no channel-9 content (the common case, including every
+    # event with no channel info at all) is unaffected -- same key, same
+    # event list.
+    pitched_midi_events = {}
+    for track_name, events in midi_events.items():
+        channel_groups = _split_events_by_channel(events)
+        non_drum_groups = [(ch, evs) for ch, evs in channel_groups if ch != 9]
+
+        if not non_drum_groups:
+            continue  # this track is pure channel-9 drums
+        if len(channel_groups) == 1:
+            # Only one group total (single channel, or no channel info at
+            # all) -- unchanged, same key, same event list.
+            pitched_midi_events[track_name] = events
+        else:
+            for channel, ch_events in non_drum_groups:
+                sub_name = (f"{track_name} ch{channel}" if channel is not None
+                            else str(track_name))
+                pitched_midi_events[sub_name] = ch_events
+
     # Check if we have a single polyphonic track that needs splitting
-    if len(midi_events) == 1:
+    if len(pitched_midi_events) == 1:
         # Single track - likely polyphonic, split by pitch
-        track_name, events = next(iter(midi_events.items()))
+        track_name, events = next(iter(pitched_midi_events.items()))
         print(f"  Detected single polyphonic track '{track_name}' with {len(events)} events")
         print(f"  Splitting by pitch range: High→Pulse1, Mid→Pulse2, Low→Triangle")
 
@@ -259,7 +294,7 @@ def assign_tracks_to_nes_channels(midi_events, dpcm_index_path):
         nes_tracks['triangle'] = split_tracks['triangle']
 
         print(f"  Split result: Pulse1={len(nes_tracks['pulse1'])}, Pulse2={len(nes_tracks['pulse2'])}, Triangle={len(nes_tracks['triangle'])}")
-    else:
+    elif len(pitched_midi_events) > 1:
         # Multiple tracks - use original logic
         # Basic heuristic: choose based on pitch and density
         def average_pitch(events):
@@ -269,7 +304,7 @@ def assign_tracks_to_nes_channels(midi_events, dpcm_index_path):
 
         channel_scores = [
             (channel, average_pitch(events))
-            for channel, events in midi_events.items()
+            for channel, events in pitched_midi_events.items()
         ]
 
         # Sort by pitch: high → low
@@ -278,25 +313,28 @@ def assign_tracks_to_nes_channels(midi_events, dpcm_index_path):
         # Assign melody to pulse1
         if channel_scores:
             ch, _ = channel_scores.pop(0)
-            nes_tracks['pulse1'] = midi_events[ch]
+            nes_tracks['pulse1'] = pitched_midi_events[ch]
 
         # Assign harmony to pulse2 with intelligent arpeggio
         if channel_scores:
             ch, _ = channel_scores.pop(0)
-            nes_tracks['pulse2'] = apply_arpeggio_fallback(midi_events[ch], style="default")
+            nes_tracks['pulse2'] = apply_arpeggio_fallback(pitched_midi_events[ch], style="default")
 
         # Assign bass (lowest avg pitch) to triangle
         if channel_scores:
             ch, _ = min(channel_scores, key=lambda x: x[1])
-            channel_scores.remove((ch, average_pitch(midi_events[ch])))
-            nes_tracks['triangle'] = midi_events[ch]
+            channel_scores.remove((ch, average_pitch(pitched_midi_events[ch])))
+            nes_tracks['triangle'] = pitched_midi_events[ch]
 
         # Remaining: try noise + dpcm if drum-like or just fill up
         for ch, _ in channel_scores:
             if 'drum' in str(ch).lower():
-                nes_tracks['noise'] = midi_events[ch]
+                nes_tracks['noise'] = pitched_midi_events[ch]
             elif not nes_tracks['dpcm']:
-                nes_tracks['dpcm'] = midi_events[ch]
+                nes_tracks['dpcm'] = pitched_midi_events[ch]
+    # else: every original track was pure channel-9 drums (or the input was
+    # empty) -- nothing pitched to route; drum resolution still happens via
+    # map_drums_to_dpcm below.
 
     # Fallback for DPCM: look for drums
     dpcm_events, noise_events = map_drums_to_dpcm(midi_events, dpcm_index_path)
