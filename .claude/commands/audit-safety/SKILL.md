@@ -33,20 +33,25 @@ abort (and instead produces a broken or silently-wrong ROM). Grep:
 ```bash
 grep -rnE 'except\s*:|except Exception' --include='*.py' main.py tracker/ nes/ exporter/ compiler/ config/
 ```
-Hot spots to confirm: `run_full_pipeline` in `main.py` still wraps the entire 8-step
-pipeline in one broad `try`/`except Exception as e` (`main.py:1142`–`1237`) that prints
-the message and `sys.exit(1)`, without discriminating by exception type. Since #406,
+**#384/SAFE-2026-07-19-2 is CLOSED**: `run_full_pipeline` in `main.py` used to wrap the
+entire 8-step pipeline in one broad `try`/`except Exception as e`, unable to
+discriminate by exception type — a caller/test couldn't tell an expected typed error
+apart from a genuinely unexpected defect. It now narrows into two clauses: `except
+MIDI2NESError as e` (the typed base every failure surface underneath raises —
+`InvalidMIDIError`, `ConfigurationError`, `ToolchainError`, `CompilationError`,
+`ValidationError`, ...) prints `"[ERROR] Pipeline failed: ..."` unchanged, and a final
+`except Exception as e` for anything else prints the distinct `"[ERROR] Unexpected
+pipeline failure: ..."` (`main.py`, both clauses immediately after the `try` covering
+the 8-step body, `finally:` restore-backup logic unchanged below both). Since #406,
 three of the steps this wraps are extracted stage helpers (`detect_patterns_or_direct_export`,
 `export_frames_and_resolve_mapper`, `build_and_validate_rom`, all defined just above
 `run_full_pipeline`) that raise on failure rather than calling `sys.exit` themselves —
-this single `except` is still the only place that decides how to report it, now for
-more of the pipeline's logic than before, not less. This is less concerning than it
-looks: every failure surface underneath now raises a specific, informative typed
-exception (`InvalidMIDIError`, `ConfigurationError`, `ToolchainError`,
-`CompilationError`, `ValidationError`) whose message this catch-all simply relays, so
-the user-facing output is meaningful even though the `except` clause itself still can't
-distinguish failure classes programmatically — still worth a LOW–MEDIUM finding
-(defense-in-depth / testability), not a live "swallows a real bug" bug.
+these two clauses are still the only place that decides how to report it. Verify-the-fix:
+confirm every raise site under `run_full_pipeline` that is meant to be "expected" (not a
+defect) actually derives from `MIDI2NESError` — a new failure surface that raises a bare
+`ValueError`/`RuntimeError` instead would silently fall into the "Unexpected pipeline
+failure" branch even though it's a normal user-facing error, which is a regression of
+this fix's intent, not a crash.
 **#380/TD-28 is CLOSED**: the DPCM-pack block that used to be copy-pasted separately
 into `run_export` and `run_full_pipeline` (and had already diverged — `run_export`
 never passed `verbose=`) is now a single shared `pack_dpcm_into_asm(frames, asm_path,

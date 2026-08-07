@@ -26,7 +26,7 @@ from tracker.pattern_detector import (
 from tracker.tempo_map import EnhancedTempoMap
 from dpcm_sampler.enhanced_drum_mapper import DrumMapperConfig
 from config.config_manager import ConfigManager
-from core.exceptions import ConfigurationError
+from core.exceptions import ConfigurationError, MIDI2NESError
 from benchmarks.performance_suite import PerformanceBenchmark
 from utils.profiling import get_memory_usage, log_memory_usage
 from compiler import compile_rom
@@ -1166,6 +1166,17 @@ def run_full_pipeline(args):
                 # Step 2: Map tracks to NES channels (legacy mode)
                 print("[2/7] Mapping tracks to NES channels...")
                 dpcm_index_path = 'dpcm_index.json'
+                # Same guard as run_map (#256/D-18): without it, a missing
+                # index makes assign_tracks_to_nes_channels raise a bare
+                # FileNotFoundError that the outer except below only relays
+                # as a generic "[ERROR] Pipeline failed: ..." line, aborting
+                # the whole 7-step build for what step 5.5's DPCM packing
+                # treats as optional (#381/SAFE-2026-07-19-1). Surface the
+                # same actionable message here instead.
+                if not Path(dpcm_index_path).exists():
+                    print(f"[ERROR] DPCM index not found: {dpcm_index_path} "
+                          f"(pass --dpcm-index <path>, or restore dpcm_index.json)")
+                    sys.exit(1)
                 mapped = assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)
                 # midi_data's data is now fully captured in mapped; step 3
                 # below never reads midi_data again (#371/PERF-A-01).
@@ -1234,8 +1245,26 @@ def run_full_pipeline(args):
             if backup_path:
                 backup_path.unlink(missing_ok=True)
 
-        except Exception as e:
+        except MIDI2NESError as e:
+            # Every typed failure surface underneath (InvalidMIDIError,
+            # ConfigurationError, ToolchainError, CompilationError,
+            # ValidationError, ...) derives from this common base -- these
+            # are expected user-facing errors whose message is already
+            # actionable (#384/SAFE-2026-07-19-2). Narrowed from a single
+            # blanket `except Exception` so a caller/test can tell an
+            # expected error apart from a genuinely unexpected defect below,
+            # mirroring config_manager's precedent (#125/SAFE-08).
             print(f"\n[ERROR] Pipeline failed: {str(e)}")
+            if args.verbose:
+                import traceback
+                print("\nFull traceback:")
+                traceback.print_exc()
+            sys.exit(1)
+
+        except Exception as e:
+            # An unexpected defect (not one of our typed errors) -- flagged
+            # distinctly so it isn't mistaken for an expected user error.
+            print(f"\n[ERROR] Unexpected pipeline failure: {str(e)}")
             if args.verbose:
                 import traceback
                 print("\nFull traceback:")
