@@ -34,10 +34,15 @@ abort (and instead produces a broken or silently-wrong ROM). Grep:
 grep -rnE 'except\s*:|except Exception' --include='*.py' main.py tracker/ nes/ exporter/ compiler/ config/
 ```
 Hot spots to confirm: `run_full_pipeline` in `main.py` still wraps the entire 8-step
-pipeline in one broad `try`/`except Exception as e` (`main.py:501`–`735`) that prints
-the message and `sys.exit(1)`, without discriminating by exception type. This is less
-concerning than it looks: every failure surface underneath now raises a specific,
-informative typed exception (`InvalidMIDIError`, `ConfigurationError`, `ToolchainError`,
+pipeline in one broad `try`/`except Exception as e` (`main.py:1142`–`1237`) that prints
+the message and `sys.exit(1)`, without discriminating by exception type. Since #406,
+three of the steps this wraps are extracted stage helpers (`detect_patterns_or_direct_export`,
+`export_frames_and_resolve_mapper`, `build_and_validate_rom`, all defined just above
+`run_full_pipeline`) that raise on failure rather than calling `sys.exit` themselves —
+this single `except` is still the only place that decides how to report it, now for
+more of the pipeline's logic than before, not less. This is less concerning than it
+looks: every failure surface underneath now raises a specific, informative typed
+exception (`InvalidMIDIError`, `ConfigurationError`, `ToolchainError`,
 `CompilationError`, `ValidationError`) whose message this catch-all simply relays, so
 the user-facing output is meaningful even though the `except` clause itself still can't
 distinguish failure classes programmatically — still worth a LOW–MEDIUM finding
@@ -48,8 +53,10 @@ never passed `verbose=`) is now a single shared `pack_dpcm_into_asm(frames, asm_
 *, verbose=False) -> DpcmPackResult` helper (`main.py:126`–`215`, `try:` at `:151`,
 `except Exception as e:` at `:194`). It **still doesn't just warn and silently
 continue** — a failure or a no-samples-resolved pack sets `DpcmPackResult.warning`,
-which each call site prints prominently (`run_export` at `main.py:714`–`720`;
-`run_full_pipeline` at `:1102`–`1104`, echoed again in the final success banner) so a
+which each call site prints prominently (`run_export` at `main.py:713`–`719`;
+`export_frames_and_resolve_mapper` at `:1056`–`1057` — the stage helper
+`run_full_pipeline` calls for this since #406 — echoed again in the final success
+banner) so a
 corrupt/partial `dpcm_index.json` no longer ships a drumless ROM with an easy-to-miss
 message (fixed, #123). **#367/DP-DPCM-05 is CLOSED** on top of that: the warning used
 to only fire on the all-missing case — a *partial* miss (some but not all referenced
@@ -168,8 +175,10 @@ flag any future subcommand that reverts to a bare `json.loads(...).read_text()`.
 ### Dimension 6: File / Resource Handling & Temp Cleanup
 Check that file handles use context managers and temp dirs are cleaned up.
 `run_full_pipeline` still correctly uses
-`with tempfile.TemporaryDirectory(prefix="midi2nes_")` (`main.py:498`, line-shifted),
-which auto-cleans — confirm nothing escapes it. All the named `open(...)` sites still
+`with tempfile.TemporaryDirectory(prefix="midi2nes_")` (`main.py:1139`, shifted again
+by #406's stage-helper extraction above `run_full_pipeline` — re-check this number
+after any future edit near the top of the file), which auto-cleans — confirm nothing
+escapes it. All the named `open(...)` sites still
 use `with`: the DPCM append inside the shared `pack_dpcm_into_asm` helper
 (`main.py:168`, `open(asm_path, 'a')` — used by both `run_export` and
 `run_full_pipeline` since #380/TD-28, see Dimension 1), the benchmark
