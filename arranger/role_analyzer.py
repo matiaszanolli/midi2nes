@@ -212,13 +212,20 @@ class VoiceRoleAnalyzer:
         analysis.play_style = gm_mapping.style
         analysis.priority = gm_mapping.priority
 
-        # Now adjust based on actual musical analysis
-        role_scores = {
+        # Now adjust based on actual musical analysis. A plain dict of the 4
+        # scoring buckets isn't enough here: GM_INSTRUMENT_MAP curates 19/128
+        # programs (Timpani, Orchestra Hit, Agogo, Woodblock, etc.) with
+        # role=PERCUSSION or SFX, neither of which is a scoring bucket -- any
+        # non-drum-channel track using one of those programs would otherwise
+        # KeyError below (#ARR-2026-08-07-1). defaultdict lets an
+        # out-of-bucket GM hint contribute no bonus while the pitch/density/
+        # velocity signals below still pick one of the 4 real buckets.
+        role_scores = defaultdict(float, {
             MusicalRole.BASS: 0.0,
             MusicalRole.MELODY: 0.0,
             MusicalRole.HARMONY: 0.0,
             MusicalRole.DECORATIVE: 0.0,
-        }
+        })
 
         # GM instrument hint
         role_scores[gm_mapping.role] += 3.0

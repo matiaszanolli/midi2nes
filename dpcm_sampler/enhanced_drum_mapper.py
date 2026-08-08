@@ -316,11 +316,16 @@ class EnhancedDrumMapper:
             channel_patterns = patterns.get(ch, {})
             
             for e in events:
-                if e.get('velocity', 0) == 0:
+                # Real parsed MIDI events (tracker/parser_fast.py) carry
+                # 'volume', not 'velocity' -- match the defensive dual-key
+                # idiom used everywhere else in this codebase (e.g.
+                # tracker/track_mapper.py, nes/emulator_core.py) so legacy-mode
+                # drum detection isn't dead code on real input (#DP-DPCM-12).
+                velocity = e.get('velocity', e.get('volume', 0))
+                if velocity == 0:
                     continue
-                    
+
                 midi_note = e['note']
-                velocity = e['velocity']
                 frame = e['frame']
                 
                 # Check if this event is part of a pattern

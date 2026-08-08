@@ -82,6 +82,47 @@ class TestEnhancedDrumMapper:
         total_memory = mapper.sample_manager._get_total_memory()
         assert total_memory <= config.sample_config.memory_limit
         
+    def test_map_drums_reads_volume_key_not_just_velocity(self, config):
+        """Real parsed MIDI events (tracker/parser_fast.py) carry 'volume',
+        never 'velocity' -- map_drums used to guard exclusively on
+        e.get('velocity', 0), which is always 0 for real input, so every
+        event was skipped before ever reaching sample resolution
+        (#DP-DPCM-12: legacy-mode drum detection was dead code on real
+        input). Confirm 'volume'-keyed events now actually produce output.
+        """
+        mapper = EnhancedDrumMapper(
+            dpcm_index_path="tests/fixtures/test_dpcm_index.json",
+            config=config
+        )
+        real_parser_shaped_events = {
+            9: [
+                {"note": 36, "volume": 100, "frame": 0},  # Bass drum
+                {"note": 38, "volume": 90, "frame": 30},  # Snare
+            ]
+        }
+
+        dpcm_events, noise_events = mapper.map_drums(real_parser_shaped_events)
+
+        assert len(dpcm_events) + len(noise_events) == 2
+
+    def test_map_drums_still_skips_genuine_zero_velocity_events(self, config):
+        """A real note-off (volume=0) must still be skipped -- the fix must
+        not turn every event into a hit regardless of velocity."""
+        mapper = EnhancedDrumMapper(
+            dpcm_index_path="tests/fixtures/test_dpcm_index.json",
+            config=config
+        )
+        events = {
+            9: [
+                {"note": 36, "volume": 100, "frame": 0},
+                {"note": 36, "volume": 0, "frame": 5},  # note-off, must be skipped
+            ]
+        }
+
+        dpcm_events, noise_events = mapper.map_drums(events)
+
+        assert len(dpcm_events) + len(noise_events) == 1
+
     def test_advanced_mapping_features(self, sample_midi_events, config):
         """Test advanced mapping features"""
         mapper = EnhancedDrumMapper(

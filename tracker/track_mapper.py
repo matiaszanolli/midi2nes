@@ -326,12 +326,20 @@ def assign_tracks_to_nes_channels(midi_events, dpcm_index_path):
             channel_scores.remove((ch, average_pitch(pitched_midi_events[ch])))
             nes_tracks['triangle'] = pitched_midi_events[ch]
 
-        # Remaining: try noise + dpcm if drum-like or just fill up
+        # Remaining: route drum-named tracks to noise; anything else pitched
+        # is dropped with a loud warning rather than stuffed into the dpcm
+        # slot -- that slot's downstream consumers (nes/emulator_core.py,
+        # _song_has_dpcm_events) expect {'sample_id', ...} catalog-reference
+        # events, not raw pitched note data, so silently routing a genuine
+        # melodic track there collapsed it into bogus repeated sample-id-0
+        # triggers with no trace (#DP-DPCM-13).
         for ch, _ in channel_scores:
             if 'drum' in str(ch).lower():
                 nes_tracks['noise'] = pitched_midi_events[ch]
-            elif not nes_tracks['dpcm']:
-                nes_tracks['dpcm'] = pitched_midi_events[ch]
+            else:
+                print(f"Warning: {len(pitched_midi_events[ch])} event(s) from track "
+                      f"'{ch}' dropped — no NES channel slot remains for it "
+                      f"(pulse1/pulse2/triangle already assigned; not drum-named).")
     # else: every original track was pure channel-9 drums (or the input was
     # empty) -- nothing pitched to route; drum resolution still happens via
     # map_drums_to_dpcm below.
