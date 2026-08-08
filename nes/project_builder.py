@@ -87,12 +87,15 @@ class NESProjectBuilder:
         Args:
             music_asm_path: Path to the music.asm file to include
             song_count: Number of songs packed into ``music_asm_path`` by a
-                jukebox build (#30/F-13, ``CA65Exporter.export_song_bank_bytecode``).
-                ``None``/``1`` (default) is an ordinary single-song project --
-                output is unchanged from before this parameter existed.
-                ``> 1`` defines ``JUKEBOX_BUILD`` before including
-                audio_engine.asm and adds the Start-button skip-to-next-song
-                polling in ``_generate_main_asm``.
+                jukebox build (#30/F-13, ``CA65Exporter.export_song_bank_bytecode``,
+                which always emits jukebox-format symbols regardless of song
+                count -- including a 1-song bank). ``None`` (default) is an
+                ordinary single-song project produced by
+                ``export_tables_with_patterns`` -- output is unchanged from
+                before this parameter existed. Any other value (``>= 1``)
+                defines ``JUKEBOX_BUILD`` before including audio_engine.asm
+                and adds the Start-button skip-to-next-song polling in
+                ``_generate_main_asm``.
 
         Returns:
             True on success
@@ -305,12 +308,22 @@ read_joypad_once:
         # Include the audio engine only for the bytecode export. The direct export
         # is self-contained and the engine imports symbols it never defines (#50).
         if is_bytecode and engine_src.exists():
-            if song_count and song_count > 1:
+            if song_count is not None:
+                # song_count is only ever passed by a jukebox build
+                # (CA65Exporter.export_song_bank_bytecode) -- that exporter
+                # ALWAYS emits jukebox-format symbols (song{i}_-prefixed,
+                # a song_table) regardless of song count, including a
+                # 1-song bank, so this must trigger on song_count being
+                # given at all, not just `> 1` (#30/F-13,
+                # MAP-2026-08-07-2/NH-HW-2026-08-07-1/PL-2026-08-07-1 --
+                # a 1-song bank used to reference audio_init_song and the
+                # fixed sequence labels with JUKEBOX_BUILD never defined,
+                # failing to link with unresolved externals).
+                #
                 # ca65's .ifdef only recognizes real symbol/constant
                 # definitions, not .define'd macros -- this must be a plain
                 # assignment, and it must precede the .include below so
-                # audio_engine.asm's own `.ifdef JUKEBOX_BUILD` sees it
-                # (#30/F-13).
+                # audio_engine.asm's own `.ifdef JUKEBOX_BUILD` sees it.
                 main_content += '\nJUKEBOX_BUILD = 1\n'
             main_content += '\n.include "audio_engine.asm"\n'
             
@@ -327,13 +340,18 @@ read_joypad_once:
         engine, so main.asm must own frame_counter itself (issue #50).
 
         ``song_count`` is the number of songs a jukebox build (#30/F-13)
-        packed into this ROM via ``CA65Exporter.export_song_bank_bytecode``.
-        ``None``/``1`` (the default -- ordinary single-song builds) leaves
-        this method's output unchanged from before this feature existed;
-        only ``song_count > 1`` adds the Start-button skip-to-next-song
-        polling below.
+        packed into this ROM via ``CA65Exporter.export_song_bank_bytecode``,
+        which ALWAYS emits jukebox-format symbols regardless of song count
+        -- including a 1-song bank. ``None`` (the default -- an ordinary
+        single-song build produced by ``export_tables_with_patterns``)
+        leaves this method's output unchanged from before this feature
+        existed; any non-``None`` value (``>= 1``) defines ``JUKEBOX_BUILD``
+        and adds the Start-button skip-to-next-song polling below (a no-op
+        wrap-to-self for a 1-song bank, but still required so
+        ``audio_init_song``/``audio_advance_song`` exist to resolve the
+        jukebox music.asm's symbol references).
         """
-        jukebox_mode = bool(song_count and song_count > 1)
+        jukebox_mode = song_count is not None
 
         frame_counter_def = "" if is_bytecode else (
             "    frame_counter: .res 2  ; 60Hz tick (direct export owns this)\n"

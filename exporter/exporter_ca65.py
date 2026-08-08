@@ -1313,6 +1313,21 @@ class CA65Exporter(BaseExporter):
                         inst, instruments, instrument_defs)
                 channel_events[channel].append(current_event)
 
+        # Explicit re-declaration (#30/F-13, MAP-2026-08-07-1): this method
+        # is called once per song by a multi-song build, and each call's
+        # sequence-bytecode loop below leaves the assembler in whatever
+        # `.segment "BANK_NN"` its last channel used. Without this, the
+        # *next* song's instrument_table/macro tables silently land inside
+        # that leftover dynamically-banked segment instead of the fixed,
+        # always-mapped CODE_8000 region -- the ROM still links and boots
+        # (BANK_NN is a valid segment), but at runtime, with R7 pointed
+        # anywhere other than that exact bank, every macro read for that
+        # song pulls garbage bytes. The single-song caller
+        # (export_tables_with_patterns) already has CODE_8000 active at
+        # this point (from its own header emission), so this is a no-op
+        # there -- redeclaring an already-active ca65 segment costs nothing
+        # and changes no emitted bytes.
+        lines.append('.segment "CODE_8000"')
         lines.append('; The Instrument Macro Pointers')
         lines.append(f'{label_prefix}instrument_table:')
         for inst in instrument_defs:

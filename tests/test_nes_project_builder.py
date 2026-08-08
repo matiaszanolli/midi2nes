@@ -557,14 +557,23 @@ class TestJukeboxSongCount:
         assert "audio_advance_song" not in content
         assert "prev_start_state" not in content
 
-    def test_song_count_one_leaves_output_unchanged(self, project_dir, temp_dir):
-        """song_count=1 is still an ordinary single-song project."""
+    def test_song_count_one_still_defines_jukebox_build(self, project_dir, temp_dir):
+        """Regression (#30/F-13, MAP-2026-08-07-2/NH-HW-2026-08-07-1/
+        PL-2026-08-07-1): a 1-song bank still goes through
+        CA65Exporter.export_song_bank_bytecode, which ALWAYS emits
+        jukebox-format symbols (song0_*, a song_table, `jmp
+        audio_init_song`) regardless of song count -- so song_count=1 must
+        still define JUKEBOX_BUILD, or the resulting music.asm fails to
+        link (unresolved audio_init_song / fixed sequence labels /
+        channel_start_banks / instrument_table). Only song_count=None (an
+        ordinary, non-jukebox-exporter build) should skip it -- see
+        test_song_count_none_leaves_output_unchanged above."""
         music_asm = self._bytecode_music_asm(temp_dir)
         builder = NESProjectBuilder(str(project_dir))
         assert builder.prepare_project(str(music_asm), song_count=1)
 
         content = (project_dir / "main.asm").read_text()
-        assert "JUKEBOX_BUILD" not in content
+        assert "JUKEBOX_BUILD = 1" in content
 
     def test_song_count_above_one_defines_jukebox_build_before_include(
             self, project_dir, temp_dir):

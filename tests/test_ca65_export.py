@@ -689,6 +689,47 @@ class TestExportSongBankBytecode(unittest.TestCase):
         self.assertGreater(song1_start_bank, song0_last_bank,
                             "song 1 must start in a fresh bank after song 0's tail")
 
+    def test_each_songs_instrument_table_lands_in_code_8000_not_a_bank(self):
+        # Regression (#30/F-13, MAP-2026-08-07-1): a song's instrument_table/
+        # macro tables must land in the fixed CODE_8000 segment, not whatever
+        # BANK_NN the *previous* song's sequence bytecode left active -- that
+        # bank is only R7-mapped while that specific song's sequence data is
+        # playing, so any other song's macro reads would pull garbage bytes
+        # from whatever's physically in that bank at the time. Force song 0
+        # to spill into BANK_01+ so this only passes if _build_song_bytecode
+        # explicitly re-declares CODE_8000 rather than inheriting context.
+        big_song = {'frames': {'pulse1': {
+            str(i): {'note': 60 + (i % 24), 'volume': 8 + (i % 7)}
+            for i in range(5000)
+        }}}
+        songs = [big_song, self._song(60), self._song(67)]
+        out = Path("test_jukebox_instrument_segment.asm")
+        try:
+            self.exporter.export_song_bank_bytecode(songs, str(out))
+            asm = out.read_text()
+        finally:
+            if out.exists():
+                out.unlink()
+
+        cur_segment = None
+        instrument_table_segment = {}
+        for line in asm.splitlines():
+            seg = re.match(r'\.segment\s+"([^"]+)"', line.strip())
+            if seg:
+                cur_segment = seg.group(1)
+                continue
+            m = re.match(r'(song\d+)_instrument_table:', line.strip())
+            if m:
+                instrument_table_segment[m.group(1)] = cur_segment
+
+        self.assertEqual(len(instrument_table_segment), 3)
+        for song, segment in instrument_table_segment.items():
+            self.assertEqual(
+                segment, 'CODE_8000',
+                f"{song}_instrument_table landed in '{segment}', not the fixed "
+                f"CODE_8000 bank -- it would read garbage macro data at runtime "
+                f"whenever a different bank is R7-mapped")
+
     def test_song_table_matches_song_and_channel_count(self):
         songs = [self._song(60), self._song(67)]
         out = Path("test_jukebox_songtable.asm")
@@ -1153,6 +1194,29 @@ class TestJukeboxCompilationIntegration(unittest.TestCase):
         main_asm = (self.project_path / "main.asm").read_text()
         self.assertIn("JUKEBOX_BUILD = 1", main_asm)
         self.assertIn("jsr audio_advance_song", main_asm)
+
+    def test_one_song_jukebox_bank_compiles_and_links(self):
+        # Regression (#30/F-13, MAP-2026-08-07-2/NH-HW-2026-08-07-1/
+        # PL-2026-08-07-1): export_song_bank_bytecode always emits
+        # jukebox-format symbols (song0_*, a song_table, `jmp
+        # audio_init_song`) regardless of song count, including a 1-song
+        # bank -- prepare_project(song_count=1) must still define
+        # JUKEBOX_BUILD so those symbols resolve, or this fails to link
+        # with unresolved externals (reproduced live before the fix).
+        songs = [self._song_frames(60)]
+        music_asm = Path(self.temp_dir) / "music.asm"
+        self.exporter.export_song_bank_bytecode(songs, str(music_asm))
+
+        self.assertTrue(self.builder.prepare_project(str(music_asm), song_count=1))
+
+        main_asm = (self.project_path / "main.asm").read_text()
+        self.assertIn("JUKEBOX_BUILD = 1", main_asm)
+
+        rom_path = Path(self.temp_dir) / "jukebox_one_song.nes"
+        from compiler import compile_rom
+        success = compile_rom(self.project_path, rom_path, mapper=MMC3Mapper())
+        self.assertTrue(success, "1-song jukebox ROM failed to compile/link")
+        self.assertTrue(rom_path.exists())
 
     def test_single_song_still_compiles_after_jukebox_changes(self):
         """Regression guard: song_count=None (the default, ordinary

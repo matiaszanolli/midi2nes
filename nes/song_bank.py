@@ -30,11 +30,20 @@ class SongMetadata:
 class SongBank:
     """In-memory, JSON-backed collection of parsed songs.
 
-    Scope: storage and analysis only. A SongBank parses MIDI files into
-    segments (events/patterns/frames), assigns them to virtual banks, and
-    estimates sizes — but it does NOT compile to a ``.nes``. There is currently
-    no song-bank -> ROM route; the ``song`` CLI subcommands manage the JSON bank
-    only. Multi-song ROM builds are tracked as a planned feature in
+    Storage/analysis only -- this class itself does NOT compile to a
+    ``.nes``. ``song build <bank.json> <out.nes>`` (#30/F-13, see
+    ``main.py``'s ``run_song_build``) is the real ROM route: it re-parses
+    each song from its recorded ``midi_path`` (not the ``segments`` stored
+    here, which are raw parsed events only -- no NES channel mapping,
+    frames, or patterns) and compiles through
+    ``CA65Exporter.export_song_bank_bytecode``.
+
+    Note this class's own bank/size model below (16KB virtual banks, 8 of
+    them, sized off raw MIDI event counts) is independent of -- and not
+    reconciled with -- the real MMC3 capacity model ``song build`` actually
+    builds against (8KB physical banks from a shared 60-bank pool, sized
+    off emitted bytecode). A song accepted here by ``add_song``/``bank``
+    accounting is not guaranteed to fit the real ROM, and vice versa; see
     docs/ROADMAP.md.
     """
 
