@@ -55,6 +55,7 @@ un-disproven finding in that area.
 | `tracker/pattern_detector_parallel.py`, `tracker/pattern_detector.py` | `/audit-patterns`, `/audit-performance` | HIGH |
 | `nes/emulator_core.py`, `nes/pitch_table.py`, `nes/envelope_processor.py` | `/audit-nes-hardware` | HIGH |
 | `nes/project_builder.py`, `nes/debug_overlay.py` | `/audit-mappers`, `/audit-pipeline` | HIGH |
+| `nes/audio_engine.asm` | `/audit-nes-hardware`, `/audit-mappers` | HIGH |
 | `mappers/**` | `/audit-mappers` | HIGH |
 | `compiler/**` | `/audit-mappers`, `/audit-safety` | HIGH |
 | `exporter/exporter_ca65.py` | `/audit-exporters`, `/audit-patterns` | HIGH |
@@ -73,6 +74,15 @@ un-disproven finding in that area.
 > not against memory. `main.py`'s default (subcommand-less) path is `run_full_pipeline`;
 > a change there affects the one-command flow even if no subcommand changed.
 
+> **Jukebox / `song build` changes route wide.** A change to `nes/song_bank.py`,
+> `main.py:run_song_build`, `CA65Exporter.export_song_bank_bytecode`, the `song_count` /
+> `JUKEBOX_BUILD` handling in `nes/project_builder.py`, or the `.ifdef JUKEBOX_BUILD` blocks
+> in `nes/audio_engine.asm` touches **one feature across four owning skills**
+> (`/audit-pipeline` D8, `/audit-exporters` D9, `/audit-mappers` D7, `/audit-nes-hardware`
+> D11). Route to all four, or run `/audit-suite --preset songbank-deep` instead of an
+> incremental pass. Risk floor **HIGH**: this path is exercised by no single-song test and
+> no single-song ROM, so an ordinary regression run will not catch a break in it.
+
 ## Step 3: Regression-focused checks on each changed file
 
 For every changed file, read the hunk + minimal context and ask:
@@ -88,6 +98,9 @@ For every changed file, read the hunk + minimal context and ask:
 - [ ] **Fallback** — a `ParallelPatternDetector` change that could break the documented fallback
       to `EnhancedPatternDetector`.
 - [ ] **Subprocess** — a `compiler/cc65_wrapper.py` change that could swallow a nonzero exit / stderr.
+- [ ] **Jukebox gate** — a change that makes the exporter's symbol format and the builder's
+      `JUKEBOX_BUILD` condition disagree (link failure), or that emits a song's tables
+      outside the fixed `CODE_8000` segment (silent per-song corruption that still links).
 - [ ] **Error handling delta** — a new bare `except`, swallowed exception, or unguarded `json.loads` /
       file open on a user path.
 - [ ] **Timing drift** — tempo→frame math that can accumulate off the 60Hz grid.

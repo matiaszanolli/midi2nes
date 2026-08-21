@@ -343,6 +343,51 @@ confirm a clamp exists on the path from Python value to emitted byte:
   guard being added first. Both match the overflow pattern already fixed once in the
   dead duplicate core (#38/NH-10).
 
+### Dimension 11: Jukebox engine paths (`.ifdef JUKEBOX_BUILD`)
+New in #30/F-13 and only assembled when `nes/project_builder.py` defines `JUKEBOX_BUILD`
+for a `song build` ROM. **These paths are invisible to every single-song test and every
+single-song ROM** — the engine's non-jukebox bytes are byte-identical with the symbol
+undefined, which is the design goal but also means this whole surface gets no coverage
+from the ordinary pipeline. Audit it as new code, not as a verify-the-fix pass.
+
+- **`EVAL_MACRO`'s indirect instrument table** (`nes/audio_engine.asm:87-103`). A
+  single-song build reads the fixed `instrument_table` label; a jukebox build indirects
+  through the zero-page pointer `instrument_table_ptr` (`:37`), which
+  `load_song_streams_indexed` (`:259-265`) rewrites on every song change. Verify the
+  pointer is loaded **before** the first `lda (instrument_table_ptr), y` can execute on a
+  cold boot (`audio_init_song`, `:291-301`, calls the loader before falling into the
+  shared init tail) and that no macro can be evaluated between an `audio_advance_song`
+  and the pointer store — a stale pointer reads the previous song's instrument bytes as
+  this song's, giving wrong duty/volume/arp on every channel (CRITICAL: silent song
+  corruption, not an audible failure).
+- **The `song_table` stride contract.** `load_song_streams_indexed` (`:259-286`) reads
+  `song_table_ptr_lo` / `_hi` / `song_table_bank` at `song_index * 5 + channel`; the
+  producer is `CA65Exporter.export_song_bank_bytecode`. Verify the stride, the channel
+  order (`SEQUENCE_CHANNELS`), and the `song_count` comparison in `audio_advance_song`
+  (`:310-318`) match the emitted tables exactly — see `/audit-exporters` Dimension 9 for
+  the producer side. Note `song_instrument_ptr_*` is indexed by song alone (no `* 5`).
+- **Auto-advance trigger condition** (`nes/audio_engine.asm:740-760`). The end-of-stream
+  handler sets `channel_ended, x` and scans all 5 entries, advancing only when **every**
+  channel has ended. This block re-fires every frame (the surrounding silence re-arm is
+  deliberately idempotent, #159), so verify: the scan is genuinely idempotent; `X` is
+  saved/restored around the inner scan (it is reused as the scan index);
+  `audio_advance_song` clears `channel_ended` on its way out so the new song cannot
+  instantly re-advance; and a song whose channels end on *different* frames advances
+  exactly once, not once per trailing frame.
+- **State reset on song change.** `audio_advance_song` reloads stream pointers and clears
+  per-channel playback state (`current_len`, `frame_wait`, …) so the new song does not
+  inherit timing state from the previous song's last note. Verify **every** piece of
+  per-channel state the engine carries is in that reset list — one missed variable
+  produces a glitch only on song 2+, which no single-song test can catch. Cross-check
+  against what `audio_init`'s cold-boot path clears.
+- **Wrap-around.** Both auto-advance and the Start-button skip wrap past the last song
+  back to song 0, so a 1-song bank wraps to itself. Confirm that is harmless (it re-inits
+  the same song) rather than an infinite re-trigger inside one frame.
+- **Start-button skip.** The edge-triggered poll lives in `main.asm`, not this file
+  (`nes/project_builder.py:365-386`), and calls `audio_advance_song` from inside the NMI.
+  Verify it cannot interleave with `audio_update`'s own channel writes in a way that
+  leaves a half-updated APU register set (cross-refs `/audit-mappers` Dimension 2).
+
 ## Cross-Dimension Dedup
 One root cause (e.g. the shared triangle/pulse pitch table, now fixed) may surface
 under several dimensions (pitch-table correctness *and* the triangle invariant). Report

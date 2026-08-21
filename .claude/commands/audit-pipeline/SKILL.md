@@ -24,6 +24,12 @@ fixed — every dimension below now describes **verify-the-fix** checks rather t
 The narrower issues (PL-03..PL-06) found while verifying the first batch are now closed too;
 confirm each fix still holds and treat any regression as a fresh finding.
 
+**Exception — Dimension 8 is not a verify-the-fix dimension.** The `song build` jukebox path
+(#30/F-13) shipped recently and is the youngest code in the pipeline; its first audit pass
+already found two defects that made it produce zero working ROMs at any bank size
+(PL-2026-08-07-1 and friends, fixed in `8ea7ac3`). Audit it as new code, not as a
+regression check.
+
 ## Parameters (from $ARGUMENTS)
 - `--focus <dims>` — comma-separated dimension numbers (e.g. `--focus 1,4`). Default: all.
 
@@ -96,7 +102,7 @@ producer key matches each consumer's read. Concrete checks in `main.py`:
   exactly the key set both detectors emit —
   `original_size`/`compressed_size`/`compression_ratio`/`unique_patterns`
   (`tracker/pattern_detector.py:884-889`) — not the old `original_events`/`patterns_found`
-  mismatch. Verify every `stats` reader (success banner `main.py:1046-1049`,
+  mismatch. Verify every `stats` reader (success banner `main.py:1199-1202`,
   `run_detect_patterns`'s banner `main.py:655-658`) only relies on keys present in both schemas.
 - **Default-vs-step-by-step stage coverage (F-06/#15, closed)**: this gap is now closed by
   the `compile` subcommand (`main.py:413-462`), which runs `compile_rom` + `validate_rom`
@@ -107,11 +113,11 @@ producer key matches each consumer's read. Concrete checks in `main.py`:
 
 ### Dimension 3: Flag Routing (`--arranger` / `--no-patterns` / `--debug` / `--skip-validation` / `--version`)
 Flags are parsed twice: argparse declares `--verbose`/`--debug`/`--arranger`/`--version` as
-global options (`main.py:1083-1086`), but the hand-rolled dispatch in `main()` (the
-`SimpleArgs` builder, `main.py:1328-1341`) re-derives them from a manually whitelisted
-`global_args` list (`main.py:1263-1311`). Audit both:
+global options (`main.py:1236-1239`), but the hand-rolled dispatch in `main()` (the
+`SimpleArgs` builder, `main.py:1481-1494`) re-derives them from a manually whitelisted
+`global_args` list (`main.py:1416-1464`). Audit both:
 - **Unknown/typo flags (F-03/#8, closed)**: the manual loop now `sys.exit(2)`s with
-  `"Error: Unknown option: <arg>"` (`main.py:1303-1308`) for anything starting with `-` that
+  `"Error: Unknown option: <arg>"` (`main.py:1456-1461`) for anything starting with `-` that
   isn't in the whitelist (`--verbose/-v`, `--debug/-d`, `--arranger/-a`, `--version`,
   `--no-patterns`, `--skip-validation`), instead of silently dropping it. Verify the
   whitelist stays in sync with the argparse-declared globals — a legitimate new global flag
@@ -119,33 +125,33 @@ global options (`main.py:1083-1086`), but the hand-rolled dispatch in `main()` (
   risk, much lower severity than the original silent-song-change bug it replaced).
 - **`--version` combined with other args (#179/PL-06, closed)**: the manual loop now matches
   argparse's `action='version'` semantics — a `--version` token prints `MIDI2NES <ver>` and
-  `sys.exit(0)`s immediately inside the loop (`main.py:1278-1284`), before any input file is
+  `sys.exit(0)`s immediately inside the loop (`main.py:1431-1437`), before any input file is
   consumed, so `python main.py --version song.mid` no longer silently runs the full pipeline.
   The bare `python main.py --version` (argv length 2) still short-circuits earlier at
-  `main.py:1231-1233`. Verify both forms exit 0 and print the version, and that no path files
+  `main.py:1384-1386`. Verify both forms exit 0 and print the version, and that no path files
   `--version` into `global_args` where `SimpleArgs` would ignore it again.
 - **`--skip-validation` argparse parity (partially fixed)**: it is now also a first-class
-  argparse argument on the `compile` subcommand (`main.py:1168`, part of the #15 fix), not
+  argparse argument on the `compile` subcommand (`main.py:1321`, part of the #15 fix), not
   manual-default-path-only anymore. `--no-patterns` remains manual-default-path-only with no
   subcommand equivalent — this appears intentional (the per-subcommand analogue is simply
   omitting `--patterns` on `export`); flag only if you find an input where the default path's
   pattern-compression decision can't be reproduced via the step-by-step subcommands.
 - **`--arranger` before a subcommand (#174/PL-01, closed)**: now rejected with a clear
-  `sys.exit(2)` error (`main.py:1247-1253`) instead of being silently discarded. Verify the
+  `sys.exit(2)` error (`main.py:1400-1406`) instead of being silently discarded. Verify the
   positive case still works: `--arranger` on the default path reaches `arrange_for_nes`
   (`main.py:786-790`) and produces a `{channel: {frame: {...}}}` structure the downstream
   pattern/export code accepts identically to `process_all_tracks`'s output (no drift
   observed; worth re-checking after any arranger refactor).
 - **`--debug` → `run_prepare` parity (#175/PL-02, closed)**: `run_prepare` now passes
   `debug_mode=getattr(args, 'debug', False)` into `NESProjectBuilder` (`main.py:479`),
-  matching the default path's `debug_mode` derivation (`main.py:991`). No divergence found.
+  matching the default path's `debug_mode` derivation (`main.py:1144`). No divergence found.
 - **`run_map --config`/`--dpcm-index` (F-05/#13, closed)**: `--dpcm-index` is honored
   (`main.py:108`, `getattr(args, 'dpcm_index', None) or 'dpcm_index.json'`); `--config` was
-  removed from the `map` subcommand entirely (comment at `main.py:1100-1101`) rather than left
+  removed from the `map` subcommand entirely (comment at `main.py:1253-1254`) rather than left
   declared-but-ignored. `detect-patterns`'s `--config` was subsequently **re-added** for a
   narrow, genuinely-consumed purpose — it overrides only the pattern-detection sampling caps
   (`processing.pattern_detection.max_events`/`max_pattern_events`, #219) via
-  `get_pattern_detection_caps` (`main.py:39-62`), declared at `main.py:1135` and read at
+  `get_pattern_detection_caps` (`main.py:39-62`), declared at `main.py:1288` and read at
   `main.py:614`; it does **not** touch tempo or `PATTERN_MIN/MAX_LENGTH`. Verify no other
   subcommand still declares a flag its handler silently ignores (grep every `add_argument`
   call against the body of its `func=`).
@@ -153,8 +159,8 @@ global options (`main.py:1083-1086`), but the hand-rolled dispatch in `main()` (
 ### Dimension 4: Error Propagation & Fail-Fast (no broken ROM on stage failure)
 The cardinal rule: a stage failure must abort before a stale/garbage `.nes` is left where the
 user expects a good one.
-- `run_full_pipeline`'s body is one `try` (`main.py:773`) / `except Exception` (`main.py:1063`)
-  / `finally` (`main.py:1071-1076`). Verify no inner `except` still swallows a fatal error and
+- `run_full_pipeline`'s body is one `try` (`main.py:773`) / `except Exception` (`main.py:1216`)
+  / `finally` (`main.py:1224-1229`). Verify no inner `except` still swallows a fatal error and
   lets the run reach ROM emission:
   - The DPCM-pack step catches broadly but is genuinely non-fatal by design — it records
     a `DpcmPackResult.warning` and surfaces it prominently in the success banner rather than
@@ -183,10 +189,10 @@ user expects a good one.
   a printed `[ERROR]`; `compiler/cc65_wrapper.py` raises `ToolchainError`/`CompilationError`
   on a missing tool or nonzero `ca65`/`ld65` exit code (`compiler/cc65_wrapper.py:47-52,
   162-167, 225-230`; see `core/exceptions.py:88` `CompilationError`, `:158` `ToolchainError`).
-  Both `run_full_pipeline` (`main.py:1024-1026`) and `run_compile` (`main.py:449`)
+  Both `run_full_pipeline` (`main.py:1177-1179`) and `run_compile` (`main.py:449`)
   `sys.exit(1)` on a `False` return. No gap found here.
 - **`run_prepare` silent-exit-0 (F-06/#15, closed)**: `prepare_project`
-  (`nes/project_builder.py:75`) is now called inside a `try/except Exception` that exits 1 on
+  (`nes/project_builder.py:83`) is now called inside a `try/except Exception` that exits 1 on
   a raised exception, AND separately checks `if not prepared: sys.exit(1)` for a
   falsy-but-non-raising return (`main.py:483-490`). Verify `prepare_project`'s real failure
   modes (bad path, permissions) are covered by one of these two branches, not a third one that
@@ -234,13 +240,13 @@ The default path writes intermediates into a `tempfile.TemporaryDirectory(prefix
   cause an unexpected clobber as previously suspected. No finding here; this bullet can be
   dropped from future passes unless the naming scheme changes.
 - **Restore-on-failure (F-11/#26, closed)**: now a single `finally` block
-  (`main.py:1071-1076`) calls `_restore_backup` (`main.py:352-364`) whenever `build_succeeded`
+  (`main.py:1224-1229`) calls `_restore_backup` (`main.py:352-364`) whenever `build_succeeded`
   is still `False`. Because it's in `finally`, it covers every `sys.exit(1)` reached inside
   the `try` — compile failure, prepare failure, validation failure — **and** the top-level
-  `except Exception` (`main.py:1063-1069`), unlike before where several exit points bypassed
+  `except Exception` (`main.py:1216-1222`), unlike before where several exit points bypassed
   restore. Confirmed fixed; verify no code path returns out of the function before the `with`
   block's `finally` would run (none found).
-- **Backup cleanup on success (F-12/#29, closed)**: `main.py:1059-1061` now does
+- **Backup cleanup on success (F-12/#29, closed)**: `main.py:1212-1214` now does
   `backup_path.unlink(missing_ok=True)` immediately after `build_succeeded = True` is set.
   `.nes.backup` no longer lingers after a successful run; on a failed run it correctly stays
   in place (only the success branch deletes it). Confirmed fixed.
@@ -302,22 +308,47 @@ parallel→sequential fallback (`main.py:827-853`).
   spot-check. A parallel crash with no fallback firing is a HIGH floor.
 
 ### Dimension 8: Song-Bank Path
-The `song` subcommands (`run_song_add`/`run_song_list`/`run_song_remove`) operate on a JSON
-bank via `nes/song_bank.py` (`SongBank.add_song_from_midi`, `export_bank`, `import_bank`).
-- **Disjoint from the main pipeline (F-13/#30)**: this remains true, and per project status
-  is a **known roadmap gap, not a bug to hunt for** — `docs/ROADMAP.md` (the "Song banks → ROM"
-  section, lines 57-63) explicitly lists a `song build` route as an open item, and `SongBank`
-  (`nes/song_bank.py:30`) has no build/compile method. Only flag this dimension if
-  `docs/ROADMAP.md`'s stated status drifts from what the code actually supports (doc-rot,
-  LOW/MEDIUM) — not as a functional defect.
+The `song` subcommands (`run_song_add`/`run_song_list`/`run_song_remove`/`run_song_build`)
+operate on a JSON bank via `nes/song_bank.py` (`SongBank.add_song_from_midi`, `export_bank`,
+`import_bank`).
+- **#30/F-13 is CLOSED — the bank is no longer disjoint from the pipeline.** `song build
+  <bank.json> <out.nes>` (`main.py:run_song_build`, `main.py:927-1027`) now compiles a bank
+  into a real multi-song "jukebox" ROM, and `docs/ROADMAP.md` § "Song banks → ROM" is marked
+  "v1 shipped, follow-ups remain". The old prose here told auditors to treat this dimension as
+  a roadmap gap and *not* look for functional defects — that instruction is retired: this is
+  now live code carrying a full second contract chain (see `_audit-common.md` §
+  Inter-Stage Data Contracts, the `song build` sub-list) and is audited like any other path.
+  Verify-the-fix: the v1 scope cuts (MMC3-only, DPCM rejected per-song, no `--debug`, no
+  visual menu) are *documented* follow-ups in `docs/ROADMAP.md:69-75` — flag those only as
+  doc-rot if the code and the roadmap disagree, never as functional defects. Anything **not**
+  on that list is a real finding.
+- **Bank ordering and re-parse contract**: `run_song_build` sorts by
+  `bank.songs[name]['metadata'].get('order', 0)` (`main.py:953-954`) — this is the first and
+  only consumer of `order`, which `run_song_add` has always written. It then rebuilds frames
+  from each song's recorded `midi_path` (`main.py:963-975` via `midi_to_frames_for_song`),
+  **not** from the stored `segments`. Verify: `segments` are raw parsed events with no channel
+  mapping, so any future change that makes `song build` read them instead is a silent
+  corruption, not a shortcut; and a bank whose `midi_path` is missing or has moved must still
+  exit non-zero with a clear message (`main.py:964-970`) rather than building a partial ROM.
+- **Per-song DPCM rejection**: `_song_has_dpcm_events(frames)` (`main.py:980-985`) hard-fails
+  the whole build with an explanatory error before any export. Verify it inspects the *frames*
+  actually being exported (not the bank metadata) so a song that gains DPCM via `--arranger`
+  can't slip past, and that a rejection leaves no partial `.nes` on disk (the whole build runs
+  inside a `tempfile.TemporaryDirectory`, `main.py:992`).
+- **Capacity pre-flight**: `check_mapper_capacity(str(music_asm), mapper)` runs on the
+  *combined* N-song `music.asm` (`main.py:1007`) before `prepare_project`. Verify N songs
+  sharing one 60-bank MMC3 pool are sized against the same limit the single-song path uses —
+  an N-song overrun that only surfaces as a CC65 link error is a HIGH contract break.
 - `run_song_add` derives `metadata` from CLI args and defaults the bank to `song_bank.json`
-  when `--bank` is omitted (`main.py:660-688`); `run_song_list`/`run_song_remove`
-  (`main.py:690-736`) require a positional `bank`. Unchanged; verify the add-default and the
-  list/remove-required asymmetry can't silently write to a different file than the user reads.
-- **Parser drift (fixed)**: `add_song_from_midi` (`nes/song_bank.py:72-89`) now calls
+  when `--bank` is omitted (`main.py:799-827`); `run_song_list`/`run_song_remove`
+  (`main.py:829-880`) require a positional `bank`. `run_song_build` takes the bank as a
+  positional too (`main.py:935`), so `add` is the only one with a default. Verify the
+  add-default and the list/remove-required asymmetry can't silently write to a different
+  file than the user reads.
+- **Parser drift (fixed)**: `add_song_from_midi` (`nes/song_bank.py:81-103`) now calls
   `parse_midi_to_frames` imported from `tracker.parser_fast` (`nes/song_bank.py:11`) instead
   of an independent third parser — fixed by commit `d8f6a0e` (#33/#34). Verify the segment
-  shape `_process_segments` (`nes/song_bank.py:91`) expects from `parse_midi_to_frames`'s
+  shape `_process_segments` (`nes/song_bank.py:105`) expects from `parse_midi_to_frames`'s
   output still matches what `run_parse`/`run_map` treat as canonical, since this is now a
   second, independent consumer of that output shape.
 

@@ -107,7 +107,7 @@ compression is MEDIUM (it guards a CRITICAL failure mode).
   `tests/test_ca65_export.py` was RED against real `ca65`/`ld65` — the shipped
   `nes/audio_engine.asm` had a relative branch (`bcc @is_note`) whose target was 130
   bytes away, outside the 6502 ±127 range (REG-01/#39). Fixed by restructuring the
-  dispatch (`nes/audio_engine.asm:204-213`, `bcs`+`jmp` instead of the out-of-range
+  dispatch (`nes/audio_engine.asm:354-363`, `bcs`+`jmp` instead of the out-of-range
   `bcc`) — confirmed: all 9 tests in `TestCA65CompilationIntegration` pass with the
   toolchain present. Re-verify this stays green; a relative-branch regression here is
   silent until an assembler is actually invoked. **#414/REG-26 is CLOSED**: this class
@@ -121,6 +121,22 @@ compression is MEDIUM (it guards a CRITICAL failure mode).
   from `PATH`). Re-verify any *new* CC65-shelling-out test class in this file or others
   gets the marker from the start — that's the exact gap that let this drift for as long
   as it did.
+- **Jukebox / `song build` round-trip (#30/F-13, REG-27/28)**. The multi-song route now
+  has its own real-toolchain anchor: `TestJukeboxCompilationIntegration`
+  (`tests/test_ca65_export.py:1143`) drives
+  `export_song_bank_bytecode` → `prepare_project(song_count=N)` → `compile_rom` →
+  `ROMDiagnostics`, with `TestRunSongBuild` (`tests/test_main.py`) covering the
+  orchestration with compilation mocked and `TestJukeboxSongCount`
+  (`tests/test_nes_project_builder.py:529`) pinning the `JUKEBOX_BUILD` gate. Two things
+  to verify here, because this is exactly where the feature's first two defects hid:
+  **(a) bank-size coverage** — the 1-song case and the 2+-song case fail in *different*
+  ways (a 1-song bank failed to link at all; a 2-song bank linked, booted, and silently
+  corrupted song 2), so a suite that only exercises one count proves nothing about the
+  other; **(b) assertion depth** — "it compiled and passed ROM diagnostics" was true of
+  the corrupted 2-song ROM. A round-trip assertion here has to reach *symbol placement*
+  (e.g. `ld65 --dbgfile`, confirming each `song{i}_instrument_table` resolves inside the
+  fixed `CODE_8000` window) to be worth anything. A jukebox test class asserting only
+  "build succeeded" is a **weak assertion** finding (Dimension 2), not coverage.
 - **Fixed (REG-10/#128)**: `tests/test_rom_validation_integration.py` is the designated
   "compile a real ROM and validate its bytes" gate. It previously had 5 of 9 tests SKIP
   even with `ca65`/`ld65` present, because the hand-written `music.asm` fixture defined

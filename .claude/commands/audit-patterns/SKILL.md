@@ -73,12 +73,13 @@ The detect-patterns contract is a dict with `patterns`, `references`, `stats`, `
   (`tracker/pattern_detector.py:12`) and a regression test asserting it's gone
   (`tests/test_patterns.py:1184-1190`). This resolved P-08/#105's race/shape concerns by
   construction; #105 and #102 are both **closed**.)
-- The `--no-patterns` stub built inline in `run_full_pipeline` (`main.py:865-881`): confirmed
+- The `--no-patterns` stub, now built in `detect_patterns_or_direct_export`
+  (`main.py:1060`, extracted out of `run_full_pipeline` by #406): confirmed
   **fixed** (#104) — its `stats` keys (`original_size`, `compressed_size`, `compression_ratio`,
   `unique_patterns`, plus `total_events`/`patterned_events`/`coverage_ratio`) now match both
   detectors' schema exactly, and it reports `0` (not `1.0`) since direct export applies no
   compression (#17). The former top-level-`variations`-omission drift is also **fixed & closed**
-  (#258/PAT-09): the stub now emits `'variations': {}` (`main.py:880`), matching the 4-key
+  (#258/PAT-09): the stub now emits `'variations': {}` (`main.py:1100`), matching the 4-key
   envelope both detectors return. PAT-06 (#172) is likewise **fixed & closed**: the two
   `_get_variation_summary` implementations now emit the SAME inner shape
   (`pattern_detector.py:502-520` and `pattern_detector_parallel.py:256-272` both return
@@ -99,10 +100,17 @@ A wrong offset corrupts playback, not just space. Trace position→frame mapping
   misalign any future consumer.
 - The old "occurrence-index passed as pattern offset" bug (#102-adjacent, formerly described
   here as an `enumerate(positions)` loop in `main.py`) **no longer exists** — that whole code
-  path was deleted. `run_full_pipeline` now calls `CA65Exporter.export_tables_with_patterns`
-  with a literal empty `{}` for `references` (`main.py:917-924`), and the step-by-step
-  `run_export` path (`main.py:519-560`) forwards whatever `references` a `detect-patterns` JSON
-  file contains — but `export_tables_with_patterns` itself documents that the `references`
+  path was deleted. **The "literal empty `{}`" description is also stale** — the default path
+  no longer hardcodes one. `export_frames_and_resolve_mapper` (`main.py:1181`, the stage helper
+  #406 extracted out of `run_full_pipeline`) passes the real `pattern_result['references']`
+  (`main.py:1222-1226`), deliberately mirroring `run_export` rather than a hardcoded `{}` so the
+  two entry points stay forward-compatible if `references` is ever wired up (#379/
+  PIPE-2026-07-19-3 — the reasoning is in the comment at `main.py:1215-1221`). The step-by-step
+  `run_export` path (`main.py:654-669`) forwards whatever `references` a `detect-patterns` JSON
+  file contains, defaulting to `{}` only when `--patterns` is omitted — so both paths now agree
+  on passing the real dict. Verify they stay agreed: a future change that reverts one side to a
+  hardcoded `{}` reintroduces exactly the asymmetry #379 closed. `export_tables_with_patterns`
+  itself still documents that the `references`
   argument is **not consumed** (`exporter/exporter_ca65.py:962-971`, #4, closed): `patterns`
   truthiness is only a boolean switch between direct frame export and the MMC3
   macro-bytecode serializer. Confirm this contract still holds before trusting any future PR
@@ -119,14 +127,14 @@ Cosmetic but must not mislead (MEDIUM floor when wrong).
 computes `original_size = Σ len(events)*len(positions)` and
 `compressed_size = Σ len(events)`, over detected patterns only. The former "x multiplier vs %
 reduction" inconsistency is **fixed** (#17, closed): every print site now uses the same "%
-reduction" convention — `main.py:655` (subcommand), `main.py:1046` (ROM success banner), and the
+reduction" convention — `main.py:655` (subcommand), `main.py:1199` (ROM success banner), and the
 `--no-patterns` stub's `0` (`main.py:871`) is coherent with that convention (0% reduction, not
 a misleading `1.0`).
 PAT-03 (#169) is now **fixed & closed**: `calculate_compression_stats` takes a `total_events`
 arg (`pattern_detector.py:843-844`) and reports a separate `coverage_ratio =
 patterned_events / total_events` (`:879-881`), and both banners now print the dedup ratio
 explicitly labeled as within the patterned subset PLUS a distinct "Pattern coverage" line
-(subcommand `main.py:655`/`:657`, ROM banner `main.py:1046`/`:1048`). The dedup ratio still has
+(subcommand `main.py:655`/`:657`, ROM banner `main.py:1199`/`:1048`). The dedup ratio still has
 no relationship to emitted ROM bytes (actual size reduction comes from macro/instrument dedup
 in the bytecode serializer, #4) — confirm the banner keeps the two numbers distinct and that
 callers keep passing `total_events` (the analyzed/sampled count, #257/PAT-08), since omitting it

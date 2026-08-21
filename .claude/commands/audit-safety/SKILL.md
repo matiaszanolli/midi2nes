@@ -78,10 +78,11 @@ to a genuinely drum-free song), while `run_full_pipeline` already branched on
 with matching wording ("No dpcm_index.json found, skipping DPCM packing."). Verify: does
 the warning/info line fire on *every* path that can leave DPCM unpacked or partially
 unpacked, or is there a code path inside the `try` that could still exit early without
-setting `warning`? The parallel→sequential fallback (`main.py:557`–`580`, catches bare
-`Exception` at `:562`) is unchanged behavior (just line-shifted) — confirm it is still
+setting `warning`? The parallel→sequential fallback (`main.py:1134`–`1160`, now inside
+the extracted `detect_patterns_or_direct_export` helper; catches bare `Exception` at
+`:1139`) is unchanged behavior (just relocated) — confirm it is still
 the *documented* fallback (`_audit-common.md` Multiprocessing rule) and not masking a
-real bug, and that the lossy-resample warning (`:573`–`579`) still fires whenever the
+real bug, and that the lossy-resample warning (`:1152`–`1159`) still fires whenever the
 fallback had to downsample. Severity: swallowing on a recoverable/optional path =
 LOW–MEDIUM; swallowing where the song is silently changed (dropped DPCM, dropped
 channel) escalates per `_audit-severity.md`.
@@ -183,17 +184,35 @@ Verify fix completeness: confirm every subcommand that reads inter-stage JSON go
 through `load_json_stage` (it currently does, across all four call sites above), and
 flag any future subcommand that reverts to a bare `json.loads(...).read_text()`.
 
+**A song bank is a JSON intermediate too, and it does not use this helper.**
+`run_song_build` (`main.py:927`) reads the bank via `SongBank.import_bank` inside its own
+`try/except Exception → [ERROR] ... sys.exit(1)` (`main.py:941-945`) rather than through
+`load_json_stage`. Judge that on its merits rather than as an automatic finding — the
+required-keys model doesn't fit a bank file — but do check the parts `load_json_stage`
+would have covered: a bank that parses as JSON but isn't a dict, a `songs` entry missing
+`metadata` (`main.py:953-954` does `['metadata'].get('order', 0)` with a **subscript**, not
+`.get`), and the `except Exception` breadth (Dimension 7 — it will also swallow a
+programming error inside `import_bank`, not just a bad file).
+
+`midi_path` is the one field in that JSON that becomes a **filesystem read of an arbitrary
+path** (`main.py:963-975`). Existence is checked (`:968-970`) with a clean error, which is
+the important part; confirm the failure stays a clean exit for the realistic cases — a
+relative path resolved against a different cwd than the one `song add` ran in, a path that
+exists but isn't a MIDI file (it reaches `parse_midi_to_frames` and should surface as
+`InvalidMIDIError` per Dimension 2, not a raw traceback), and a bank hand-edited to point
+somewhere unexpected.
+
 ### Dimension 6: File / Resource Handling & Temp Cleanup
 Check that file handles use context managers and temp dirs are cleaned up.
 `run_full_pipeline` still correctly uses
-`with tempfile.TemporaryDirectory(prefix="midi2nes_")` (`main.py:1139`, shifted again
+`with tempfile.TemporaryDirectory(prefix="midi2nes_")` (`main.py:1292`, shifted again
 by #406's stage-helper extraction above `run_full_pipeline` — re-check this number
 after any future edit near the top of the file), which auto-cleans — confirm nothing
 escapes it. All the named `open(...)` sites still
 use `with`: the DPCM append inside the shared `pack_dpcm_into_asm` helper
 (`main.py:168`, `open(asm_path, 'a')` — used by both `run_export` and
 `run_full_pipeline` since #380/TD-28, see Dimension 1), the benchmark
-`open(results_file, 'w')` (`main.py:1571`), and
+`open(results_file, 'w')` (`main.py:1737`), and
 `config/config_manager.py` `save()` (`:245`). No bare `open()` without `with` found in
 these paths.
 Backup/restore around `output_rom`: creation is at `main.py:482`–`486` (only when
@@ -241,7 +260,8 @@ DPCM append), but the consequence is loudly surfaced — `⚠️  NO DRUMS: ...`
 `⚠️  PARTIAL DPCM MISS: ...` (`main.py:714`–`720`, label chosen per #367/DP-DPCM-05,
 see Dimension 1) — instead of a warning a user could scroll past, which meaningfully
 mitigates (if not eliminates) the risk (#123). `run_full_pipeline`'s DPCM step
-(`main.py:1097`–`1104`) goes through the identical helper now (not a second
+(`main.py:1234`–`1246`, inside the extracted `export_frames_and_resolve_mapper`
+helper) goes through the identical helper now (not a second
 hand-written block), with the warning echoed again in the final summary. Check the
 backup-restore on compile/validate failure: now
 centralized in the single `finally` block described in Dimension 6

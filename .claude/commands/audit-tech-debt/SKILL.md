@@ -62,6 +62,17 @@ unrelated-implementation *check_rom.py* at the repo root were removed in commit
 fixed and reframe the check as: confirm no new stray root-level script, duplicate
 `check_rom.py`/`validate_rom.py`, or other dead module has been reintroduced since.
 
+Non-Python files count too, and the current known lead is `nes/linker_mmc3.cfg`: it is
+checked in but `grep -rn linker_mmc3` finds **no reference anywhere** in the tree — every
+mapper emits its `nes.cfg` programmatically from `generate_linker_config()`, so nothing
+reads this file. Confirm that still holds (a build script or test picking it up would make
+it live), then judge whether it's a stale leftover or a deliberately-kept reference copy —
+if the latter, the fix is a comment saying so, not deletion.
+
+Retired placeholders to watch for a reappearance: `prepare_multi_song_project` and
+`add_song_bank` in `nes/project_builder.py` were removed once `song build` gave the song
+bank a real ROM route (#30/F-13). Either name coming back is dead code, not a feature.
+
 ### Dimension 3: Stale Documentation & Comments
 A `docs/*.md`, docstring, or comment that contradicts the code. Highest-value targets:
 `CLAUDE.md` (it already notes the MMC1→MMC3 prepare drift — check for more), `docs/ROADMAP.md`,
@@ -123,14 +134,14 @@ one half is now closed, the other explicitly deferred:
   `export_direct_frames`.
 - **`main.py`'s `run_full_pipeline` half is now CLOSED** (#406): three of its stages
   were extracted into independently-testable module-level functions, all defined just
-  above `run_full_pipeline` (`main.py:871-1250`) — `detect_patterns_or_direct_export`
-  (`:893`, Step 4: parallel/sequential pattern detection with fallback + sampling, or
-  the direct-export stats stub), `export_frames_and_resolve_mapper` (`:1002`, Steps
+  above `run_full_pipeline` (`main.py:1060-1294`) — `detect_patterns_or_direct_export`
+  (`:1060`, Step 4: parallel/sequential pattern detection with fallback + sampling, or
+  the direct-export stats stub), `export_frames_and_resolve_mapper` (`:1181`, Steps
   5-5.5: CA65 export, DPCM packing, and `--mapper` resolution — unifying the two
   resolution-timing paths that used to be split across two different points in
-  `run_full_pipeline`), and `build_and_validate_rom` (`:1079`, Steps 6-8: capacity
+  `run_full_pipeline`), and `build_and_validate_rom` (`:1261`, Steps 6-8: capacity
   pre-flight, project prep, compile, validate). `run_full_pipeline` itself
-  (`main.py:1113-1249`) dropped from ~335 to ~137 lines. `main.py` is now ~1654 lines
+  (`main.py:1295`) dropped from ~335 to ~137 lines. `main.py` is now ~1878 lines
   total (grew further from the helper extraction's own boilerplate and docstrings —
   the same pattern the exporter half's extraction showed, see #136 above — but the one
   oversized function is gone). Each extracted helper raises instead of calling

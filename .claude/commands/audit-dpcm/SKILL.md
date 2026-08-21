@@ -54,28 +54,38 @@ Mapping resolution is in `EnhancedDrumMapper._resolve_dpcm_sample_name` and
   `dpcm_sampler/drum_engine.py:75-77`). Confirm a mid-range note (e.g. 47, mid tom)
   still resolves to a real sample name and not `None`.
 - **Fixed (verify)**: `_resolve_dpcm_sample_name`
-  (`dpcm_sampler/enhanced_drum_mapper.py:390-418`) no longer stops at the first
+  (`dpcm_sampler/enhanced_drum_mapper.py:468-500`) no longer stops at the first
   candidate — it tries the velocity-split name, then the advanced `"primary"` name,
   then the `DEFAULT_MIDI_DRUM_MAPPING` role name, in that order, and only returns
   `None` (→ noise fallback) if none of the three exist in `self.sample_index`.
   Verify this cascade actually reaches the index for a name like `kick_soft`
   that legitimately isn't present (falls through to `"kick"` then to the default
   role name) rather than silently dropping.
-- Velocity-0 note-offs are correctly skipped
-  (`if e.get('velocity', 0) == 0: continue`, `enhanced_drum_mapper.py:254-255`).
-- `_get_advanced_sample` (`enhanced_drum_mapper.py:374-388`) selects by
+- **#DP-DPCM-12 is CLOSED**: the note-off skip in `map_drums` used to read
+  `e.get('velocity', 0)` only. Real parsed MIDI events from `tracker/parser_fast.py`
+  carry **`volume`**, not `velocity` — so the key defaulted to `0` on every real event
+  and the whole legacy-mode drum-detection loop was dead code on real input, skipping
+  every note as if it were a note-off. It now reads
+  `velocity = e.get('velocity', e.get('volume', 0))` before the zero test
+  (`enhanced_drum_mapper.py:324-325`), matching the defensive dual-key idiom used in
+  `tracker/track_mapper.py` and `nes/emulator_core.py`. Verify-the-fix: this bug was
+  invisible to the test suite because the fixtures used synthetic `velocity`-keyed
+  events. Any check here must exercise **parser output**, not hand-built dicts — and the
+  same grep (`get('velocity'` with no `volume` fallback) should come back clean across
+  `dpcm_sampler/`. A regression silently drops every drum in legacy mode.
+- `_get_advanced_sample` (`enhanced_drum_mapper.py:452-466`) selects by
   `velocity_ranges`; its result is now just one candidate in the fallback chain
   above rather than a hard commit — confirm a nonexistent velocity-split name no
   longer kills the whole event, only that one candidate.
 
 ### Dimension 2: `dpcm_index.json` schema integrity
 The index is loaded in the same three places, still against two different shapes:
-- `EnhancedDrumMapper._load_sample_index` (`dpcm_sampler/enhanced_drum_mapper.py:268-281`)
+- `EnhancedDrumMapper._load_sample_index` (`dpcm_sampler/enhanced_drum_mapper.py:279-292`)
   reads the raw index; entries reach `DPCMSampleManager.allocate_sample`
   (`dpcm_sampler/dpcm_sample_manager.py:15-65`, reads `sample_data.get('length', 1024)`
   at line 34, `sample_data.get('data', [])` at line 55, `sample_data.get('frequency',
   33144)` at line 58) only through the shared `_allocate` helper (`enhanced_drum_mapper.py:
-  252-261`), not directly.
+  263-272`), not directly.
 - The real `dpcm_index.json` entries only contain **`id`** and **`filename`** (verify:
   `python -c "import json;
   print(list(json.load(open('dpcm_index.json')).values())[0])"`) — `data` and `frequency`
@@ -116,7 +126,7 @@ The index is loaded in the same three places, still against two different shapes
   is CLOSED**: `run_export` and `run_full_pipeline` previously had copy-pasted,
   already-diverged DPCM-pack blocks (`run_export` never passed `verbose=`) — both now
   just call `pack_dpcm_into_asm(frames, asm_path, verbose=...)` (`main.py:709` and
-  `main.py:1097` respectively) and format their own status line from the returned
+  `main.py:1250` respectively) and format their own status line from the returned
   `DpcmPackResult`. It reads `sample.get('pitch', 15)` (line 75) and `sample['filename']`
   (line 66) — `pitch` is still absent from the shipped index. Confirm `id`/`filename`
   remain the only keys any consumer can rely on, that `generate_dpcm_index`
@@ -205,7 +215,7 @@ orphaned (nothing in the pipeline calls it; `generate_dpcm_index` scans pre-made
   0–127 range `$4011` accepts before emission.
 - Silence init: `docs/APU_DMC_REFERENCE.md` says init should write `$00` to `$4011`
   so the DMC counter doesn't muffle Triangle/Noise via the non-linear mixer.
-  Live on the bytecode path: `nes/audio_engine.asm:128` writes `LDA #$00` / `STA $4011`
+  Live on the bytecode path: `nes/audio_engine.asm:181` writes `LDA #$00` / `STA $4011`
   at `audio_init`. **#348/NH-HW-1 is CLOSED**: the direct-export `init_music`/`reset`
   no longer omits it — see `/audit-nes-hardware` Dimension 4 for the exact
   `exporter/exporter_ca65.py` line numbers across all three `init_music`/`reset`
@@ -281,18 +291,30 @@ orphaned (nothing in the pipeline calls it; `generate_dpcm_index` scans pre-made
 
 ### Dimension 8: Channel-pipeline integration (noise vs DMC)
 `tracker/track_mapper.py:assign_tracks_to_nes_channels(midi_events, dpcm_index_path)`
-(line 179; called from `main.py:run_map` and the full pipeline):
-- It calls `map_drums_to_dpcm` (line 244) and routes results:
-  `nes_tracks['dpcm'] = dpcm_events` (line 246-247, still overwrites any prior dpcm
-  assignment) and `noise_events` only land on `noise` if it's still empty
-  (lines 249-251). **Fixed, but only partially (#74/D-11)**: when `noise` is
-  already occupied, the drum noise-fallback events are still discarded (this is
-  physically unavoidable — NES has one Noise channel, per
+(line 238; called from `main.py:run_map` and the full pipeline):
+- It calls `map_drums_to_dpcm` and routes results: `nes_tracks['dpcm'] = dpcm_events`
+  (line 351, still overwrites any prior dpcm assignment) and `noise_events` only land on
+  `noise` if it's still empty (lines 354-355). **Fixed, but only partially (#74/D-11)**:
+  when `noise` is already occupied, the drum noise-fallback events are still discarded
+  (this is physically unavoidable — NES has one Noise channel, per
   `docs/APU_NOISE_REFERENCE.md`) — but this is no longer silent: a `print(...)`
   warning now reports how many events were dropped and why
-  (`tracker/track_mapper.py:253-259`). Verify the count in the warning matches
+  (`tracker/track_mapper.py:361-363`). Verify the count in the warning matches
   `len(noise_events)` exactly and that this is the only discard path for these
   events.
+- **#DP-DPCM-13 is CLOSED — the dpcm slot is no longer a dumping ground.** The
+  leftover-track loop used to route any remaining *pitched* track into
+  `nes_tracks['dpcm']` when that slot was empty ("try noise + dpcm if drum-like or just
+  fill up"). But the dpcm slot's downstream consumers (`nes/emulator_core.py`, and now
+  `_song_has_dpcm_events` in `main.py`) expect `{'sample_id', ...}` catalog-reference
+  events, not raw pitched note data — so a genuine melodic track landing there collapsed
+  into bogus repeated sample-id-0 triggers with no trace. The loop now routes only
+  drum-named tracks to `noise` and drops anything else with a loud per-track warning
+  (`tracker/track_mapper.py:334-343`). Verify-the-fix: the two event shapes that share
+  this dict are still structurally distinguishable, and nothing else in the codebase
+  writes non-`sample_id` events into `nes_tracks['dpcm']` — a single such write is
+  CRITICAL (it corrupts the channel *and* now trips the `song build` DPCM rejection for
+  a song that has no real drums).
 - **#256/D-18 is CLOSED** (fixed in `7853aa4`, predates this sync but the prose here
   was never updated): the hardcoded default `'dpcm_index.json'` path used to raise a
   bare `FileNotFoundError` out of `_load_sample_index`
@@ -301,7 +323,7 @@ orphaned (nothing in the pipeline calls it; `generate_dpcm_index` scans pre-made
   (honoring `--dpcm-index` too, #13) and exits with a clean `[ERROR] DPCM index not
   found: ...` message instead of a raw traceback — matching every other step-by-step
   guard in `main.py` (`load_json_stage`, #120). `run_full_pipeline`'s outer
-  `try/except Exception` (`main.py:1193-1194`, `[ERROR] Pipeline failed: ...`) is
+  `try/except Exception` (`main.py:1346-1347`, `[ERROR] Pipeline failed: ...`) is
   still the backstop for anything `run_map`'s own guard doesn't catch, and the pipeline
   still aborts entirely there rather than degrading to a drumless build — in contrast
   to the DPCM *packer* path (`main.py:pack_dpcm_into_asm`, shared by `run_export`/

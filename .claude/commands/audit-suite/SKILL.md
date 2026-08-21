@@ -32,6 +32,7 @@ skill files after a fix lands — none of the three are ever part of a preset.)
 | `arranger-deep` | after arranger / voice-allocation work | arranger · nes-hardware · tempo |
 | `dpcm-deep` | after DPCM / drum work | dpcm · exporters |
 | `pipeline-deep` | after main.py / stage-contract work | pipeline · patterns · exporters · safety |
+| `songbank-deep` | after `song build` / jukebox work | pipeline · exporters · mappers · nes-hardware |
 
 ## Presets
 
@@ -103,6 +104,18 @@ After `main.py` dispatch or stage-contract changes:
 2. `/audit-patterns`
 3. `/audit-exporters`
 4. `/audit-safety`
+
+### `--preset songbank-deep`
+After `song build` / multi-song jukebox changes (#30/F-13). This feature is one code path
+spread across four subsystems, and **no single-song test or ROM exercises any of it** — the
+engine additions are `.ifdef JUKEBOX_BUILD`-gated, so an ordinary regression run passes
+green while the jukebox path is broken. Its first audit pass found defects that produced
+zero working ROMs at any bank size. Run all four; findings in one almost always have a
+counterpart in another (the exporter emits what the engine reads):
+1. `/audit-pipeline` — Dimension 8 (bank load → per-song frames → capacity pre-flight)
+2. `/audit-exporters` — Dimension 9 (`export_song_bank_bytecode`, `song_table`, prefixes)
+3. `/audit-mappers` — Dimension 7 (the `song_count is not None` → `JUKEBOX_BUILD` gate)
+4. `/audit-nes-hardware` — Dimension 11 (`.ifdef JUKEBOX_BUILD` engine routines)
 
 ## Execution
 

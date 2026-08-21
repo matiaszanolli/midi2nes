@@ -30,35 +30,47 @@ dedup protocol in `_audit-common.md`).
 - `--focus <dims>` — comma-separated dimension numbers (e.g. `--focus 1,5`). Default: all.
 
 ## Extra Per-Finding Field
-- **Dimension**: one of the 8 below.
+- **Dimension**: one of the 9 below.
 - **Spec ref**: cite `docs/AUDIO_BYTECODE_SPEC.md` / `docs/MACRO_USAGE_GUIDE.md` section, or the consumer (`nes/project_builder.py`) for emitted-format claims.
 
 ## Dimensions
 
 ### Dimension 1: CA65 Assembly Well-Formedness & Builder Compatibility
-The text `export_tables_with_patterns` and `export_direct_frames` write in
-`exporter/exporter_ca65.py` must assemble under `ca65` and link under the config
-`nes/project_builder.py` generates. Skeptical checklist:
+The text `export_tables_with_patterns`, `export_direct_frames`, and
+`export_song_bank_bytecode` write in `exporter/exporter_ca65.py` must assemble under
+`ca65` and link under the config `nes/project_builder.py` generates. Note that the
+first and third now share one serializer, `_build_song_bytecode`
+(`exporter/exporter_ca65.py:1102`) — a well-formedness bug there lands in **both** the
+single-song and jukebox outputs, so check it once and attribute to both. Skeptical
+checklist:
 - Every label referenced is defined: the `.export` line (`pulse1_sequence`,
   `pulse2_sequence`, `triangle_sequence`, `noise_sequence`, `dpcm_sequence`,
   `ntsc_period_low`, `ntsc_period_high`, `instrument_table`, the `dpcm_*_table`s)
   has a matching definition; `macro_vol_*`/`macro_arp_*`/`macro_pitch_*`/`macro_duty_*`
-  referenced from `instrument_table` `.word` rows (`exporter_ca65.py:1172`) all exist.
+  referenced from `instrument_table` `.word` rows (`exporter_ca65.py:1332`) all exist.
+  In a jukebox build every one of those symbols is `song{i}_`-prefixed (Dimension 9) —
+  verify the prefix is applied to *definition and reference alike*, since a half-prefixed
+  symbol assembles cleanly in one song and silently binds to another song's table.
 - Segments emitted (`CODE_8000`, `BANK_{NN}`, `DPCM`, and in `export_direct_frames`
   `HEADER`/`ZEROPAGE`/`BSS`/`RODATA`/`CODE`/`VECTORS`) are all declared in the linker
   config `nes/project_builder.py` writes — a segment the exporter emits but `nes.cfg`
   has no MEMORY/SEGMENT for is a link failure. Cross-check `docs/MAPPER_MMC3_REFERENCE.md`.
-- `.importzp ptr1, temp1, temp2, frame_counter` (pattern path, `:981`) vs
-  `.importzp frame_counter, temp_ptr` (direct path, `:228`): confirm the importing names
+- `.importzp ptr1, temp1, temp2, frame_counter` (pattern path, `:1466`; jukebox path,
+  `:1579`) vs `.importzp frame_counter, temp_ptr` (direct path, `:656`): confirm the importing names
   are exported/`.global`'d by `nes/project_builder.py`'s `main.asm`. A mismatched zeropage
   symbol is a link failure.
-- The `non-standalone` branch (`:1270-1279`) emits `.import audio_init, audio_update` and
-  jumps to them — confirm those exist in the engine the builder ships.
-- `.byte $FE, ${next_bank:02X}, <{label}, >{label}` bank-jump lines (`:1239`): the forward
-  label is defined in the next `BANK_{NN}` segment in the same file (`:1238`) — verify
+- The `non-standalone` branch (`:1515-1523`) emits `.import audio_init, audio_update` and
+  jumps to them — confirm those exist in the engine the builder ships. The jukebox path
+  imports `audio_init_song` instead (`:1660`), which `nes/audio_engine.asm` only defines
+  inside `.ifdef JUKEBOX_BUILD` — so the exporter and the builder's gate must agree or the
+  link fails with unresolved externals (see Dimension 9).
+- `.byte $FE, ${next_bank:02X}, <{label}, >{label}` bank-jump lines (`:1412`): the forward
+  label is defined in the next `BANK_{NN}` segment in the same file (`:1417-1418`) — verify
   it always is, including when `MAX_SEQUENCE_BANK` is reached (the code now raises
-  `ValueError` instead of silently overflowing the bank budget, `:1229-1237` — confirm this
-  guard still fires for every over-budget path, not just this one call site).
+  `ValueError` instead of silently overflowing the bank budget, `:1402-1410` — confirm this
+  guard still fires for every over-budget path, not just this one call site). In a jukebox
+  build this budget is shared across **all** songs (`start_bank` threads song-to-song), so
+  the guard must fire on the cumulative total, not per song.
 
 A label/segment that fails to assemble or link = HIGH (wrong output on every ROM
 through this path).
@@ -189,7 +201,7 @@ Cross-check the bytes `export_tables_with_patterns` emits against
   terminator. `docs/AUDIO_BYTECODE_SPEC.md` §3 now carries an explicit `$FE CMD_BANK_JUMP`
   row documenting the sequence-level meaning and calling out that it is **distinct from**
   the in-macro `$FE, <offset>` loop control byte (§2.3, now marked reserved/not-
-  implemented). Exporter (`:1239`) and engine (`nes/audio_engine.asm:266` `@cmd_bank_jump`)
+  implemented). Exporter (`:1239`) and engine (`nes/audio_engine.asm:416` `@cmd_bank_jump`)
   agree on the sequence-level meaning, so there is no runtime bug. The `$85 CMD_DPCM_PLAY`
   and `$87 CMD_DMC_LEVEL` rows still exist in §3, but each now notes the Python exporter
   does not emit them (DPCM triggers ride as note bytes; the `$87` emitter was removed, #72;
@@ -273,7 +285,7 @@ file exists in the repo anymore.) Check:
 
 ### Dimension 8: Format-String / CLI-Choices Mismatch
 **Verify fix (#79, closed)**: `main.py`'s `export` subcommand now declares
-`p_export.add_argument('--format', choices=['ca65'], default='ca65')` (`main.py:1143`),
+`p_export.add_argument('--format', choices=['ca65'], default='ca65')` (`main.py:1296`),
 with `nsf` intentionally absent (comment at `:1141` citing #79/#81) rather than
 present-but-unreachable. `run_export` (`:499`) only branches on `if args.format ==
 "ca65":` (`:519`) — the old `if args.format == "nsftxt":` dead branch (dispatching on a
@@ -281,12 +293,58 @@ string argparse never allowed) is gone (see comment at `:514-516`). Requesting
 `--format nsf` now fails argparse validation up front with a clear CLI error instead of
 silently no-op'ing. Check:
 - No other dispatch site still assumes NSF export works. `run_config_validate`
-  (`main.py:1357`) prints `f"NSF load address: 0x{config_manager.get('export.nsf.
+  (`main.py:1510`) prints `f"NSF load address: 0x{config_manager.get('export.nsf.
   load_address'):04X}"` (`:1369`) under `--verbose` — this reads a `default_config.yaml` value with
   no live consumer (`NSFExporter` always raises `NotImplementedError`); confirm this is at
   worst cosmetic (LOW) and not advertised anywhere as a working feature.
 - If NSF export is ever reintroduced, re-verify the new dispatch string exactly matches
   a value in `choices=[...]` — this is precisely the class of bug #79 was.
+
+### Dimension 9: Multi-Song Jukebox Export (`export_song_bank_bytecode`)
+New in #30/F-13 and the youngest exporter surface — audit it as new code, not as a
+verify-the-fix pass. `CA65Exporter.export_song_bank_bytecode(songs, output_path)`
+(`exporter/exporter_ca65.py:1548`) writes the `music.asm` for a `song build` ROM by
+calling the shared `_build_song_bytecode` helper once per song. Its first audit pass
+found a defect that corrupted every song after the first (EXP-2026-08-07-1, fixed in
+`8ea7ac3`); assume more.
+
+- **Segment discipline across songs (the closed bug — verify it holds).**
+  `_build_song_bytecode` ends each song inside a dynamically-banked `BANK_NN` segment,
+  so it must re-declare `.segment "CODE_8000"` before emitting the next song's
+  instrument/macro tables — otherwise song N+1's tables land in a swapped-out window
+  while `EVAL_MACRO` reads them from the fixed always-mapped bank. This **still links
+  and still passes ROM structural diagnostics** (valid vectors, APU init present), which
+  is exactly why it went undetected: the feature's own "verified with a real CC65 build"
+  check never inspected per-song symbol placement. Verify-the-fix: any check for this
+  class of bug must resolve actual symbol addresses (`ld65 --dbgfile`, confirming
+  `song1_instrument_table` lands inside `CODE_8000`'s `$8000` window, not a `$C000`-range
+  dynamic bank) — a build that merely succeeds proves nothing here. Treat a regression as
+  CRITICAL (silent song corruption).
+- **Symbol namespacing.** Every symbol a song defines is prefixed `song{i}_`
+  (`:1593`). Grep the emitted output for any un-prefixed definition inside a per-song
+  block — one collision silently merges two songs' tables at link time.
+- **Shared vs per-song data.** Pulse/triangle period tables are emitted **once**
+  (`_emit_period_tables`, `:1071`) because they are pure hardware constants; instrument
+  and macro tables are per-song with **no cross-song dedup**. Verify nothing that
+  legitimately varies per song got hoisted into the shared emission, and that the
+  no-dedup choice is a size cost only, never a correctness one.
+- **`song_table` indexing.** Three parallel byte arrays (`song_table_ptr_lo`/`_hi`/
+  `song_table_bank`, `:1636-1641`) are indexed `song_index * 5 + channel` with channel
+  order fixed by `SEQUENCE_CHANNELS` (`:1069`). The consumer is
+  `load_song_streams_indexed` in `nes/audio_engine.asm`. Verify the stride constant, the
+  channel order, and the `song_count` byte all match on both sides — a stride mismatch
+  plays song A's pulse2 stream as song B's triangle, which sounds like corruption rather
+  than an obvious failure.
+- **`song_instrument_ptr_*` is per-song, not per-channel** (`:1650-1653`) — one entry per
+  song, unlike the `song_table_*` arrays. Confirm the engine indexes it with the song
+  index alone (no `* 5`).
+- **Bank pool exhaustion across N songs.** `next_bank` threads from song to song and each
+  song starts in a fresh bank (never packing two songs into one `BANK_NN`, since
+  `bytes_in_current_bank` accounting is per-call). Verify the `MAX_SEQUENCE_BANK` guard
+  fires on the cumulative count, and that the per-song rounding waste is accounted for by
+  the `check_mapper_capacity` pre-flight in `main.py:run_song_build`.
+- **Empty input.** `songs == []` raises `ValueError` (`:1571-1572`) rather than emitting a
+  degenerate `song_count: .byte $00`. Verify the caller surfaces it as a clean CLI error.
 
 ## Cross-Dimension Dedup
 A single root cause can surface across dimensions (an out-of-range `.byte` is both a

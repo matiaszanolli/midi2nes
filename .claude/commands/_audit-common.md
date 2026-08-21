@@ -6,6 +6,7 @@ This file is referenced by all audit skills. Do NOT use as a slash command (pref
 
 ```
 Entry point:      main.py                              (CLI dispatch + run_full_pipeline; default = MIDI→ROM)
+  Jukebox build:  main.py:run_song_build                (`song build` — SongBank → multi-song ROM; #30/F-13)
 Version:          midi2nes/__version__.py
 
 MIDI core:        tracker/
@@ -28,7 +29,9 @@ NES core:         nes/
   Pitch:          nes/pitch_table.py                   (channel-specific NTSC frequency tables)
   Envelope:       nes/envelope_processor.py            (ADSR / velocity → volume)
   Project build:  nes/project_builder.py               (NESProjectBuilder — main.asm/music.asm/nes.cfg)
-  Song bank:      nes/song_bank.py                     (multi-song banks; `song` subcommands)
+  Song bank:      nes/song_bank.py                     (multi-song banks; `song add|list|remove|build`; records each song's source midi_path)
+  Playback engine:nes/audio_engine.asm                 (6502 bytecode interpreter `.include`d by main.asm; jukebox routines behind `.ifdef JUKEBOX_BUILD`)
+  Orphan cfg:     nes/linker_mmc3.cfg                  (checked in, referenced by NOTHING -- mappers generate nes.cfg via generate_linker_config())
   Debug overlay:  nes/debug_overlay.py                 (--debug on-screen APU/frame diagnostics)
 
 Mappers:          mappers/                             (BaseMapper + nrom/mmc1/mmc3 + factory)
@@ -37,10 +40,9 @@ Mappers:          mappers/                             (BaseMapper + nrom/mmc1/m
 
 Exporters:        exporter/
   Base:           exporter/base_exporter.py            (BaseExporter)
-  CA65:           exporter/exporter_ca65.py            (export_tables_with_patterns → music.asm)
+  CA65:           exporter/exporter_ca65.py            (export_tables_with_patterns → music.asm; export_song_bank_bytecode → jukebox music.asm)
   NSF:            exporter/exporter_nsf.py             (NSFExporter)
   FamiStudio:     exporter/exporter_famistudio.py      (FamiStudio text export)
-  Compression:    exporter/compression.py
 
 DPCM/drums:       dpcm_sampler/
   Drum mapper:    dpcm_sampler/enhanced_drum_mapper.py (EnhancedDrumMapper, DrumMapperConfig)
@@ -64,7 +66,7 @@ Config:           config/config_manager.py + config/default_config.yaml
 Benchmarks:       benchmarks/performance_suite.py + benchmarks/run_benchmarks.py
 Profiling:        utils/profiling.py                   (get_memory_usage, log_memory_usage)
 Debug tools:      debug/                               (rom_diagnostics, check_rom, rom_tester, nes_devtools)
-Tests:            tests/                               (52 test_*.py + conftest.py)
+Tests:            tests/                               (59 test_*.py + conftest.py)
 ```
 
 ## Key Reference Docs
@@ -111,6 +113,25 @@ A finding that breaks one of these contracts is at least HIGH (see `_audit-sever
 - **export** → `CA65Exporter.export_tables_with_patterns(frames, patterns, references, output_path)` writes `music.asm`.
 - **prepare** → `NESProjectBuilder` writes `main.asm`/`music.asm`/`nes.cfg` + build scripts (default mapper **MMC3**).
 - **compile** → `compiler.compile_rom(project_dir, output_rom)` (requires CC65 `ca65`/`ld65`); validates min ROM size.
+
+The **`song build`** path (`main.py:run_song_build`, #30/F-13) is a second, shorter chain
+that reuses the same stages but skips `detect-patterns` entirely:
+
+- **bank load** → `SongBank.import_bank` → songs sorted by `metadata['order']`; each song's
+  recorded `midi_path` is re-parsed (`nes/song_bank.py` stores raw parsed events in
+  `segments`, **not** frames — they are not a build input).
+- **per-song frames** → `midi_to_frames_for_song(midi_path, use_arranger, ...)` → the same
+  `{channel_name: {frame_num: {...}}}` shape as the single-song path.
+- **export** → `CA65Exporter.export_song_bank_bytecode(songs, output_path)` where `songs` is
+  an ordered list of `{'frames': ...}`. It calls the shared `_build_song_bytecode` helper once
+  per song with `label_prefix=f'song{i}_'` and a fresh `start_bank`, then emits `song_table_*`
+  / `song_instrument_ptr_*` / `song_count` in place of the single-song `channel_start_banks`.
+- **prepare** → `NESProjectBuilder.prepare_project(music_asm, song_count=N)` — `song_count`
+  being **not None** (not `> 1`) is what defines `JUKEBOX_BUILD`, so a 1-song bank still links.
+- **compile/validate** → unchanged (`compile_rom` → `validate_rom`), MMC3 only.
+
+v1 cuts are documented in `docs/ROADMAP.md` § "Song banks → ROM" (MMC3-only, DPCM rejected
+per-song, no `--debug`, no visual menu) — treat those as scoped follow-ups, not findings.
 
 ## Methodology
 

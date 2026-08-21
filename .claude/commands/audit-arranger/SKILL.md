@@ -120,7 +120,7 @@ Two allocation layers: `VoiceRoleAnalyzer._assign_channels` (track→channel, bu
 A musically-wrong dropped voice is **MEDIUM** per `_audit-severity.md`.
 
 Checklist:
-- `_assign_channels` (`arranger/role_analyzer.py:295-387`) assigns each NES channel to **at
+- `_assign_channels` (`arranger/role_analyzer.py:302-394`) assigns each NES channel to **at
   most one track** (boolean `*_assigned` flags). With >4 pitched tracks, surplus tracks land
   in `plan.dropped_tracks`. Verify the drop order is priority-sorted
   (`plan.tracks.sort(key=lambda t: t.priority, reverse=True)` at line 288) and musically
@@ -143,7 +143,7 @@ Checklist:
   (multiple MELODY/HARMONY/DECORATIVE tracks, no BASS) always drops in strict priority order
   with triangle staying empty, and that a genuine BASS track still spills to triangle
   correctly when pulse1/pulse2 are full.
-- Drum tracks claim BOTH `noise` and `dpcm` (`arranger/role_analyzer.py:303-320`).
+- Drum tracks claim BOTH `noise` and `dpcm` (`arranger/role_analyzer.py:310-327`).
   **#205/ARR-10 is CLOSED**: a second drum track finding both already taken used to hit an
   unconditional `continue`, vanishing with no `dropped_tracks` entry and no `plan.notes`
   diagnostic, unlike every other overflow case. It now only skips the "couldn't be assigned"
@@ -188,7 +188,7 @@ Checklist:
   is re-exported via `arranger/__init__.py` but has no call site anywhere in `arranger/` — the
   actual drop-order decision uses `TrackAnalysis.priority` (an int set per-instrument in
   `GM_INSTRUMENT_MAP`/`GM_DRUM_MAP` and adjusted in `_determine_role`,
-  `arranger/role_analyzer.py:204-276`), not the BASS=1…SFX=6 ordering `get_role_priority`
+  `arranger/role_analyzer.py:204-283`), not the BASS=1…SFX=6 ordering `get_role_priority`
   returns. Confirm it is genuinely dead (grep for callers) and, if so, flag it as dead/misleading
   code — a maintainer could reasonably assume it governs drop order and be wrong.
 
@@ -330,7 +330,19 @@ Checklist:
 - `analyze_midi_events` iterates `midi_events.items()` (insertion order in py3.7+) and assigns
   `track_idx` by enumeration — confirm stable ordering from the parser.
 - Role ties: `max(role_scores, key=role_scores.get)` returns the first max by dict iteration
-  order — deterministic given the fixed dict literal, but confirm.
+  order. **#ARR-2026-08-07-1 is CLOSED**: `role_scores` is now a
+  `defaultdict(float, {...4 buckets...})` (`arranger/role_analyzer.py:223-228`) rather than a
+  plain dict literal. It had to change because `GM_INSTRUMENT_MAP` curates 19/128 programs
+  (Timpani, Orchestra Hit, Agogo, Woodblock, …) with `role=PERCUSSION` or `SFX` — neither of
+  which is one of the four scoring buckets — so `role_scores[gm_mapping.role] += 3.0`
+  (`:231`) raised `KeyError` for any non-drum-channel track using one of those programs.
+  Verify-the-fix, on both axes: **(a) determinism** — insertion order still starts with the
+  four seeded buckets, so a tie still resolves to the same bucket every run, and an
+  out-of-bucket GM role only ever *appends* a key that scored the GM bonus alone (never
+  enough to win against a real signal) — confirm that cannot now become the `max`;
+  **(b) coverage** — a `defaultdict` converts what used to be a loud crash into a silent
+  default, so any *new* out-of-bucket key reaching this dict will no longer announce itself.
+  Spot-check the GM map's non-bucket roles against the scoring branches.
 - `_assign_channels` sorts `plan.tracks` by `priority` only (`reverse=True`); equal-priority
   tracks keep their pre-sort order (Python `sort` is stable) — confirm the pre-sort order
   (analysis append order = `self.tracks` dict order) is itself deterministic.

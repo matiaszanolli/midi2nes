@@ -61,12 +61,18 @@ For each of `mappers/nrom.py`, `mappers/mmc1.py`, `mappers/mmc3.py`, cross-check
 The reset/NMI/IRQ vectors at **$FFFA–$FFFF** must point at real code. Read the
 `.segment "VECTORS"` block emitted by `_generate_main_asm()` in
 `nes/project_builder.py` (the `.word nmi / .word reset / .word irq` triple, currently
-around lines 642–646) and confirm:
+around lines 488–491) and confirm:
 - All three labels (`nmi`, `reset`, `irq`) are defined in the same `main.asm`.
-- `reset` ends by enabling NMI (`lda #$80 / sta $2000`, `nes/project_builder.py:613-614`)
+- `reset` ends by enabling NMI (`lda #$80 / sta $2000`, `nes/project_builder.py:458-459`)
   so the handler actually fires, and the `nmi` handler calls `jsr update_music`
-  (`nes/project_builder.py:629`) once per frame (the 60Hz tick — see `_audit-common.md`
+  (`nes/project_builder.py:474`) once per frame (the 60Hz tick — see `_audit-common.md`
   "Playback runs at 60 FPS via NMI").
+- **Jukebox builds add work inside the NMI** (#30/F-13): `_generate_main_asm` injects
+  edge-triggered Start-button polling and a `jsr audio_advance_song`
+  (`nes/project_builder.py:365-386`) into the same handler. Verify the added controller
+  read and song switch still fit the NMI budget and cannot leave the APU mid-write, and
+  that the `$4016` strobe is the DPCM-conflict-safe read already in this file
+  (`nes/project_builder.py:276-300`) rather than a second, naive one.
 - In the linker config the `VECTORS` segment loads at exactly `start = $FFFA` and the
   preceding code region (NROM/MMC1 `PRGFIXED`, MMC3 `PRG_FIX` ending `$FFF9`) does not
   overlap it. A missing label, an NMI that never calls `update_music`, or vectors that
@@ -253,8 +259,9 @@ Check on each audit:
   capacity pre-flight (Dimension 4) still catches any such pick before `ld65`.
 
 ### Dimension 7: project builder writes a consistent, buildable project
-`NESProjectBuilder.prepare_project()` (`nes/project_builder.py:75-544`) must emit a set
-of files `ld65` can actually link with the chosen mapper:
+`NESProjectBuilder.prepare_project(music_asm_path, song_count=None)`
+(`nes/project_builder.py:83`) must emit a set of files `ld65` can actually link with the
+chosen mapper:
 - `nes.cfg` comes from `self.mapper.generate_linker_config()`; `main.asm` interpolates
   `self.mapper.generate_header_asm()` / `generate_init_code()` / `generate_bank_switch_code()`.
   Confirm every segment the asm uses (`HEADER`, `ZEROPAGE`, `CODE`, `RODATA`, `BSS`,
@@ -274,6 +281,21 @@ of files `ld65` can actually link with the chosen mapper:
   `main.asm` and `music.asm` (e.g. `sequence_ptr`, `sequence_bank`, `frame_counter`,
   `switch_dpcm_bank`). An undefined symbol surfaces only at link time. A project that
   cannot link is at least HIGH.
+- **The `JUKEBOX_BUILD` gate (#30/F-13) — the one condition that decides whether a
+  `song build` ROM links at all.** `prepare_project` writes `JUKEBOX_BUILD = 1` ahead of
+  the `.include` of `nes/audio_engine.asm` (`nes/project_builder.py:311-327`), and
+  `_generate_main_asm` sets `jukebox_mode` (`:354`), when **`song_count is not None`** —
+  deliberately *not* `song_count > 1`. `CA65Exporter.export_song_bank_bytecode` always
+  emits jukebox-format symbols (`song{i}_` prefixes, `song_table`, `jmp audio_init_song`)
+  regardless of song count, so a 1-song bank needs the gate too; the original `> 1` test
+  left a 1-song build with 8 unresolved externals (MAP-2026-08-07-1, fixed in `8ea7ac3`).
+  Verify-the-fix: the exporter's symbol format and the builder's gate must be driven by
+  the *same* condition. Any future "optimization" that makes the exporter emit single-song
+  symbols for a 1-song bank has to change both sides together — check both call sites, and
+  treat a one-sided change as HIGH (link failure on a whole bank size).
+- **Retired placeholders**: the old `prepare_multi_song_project` / `add_song_bank` stubs
+  are gone now that `song build` is a real route. If either name reappears, it is dead
+  code (`/audit-tech-debt`), not a feature.
 
 ### Dimension 8: compiler validation & CC65 error surfacing
 `compiler/compiler.py` (`ROMCompiler.validate_project` / `compile`) and
@@ -295,7 +317,7 @@ of files `ld65` can actually link with the chosen mapper:
 - `compile_rom()`'s broad `except Exception` (`compiler/compiler.py:252-260`) prints
   `f"[ERROR] Compilation failed: {e}"`, returns `False`, and now calls
   `traceback.print_exc()` under `--verbose` (#32, fixed). Both callers thread the flag:
-  `run_compile()` (`main.py:472`) and the full pipeline (`main.py:1057`) pass `verbose=...`
+  `run_compile()` (`main.py:472`) and the full pipeline (`main.py:1210`) pass `verbose=...`
   to `compile_rom()`. Verify the traceback actually surfaces under `--verbose`, and that
   the typed `CompilationError`/`ValidationError` paths still print a clean one-liner
   without a stack dump.
@@ -311,9 +333,9 @@ of files `ld65` can actually link with the chosen mapper:
 - The `--mapper` flag now exists (`export`/`prepare` accept `auto|nrom|mmc1|mmc3`,
   `compile` accepts `nrom|mmc1|mmc3`; all default `mmc3`). `prepare` stamps the built
   mapper into `nes.cfg` as a leading ld65 comment (`NES_CFG_MAPPER_MARKER`,
-  `nes/project_builder.py:20`, written at `nes/project_builder.py:320`), and
+  `nes/project_builder.py:20`, written at `nes/project_builder.py:361`), and
   `compile` recovers it authoritatively via `_prepared_mapper_name_from_cfg()`
-  (`main.py:218-236`), falling back to `--mapper` only for older marker-less projects —
+  (`main.py:345-364`), falling back to `--mapper` only for older marker-less projects —
   so a marker-less NROM/MMC1 project no longer defaults to `mmc3` and gets mis-sized
   (#297, fixed — verify it holds), and a `prepare --mapper auto` project now compiles
   (#269, fixed — verify it holds). The recovered name is still threaded through
