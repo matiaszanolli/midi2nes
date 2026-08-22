@@ -26,7 +26,10 @@ from tracker.pattern_detector import (
 from tracker.tempo_map import EnhancedTempoMap
 from dpcm_sampler.enhanced_drum_mapper import DrumMapperConfig
 from config.config_manager import ConfigManager
-from core.exceptions import ConfigurationError, MIDI2NESError
+from core.exceptions import (
+    ConfigurationError, MIDI2NESError, MapperError, ExportError,
+    CompilationError, ValidationError,
+)
 from benchmarks.performance_suite import PerformanceBenchmark
 from utils.profiling import get_memory_usage, log_memory_usage
 from compiler import compile_rom
@@ -397,20 +400,20 @@ def resolve_mapper(mapper_choice, music_asm_path=None):
         return MapperFactory.auto_select(data_size, direct=True)
     mapper = MapperFactory.get_mapper(mapper_choice)
     if needs_mmc3 and mapper.mapper_number != 4:
-        raise ValueError(
+        raise MapperError(
             f"{mapper.name} cannot run the MMC3 macro-bytecode (pattern-compressed) "
             f"engine this music.asm was built with -- rebuild with --no-patterns "
             f"for direct frame export, or pass --mapper mmc3."
         )
     if direct_dpcm and mapper.mapper_number != 4:
-        raise ValueError(
+        raise MapperError(
             f"--mapper {mapper_choice} does not support DPCM samples in direct-export "
             f"(--no-patterns) mode: this music.asm packs DPCM_NN sample segments and "
             f"triggers them via MMC3-only $8000/$8001 bank writes. Use --mapper mmc3 "
             f"(the default) or --mapper auto, or rebuild without --no-patterns."
         )
     if packed_for and mapper.name != packed_for:
-        raise ValueError(
+        raise MapperError(
             f"this music.asm's frame tables were bank-packed for {packed_for} at "
             f"export time (RODATA_BANK_NN segments only {packed_for}'s linker config "
             f"defines), but --mapper {mapper_choice} was selected here -- re-export "
@@ -448,7 +451,7 @@ def enforce_direct_export_dpcm_mapper(mapper, mapper_choice, frames):
     if mapper_choice == 'auto':
         from mappers.mmc3 import MMC3Mapper
         return MMC3Mapper()
-    raise ValueError(
+    raise MapperError(
         f"--mapper {mapper_choice} does not support DPCM samples in direct-export "
         f"(--no-patterns) mode: this song maps drums to the DPCM channel, whose "
         f"trigger/sample code is MMC3-only. Use --mapper mmc3 (the default) or "
@@ -1272,10 +1275,13 @@ def build_and_validate_rom(mapper, music_asm, project_path, output_rom,
     """Steps 6-8: PRG capacity pre-flight, NES project prep, ROM compile,
     and (unless skipped) ROM validation.
 
-    Raises ValueError (capacity) or RuntimeError (prepare/compile/validate)
-    on failure -- run_full_pipeline's single try/except/finally is still the
-    only place that decides how to report it and whether to restore a
-    backup (#26).
+    Raises MapperError (capacity -- also a ValueError, #457/
+    SAFE-2026-08-21-3), ExportError (prepare), CompilationError (compile), or
+    ValidationError (validate) on failure -- all MIDI2NESError subclasses, so
+    run_full_pipeline's single try/except/finally still decides how to report
+    it and whether to restore a backup (#26) via one `except MIDI2NESError`
+    clause instead of missing these as "unexpected" (bare RuntimeError used
+    to fall through to that branch).
 
     Returns the music.asm data size in bytes (post capacity check).
     """
@@ -1287,16 +1293,18 @@ def build_and_validate_rom(mapper, music_asm, project_path, output_rom,
     print("[6/7] Preparing NES project...")
     builder = NESProjectBuilder(str(project_path), debug_mode=debug_mode, mapper=mapper)
     if not builder.prepare_project(str(music_asm)):
-        raise RuntimeError("Failed to prepare NES project")
+        # Matches prepare_project's own ExportError type for its other
+        # failure mode (missing audio_engine.asm, nes/project_builder.py).
+        raise ExportError("Failed to prepare NES project")
 
     print("[7/7] Compiling NES ROM...")
     if not compile_rom(project_path, output_rom, verbose=args.verbose, mapper=mapper):
-        raise RuntimeError("ROM compilation failed")
+        raise CompilationError("ROM compilation failed")
 
     if not skip_validation:
         print("[8/8] Validating ROM...")
         if not validate_rom(output_rom):
-            raise RuntimeError("ROM validation failed")
+            raise ValidationError("ROM validation failed")
 
     return data_size
 

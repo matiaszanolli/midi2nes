@@ -46,12 +46,26 @@ the 8-step body, `finally:` restore-backup logic unchanged below both). Since #4
 three of the steps this wraps are extracted stage helpers (`detect_patterns_or_direct_export`,
 `export_frames_and_resolve_mapper`, `build_and_validate_rom`, all defined just above
 `run_full_pipeline`) that raise on failure rather than calling `sys.exit` themselves —
-these two clauses are still the only place that decides how to report it. Verify-the-fix:
-confirm every raise site under `run_full_pipeline` that is meant to be "expected" (not a
-defect) actually derives from `MIDI2NESError` — a new failure surface that raises a bare
-`ValueError`/`RuntimeError` instead would silently fall into the "Unexpected pipeline
-failure" branch even though it's a normal user-facing error, which is a regression of
-this fix's intent, not a crash.
+these two clauses are still the only place that decides how to report it. **Fixed
+(#457/SAFE-2026-08-21-3, PIPE-2026-08-21-8/#428, verify)**: `build_and_validate_rom`
+itself used to raise bare `RuntimeError` for prepare/compile/validate failure — three
+ordinary, actionable outcomes (the most common trigger being a missing CC65 toolchain)
+that misreported as "Unexpected pipeline failure" despite the clauses above already
+existing. It now raises `ExportError`/`CompilationError`/`ValidationError` respectively
+(matching `prepare_project`'s own `ExportError` type for its other failure mode).
+`check_mapper_capacity`/`resolve_mapper`/`enforce_direct_export_dpcm_mapper` had the
+same gap for their documented `ValueError` contract (not a `MIDI2NESError` subclass) —
+fixed by making `MapperError` inherit from *both* `MIDI2NESError` and `ValueError`
+(`core/exceptions.py`) rather than migrating every existing `except ValueError`/
+`pytest.raises(ValueError)` call site, so both catch it. `compiler/compiler.py`'s
+`compile_rom` also gained an explicit `except ToolchainError` clause — it used to catch
+only `CompilationError`/`ValidationError` (whose comment claimed to "cover every
+anticipated failure") and let a missing/vanished toolchain fall to the generic
+`except Exception`. Verify-the-fix: confirm every raise site under `run_full_pipeline`
+that is meant to be "expected" (not a defect) actually derives from `MIDI2NESError` — a
+new failure surface that raises a bare `ValueError`/`RuntimeError` instead would silently
+fall into the "Unexpected pipeline failure" branch even though it's a normal user-facing
+error, which is a regression of this fix's intent, not a crash.
 **#380/TD-28 is CLOSED**: the DPCM-pack block that used to be copy-pasted separately
 into `run_export` and `run_full_pipeline` (and had already diverged — `run_export`
 never passed `verbose=`) is now a single shared `pack_dpcm_into_asm(frames, asm_path,

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from .cc65_wrapper import CC65Wrapper
-from core.exceptions import CompilationError, ValidationError
+from core.exceptions import CompilationError, ValidationError, ToolchainError
 from mappers.base import BaseMapper
 
 
@@ -292,12 +292,21 @@ def compile_rom(project_dir: Path, rom_output: Path, verbose: bool = False,
     except ValidationError as e:
         print(f"[ERROR] {e}")
         return False
+    except ToolchainError as e:
+        # CC65 not installed/vanished is the most common real-world trigger
+        # of this function failing -- give it the same clean typed handling
+        # as CompilationError/ValidationError instead of falling through to
+        # the generic branch below, whose comment claimed the two typed
+        # clauses above "cover every anticipated failure" (#457/
+        # SAFE-2026-08-21-3).
+        print(f"[ERROR] {e}")
+        return False
     except Exception as e:
         print(f"[ERROR] Compilation failed: {e}")
-        # The two typed exceptions above cover every anticipated failure
-        # (bad project, bad build output); reaching here means something
-        # genuinely unexpected happened, so surface the traceback under
-        # --verbose instead of losing its origin (#32/M-9).
+        # The three typed exceptions above cover every anticipated failure
+        # (bad project, bad build output, missing toolchain); reaching here
+        # means something genuinely unexpected happened, so surface the
+        # traceback under --verbose instead of losing its origin (#32/M-9).
         if verbose:
             traceback.print_exc()
         return False

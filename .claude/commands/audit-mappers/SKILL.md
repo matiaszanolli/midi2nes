@@ -334,13 +334,21 @@ chosen mapper:
   `ToolchainError` every other missing-tool path produces. Both now use
   `self._ca65_path or "ca65"` / `self._ld65_path or "ld65"` and catch `FileNotFoundError`
   alongside the timeout, mapping it to `ToolchainError`.
-- `compile_rom()`'s broad `except Exception` (`compiler/compiler.py:252-260`) prints
-  `f"[ERROR] Compilation failed: {e}"`, returns `False`, and now calls
-  `traceback.print_exc()` under `--verbose` (#32, fixed). Both callers thread the flag:
-  `run_compile()` (`main.py:472`) and the full pipeline (`main.py:1210`) pass `verbose=...`
+- `compile_rom()`'s broad `except Exception` prints `f"[ERROR] Compilation failed: {e}"`,
+  returns `False`, and now calls `traceback.print_exc()` under `--verbose` (#32, fixed).
+  Both callers thread the flag: `run_compile()` and the full pipeline pass `verbose=...`
   to `compile_rom()`. Verify the traceback actually surfaces under `--verbose`, and that
-  the typed `CompilationError`/`ValidationError` paths still print a clean one-liner
-  without a stack dump.
+  the typed `CompilationError`/`ValidationError`/`ToolchainError` paths still print a clean
+  one-liner without a stack dump. **Fixed (#457/SAFE-2026-08-21-3, verify)**: `compile_rom`
+  used to catch only `CompilationError`/`ValidationError` — a missing/vanished toolchain
+  (`ToolchainError`, e.g. from the fix two bullets above) fell to the generic `except
+  Exception` whose own comment claimed the two typed clauses "cover every anticipated
+  failure." A third `except ToolchainError` clause now closes that gap, and
+  `build_and_validate_rom` (`main.py`) itself was fixed the same way — its
+  prepare/compile/validate failures used to raise bare `RuntimeError`, misreporting as
+  "Unexpected pipeline failure" one layer up in `run_full_pipeline`'s typed/untyped split
+  (cross-ref `/audit-safety` Dimension 1) even though CC65-not-installed is the single most
+  common real-world trigger of this whole function failing.
 - Build-script routing is fixed (#18, commit `e68866a`): `_create_build_script()` calls
   `self.mapper.generate_build_script(is_windows)` for every mapper. The post-link fixup
   gap is also closed (#214): `ROMCompiler.compile()` (`compiler/compiler.py:113-222`) now

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict
 
 from .base import BaseMapper
+from core.exceptions import MapperError
 
 
 def _split_operands(text: str):
@@ -124,14 +125,15 @@ def check_mapper_capacity(music_asm_path, mapper: BaseMapper) -> int:
     Sizes each music.asm segment against the region the mapper's linker config
     loads it into (a banked mapper has several binding regions, not one 510 KB
     ceiling), so an oversized song fails with a clear budget message instead of a
-    raw ld65 region overflow. Raises ValueError listing every overflow. Returns
-    the total data size for logging.
+    raw ld65 region overflow. Raises MapperError (also a ValueError, #457/
+    SAFE-2026-08-21-3) listing every overflow. Returns the total data size for
+    logging.
     """
     segment_sizes = estimate_segment_sizes(music_asm_path)
     errors = mapper.validate_segment_sizes(segment_sizes)
     if errors:
         detail = "\n".join(f"  - {e}" for e in errors)
-        raise ValueError(
+        raise MapperError(
             f"Music data does not fit the {mapper.name} PRG layout:\n{detail}\n"
             f"Shorten the song or DPCM samples, or select a larger mapper."
         )

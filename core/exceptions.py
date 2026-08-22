@@ -116,8 +116,19 @@ class ValidationError(MIDI2NESError):
 # Mapper Errors
 # =============================================================================
 
-class MapperError(MIDI2NESError):
-    """Error related to NES mapper configuration."""
+class MapperError(MIDI2NESError, ValueError):
+    """Error related to NES mapper configuration.
+
+    Also a ValueError: capacity/mapper-choice failures (check_mapper_capacity,
+    resolve_mapper, enforce_direct_export_dpcm_mapper) previously raised bare
+    ValueError, and callers (run_prepare/run_compile/run_export, tests) still
+    catch/assert that type. Dual inheritance keeps every existing `except
+    ValueError` / `pytest.raises(ValueError)` site working unchanged while
+    making these failures reachable through `except MIDI2NESError` too --
+    otherwise run_full_pipeline's typed/untyped split mislabeled them
+    "Unexpected pipeline failure" (#457/SAFE-2026-08-21-3,
+    PIPE-2026-08-21-8/#428).
+    """
     pass
 
 

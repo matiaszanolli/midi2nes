@@ -1026,6 +1026,28 @@ class TestPipelineSafetyGates:
             check_mapper_capacity(str(asm), TinyMapper())
         assert "exceeds" in str(exc.value)
 
+    def test_check_mapper_capacity_error_is_also_a_midi2neserror(self):
+        """Regression (#457/SAFE-2026-08-21-3, PIPE-2026-08-21-8): this
+        expected, actionable failure must be catchable through
+        `except MIDI2NESError` (run_full_pipeline's "expected failure"
+        clause), not just `except ValueError` -- MapperError is now both."""
+        from main import check_mapper_capacity
+        from core.exceptions import MIDI2NESError, MapperError
+
+        class TinyMapper:
+            name = "Tiny"
+            def can_fit_data(self, n): return n <= 4
+            def get_data_capacity(self): return 4
+            def validate_segment_sizes(self, segment_sizes):
+                return ["music data exceeds Tiny capacity"]
+
+        asm = self.temp_dir / "big2.asm"
+        asm.write_text(".byte 1, 2, 3, 4, 5, 6\n")
+        with pytest.raises(MIDI2NESError):
+            check_mapper_capacity(str(asm), TinyMapper())
+        with pytest.raises(MapperError):
+            check_mapper_capacity(str(asm), TinyMapper())
+
     def test_check_mapper_capacity_passes_for_mmc3(self):
         from main import check_mapper_capacity
         from mappers.mmc3 import MMC3Mapper
@@ -1817,15 +1839,26 @@ class TestBuildAndValidateRom:
 
     @patch('main.NESProjectBuilder')
     @patch('main.check_mapper_capacity')
-    def test_raises_runtimeerror_on_prepare_failure(self, mock_capacity, mock_builder_cls):
+    def test_raises_exporterror_on_prepare_failure(self, mock_capacity, mock_builder_cls):
+        """Regression (#457/SAFE-2026-08-21-3): a bare RuntimeError here used
+        to fall through run_full_pipeline's typed/untyped split as an
+        "Unexpected pipeline failure" instead of the ordinary, actionable
+        outcome it is -- now a MIDI2NESError subclass (ExportError, matching
+        prepare_project's own type for its other failure mode)."""
         from main import build_and_validate_rom
+        from core.exceptions import ExportError, MIDI2NESError
         mock_capacity.return_value = 3
         mock_builder = Mock()
         mock_builder.prepare_project.return_value = False
         mock_builder_cls.return_value = mock_builder
         args = Namespace(verbose=False)
 
-        with pytest.raises(RuntimeError, match="prepare"):
+        with pytest.raises(ExportError, match="prepare"):
+            build_and_validate_rom(
+                self.mapper, self.music_asm, self.project_path, self.output_rom,
+                debug_mode=False, skip_validation=True, args=args)
+        # Must be catchable through the pipeline's single expected-failure clause.
+        with pytest.raises(MIDI2NESError):
             build_and_validate_rom(
                 self.mapper, self.music_asm, self.project_path, self.output_rom,
                 debug_mode=False, skip_validation=True, args=args)
@@ -1833,10 +1866,12 @@ class TestBuildAndValidateRom:
     @patch('main.compile_rom')
     @patch('main.NESProjectBuilder')
     @patch('main.check_mapper_capacity')
-    def test_raises_runtimeerror_on_compile_failure(
+    def test_raises_compilationerror_on_compile_failure(
         self, mock_capacity, mock_builder_cls, mock_compile
     ):
+        """Regression (#457/SAFE-2026-08-21-3): see prepare-failure test above."""
         from main import build_and_validate_rom
+        from core.exceptions import CompilationError, MIDI2NESError
         mock_capacity.return_value = 3
         mock_builder = Mock()
         mock_builder.prepare_project.return_value = True
@@ -1844,7 +1879,11 @@ class TestBuildAndValidateRom:
         mock_compile.return_value = False
         args = Namespace(verbose=False)
 
-        with pytest.raises(RuntimeError, match="compilation"):
+        with pytest.raises(CompilationError, match="compilation"):
+            build_and_validate_rom(
+                self.mapper, self.music_asm, self.project_path, self.output_rom,
+                debug_mode=False, skip_validation=True, args=args)
+        with pytest.raises(MIDI2NESError):
             build_and_validate_rom(
                 self.mapper, self.music_asm, self.project_path, self.output_rom,
                 debug_mode=False, skip_validation=True, args=args)
@@ -1853,10 +1892,12 @@ class TestBuildAndValidateRom:
     @patch('main.compile_rom')
     @patch('main.NESProjectBuilder')
     @patch('main.check_mapper_capacity')
-    def test_raises_runtimeerror_on_validation_failure(
+    def test_raises_validationerror_on_validation_failure(
         self, mock_capacity, mock_builder_cls, mock_compile, mock_validate
     ):
+        """Regression (#457/SAFE-2026-08-21-3): see prepare-failure test above."""
         from main import build_and_validate_rom
+        from core.exceptions import ValidationError, MIDI2NESError
         mock_capacity.return_value = 3
         mock_builder = Mock()
         mock_builder.prepare_project.return_value = True
@@ -1865,7 +1906,11 @@ class TestBuildAndValidateRom:
         mock_validate.return_value = False
         args = Namespace(verbose=False)
 
-        with pytest.raises(RuntimeError, match="validation"):
+        with pytest.raises(ValidationError, match="validation"):
+            build_and_validate_rom(
+                self.mapper, self.music_asm, self.project_path, self.output_rom,
+                debug_mode=False, skip_validation=False, args=args)
+        with pytest.raises(MIDI2NESError):
             build_and_validate_rom(
                 self.mapper, self.music_asm, self.project_path, self.output_rom,
                 debug_mode=False, skip_validation=False, args=args)
