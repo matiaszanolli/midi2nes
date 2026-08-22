@@ -34,18 +34,16 @@ python main.py input.mid output.nes
 ### Real-World Performance Results
 - **120+ times faster** than previous versions
 - **Multi-core processing** using all available CPU cores
-- **Complex MIDI files** (51KB, 15 tracks, 13,362 events) processed in ~15 seconds
+- **Complex, multi-track MIDI files** processed in seconds rather than timing out
 - **Pattern compression** achieving up to ~95.86% dedup reduction within
   detected patterns (a percentage, not a multiplier -- and scoped to the
   patterned subset, not the whole song; see `coverage_ratio` for how much of
   a song is actually patterned)
 - **Smart sampling** for very large files with quality preservation
 
-### Test Results (input.mid - 51KB, 15 tracks)
-| Implementation | Time | Status |
-|---|---|---|
-| **Original** | ∞ (timeout) | ❌ Failed |
-| **Optimized** | 15 seconds | ✅ Success |
+Run `python benchmarks/run_benchmarks.py` to reproduce timing numbers for
+yourself against the deterministic fixture set in `benchmarks/fixtures/`
+(ships with the repo, so results are reproducible run to run).
 
 ## 📋 Features
 
@@ -105,8 +103,10 @@ python main.py prepare output.s nes_project/
 # Fast parsing only (for development)
 python tracker/parser_fast.py input.mid output.json
 
-# Run performance benchmarks
-python main.py benchmark run input.mid
+# Run performance benchmarks against your own file(s)/directory
+python main.py benchmark run path/to/your.mid
+# Or, for the deterministic fixture-based benchmark (reproducible, no file needed):
+python benchmarks/run_benchmarks.py
 
 # Configuration management
 python main.py config init my_config.yaml

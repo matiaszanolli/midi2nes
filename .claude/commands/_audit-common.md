@@ -31,7 +31,6 @@ NES core:         nes/
   Project build:  nes/project_builder.py               (NESProjectBuilder — main.asm/music.asm/nes.cfg)
   Song bank:      nes/song_bank.py                     (multi-song banks; `song add|list|remove|build`; records each song's source midi_path)
   Playback engine:nes/audio_engine.asm                 (6502 bytecode interpreter `.include`d by main.asm; jukebox routines behind `.ifdef JUKEBOX_BUILD`)
-  Orphan cfg:     nes/linker_mmc3.cfg                  (checked in, referenced by NOTHING -- mappers generate nes.cfg via generate_linker_config())
   Debug overlay:  nes/debug_overlay.py                 (--debug on-screen APU/frame diagnostics)
 
 Mappers:          mappers/                             (BaseMapper + nrom/mmc1/mmc3 + factory)
