@@ -103,7 +103,13 @@ class TestEnhancedDrumMapper:
 
         dpcm_events, noise_events = mapper.map_drums(real_parser_shaped_events)
 
-        assert len(dpcm_events) + len(noise_events) == 2
+        # Both hits resolve to DPCM (kick_hard id=2 at velocity 100,
+        # snare_hard id=6 at velocity 90 in the test catalog), none fall
+        # through to noise -- pin the routing and sample identity, not
+        # just the combined count (#471/REG-30).
+        assert noise_events == []
+        assert [e['sample_id'] for e in dpcm_events] == [2, 6]
+        assert [e['frame'] for e in dpcm_events] == [0, 30]
 
     def test_map_drums_still_skips_genuine_zero_velocity_events(self, config):
         """A real note-off (volume=0) must still be skipped -- the fix must

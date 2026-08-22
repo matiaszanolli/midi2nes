@@ -244,15 +244,22 @@ subsystem (`dpcm_sampler/`, `dpcm_index.json`).
 **#87 (ARR-04) is CLOSED** (commit `e1be17d`) — `_allocate_dpcm` and `_allocate_noise`
 (`arranger/voice_allocator.py`) no longer hardcode note lists; both now consult
 `get_drum_mapping` (i.e. `GM_DRUM_MAP`) directly. Verify-the-fix / edge-case checklist:
-- `_allocate_dpcm` (`arranger/voice_allocator.py:330-356`) filters candidate notes to those
-  where `get_drum_mapping(note.pitch).use_sample and mapping.channel == NESChannel.DPCM`, then
-  picks the highest-`priority` match and maps its `mapping.name` through the local
-  `DPCM_SAMPLE_SLOTS = {"Acoustic Bass Drum": 0, "Bass Drum 1": 0, "Acoustic Snare": 1}`
-  (`:293-297`), defaulting to slot `2` for any other `use_sample` drum not in that dict.
-  Currently `GM_DRUM_MAP` only flags `use_sample=True` for notes 35/36/38, so slot `2` is
-  presently unreachable dead code — confirm that stays true if `GM_DRUM_MAP` grows more
-  `use_sample` entries, and cross-ref `/audit-dpcm` + `dpcm_index.json` to confirm slots 0/1
-  actually have backing samples (an index with no backing sample is a playback bug).
+- `_allocate_dpcm` (`arranger/voice_allocator.py`) filters candidate notes to those where
+  `get_drum_mapping(note.pitch).use_sample and mapping.channel == NESChannel.DPCM`, then picks
+  the highest-`priority` match and maps its `mapping.name` through `DPCM_SAMPLE_ROLE_NAMES`
+  (`{"Acoustic Bass Drum": "kick", "Bass Drum 1": "kick", "Acoustic Snare": "snare"}`) to a
+  catalog *role name*, resolved against the real `dpcm_index.json` entries via
+  `_resolve_dpcm_catalog_id` (lazily loaded, cached on the instance; returns `None` — no DPCM
+  sound, not a wrong one — if the index is missing or doesn't define that role). Fixed
+  #445/DPCM-2026-08-21-2 (regression of #87 (b)): the table used to map straight to positional
+  slot integers (0/1) that got packed *as if they were* real catalog ids, so a kick played
+  whatever the index's id-0 entry happened to be. `pipeline_integration.arrange_for_nes`'s DPCM
+  conversion now also dense-remaps the resolved catalog ids and emits `frames['dpcm_sample_map']`
+  (same convention as `NESEmulatorCore.process_all_tracks`, #200/D-14) since a real catalog id
+  (the shipped index's curated `kick`/`snare` are 1318/1620) is far too wide for the single-byte
+  `note` field. Currently `GM_DRUM_MAP` only flags `use_sample=True` for notes 35/36/38 — confirm
+  that stays true if `GM_DRUM_MAP` grows more `use_sample` entries, and cross-ref `/audit-dpcm` +
+  `dpcm_index.json` to confirm "kick"/"snare" still exist in whatever index is loaded.
 - `_allocate_noise` (`:299-328`) now reads `get_drum_mapping(note.pitch).noise_period`
   (curated per-instrument value from `GM_DRUM_MAP`, e.g. closed hi-hat period 0 vs cowbell
   period 8) instead of a linear pitch formula, falling back to `5` when a routed-to-noise drum

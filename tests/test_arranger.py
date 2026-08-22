@@ -150,6 +150,43 @@ class TestApplySustainDoesNotMergeFastSequentialNotes(unittest.TestCase):
         self.assertEqual(ends[67], 20)
 
 
+class TestOverlappingSamePitchNotesArePreserved(unittest.TestCase):
+    """Regression (#449/ARR-2026-08-21-2): a note-on for a pitch that's
+    already active used to silently overwrite the active slot -- the first
+    onset never became a NoteInfo at all, and the note-off that followed
+    closed the *second* onset, truncating it to the overlap window. This
+    is routine in real MIDI (DAW legato exports, doubled unison voices)."""
+
+    def test_second_note_on_closes_the_first_at_its_own_onset(self):
+        events = [
+            {'frame': 0, 'note': 60, 'velocity': 100, 'channel': 0},
+            {'frame': 98, 'note': 60, 'velocity': 100, 'channel': 0},
+            {'frame': 100, 'note': 60, 'velocity': 0, 'channel': 0},
+        ]
+        _, notes_by_track, _ = analyze_midi_events(
+            {'melody': events}, sustain=False)
+        notes = sorted(notes_by_track[0], key=lambda n: n.start_frame)
+        # Both onsets survive: the first note-on closes at the second
+        # note-on's frame instead of vanishing entirely.
+        self.assertEqual(len(notes), 2)
+        self.assertEqual((notes[0].start_frame, notes[0].end_frame), (0, 98))
+        self.assertEqual((notes[1].start_frame, notes[1].end_frame), (98, 100))
+
+    def test_zero_duration_retrigger_does_not_emit_a_ghost_note(self):
+        """Two note-ons on the exact same frame (a malformed but real-world
+        duplicate) must not manufacture a zero-length NoteInfo."""
+        events = [
+            {'frame': 0, 'note': 60, 'velocity': 100, 'channel': 0},
+            {'frame': 0, 'note': 60, 'velocity': 100, 'channel': 0},
+            {'frame': 10, 'note': 60, 'velocity': 0, 'channel': 0},
+        ]
+        _, notes_by_track, _ = analyze_midi_events(
+            {'melody': events}, sustain=False)
+        notes = notes_by_track[0]
+        self.assertEqual(len(notes), 1)
+        self.assertEqual((notes[0].start_frame, notes[0].end_frame), (0, 10))
+
+
 class TestDrumTrackAnalysisNoDeadAttribute(unittest.TestCase):
     """Regression (#207/ARR-12): _analyze_drum_track used to set an ad-hoc
     `analysis.notes` instance attribute -- not a declared TrackAnalysis

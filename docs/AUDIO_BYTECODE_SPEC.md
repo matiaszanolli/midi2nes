@@ -44,6 +44,13 @@ instrument_table:
 ```
 *(If an instrument doesn't use a specific macro, it points to a standard `macro_null` which applies 0 offset).*
 
+**Instrument count is capped at 32** (ids `$00`-`$1F`). Each row is 8 bytes
+(4 macro pointers), and the engine's `EVAL_MACRO` (`nes/audio_engine.asm`)
+addresses `instrument_table` with `current_inst * 8` computed in an 8-bit
+accumulator and indexed with 8-bit `Y` -- id 32 would alias to id 0's row,
+33 to id 1's, and so on, with no error. The exporter's `_register_instrument`
+enforces this limit at build time (#425/NH-HW-2026-08-21-1).
+
 ### 2.3 Macros
 Macros are lists of offsets or absolute values evaluated frame-by-frame.
 *   **Volume Macros:** Absolute values (0-15).

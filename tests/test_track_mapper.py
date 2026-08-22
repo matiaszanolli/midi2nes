@@ -1,6 +1,7 @@
 import io
 import contextlib
 import unittest
+from tracker.parser_fast import parse_midi_to_frames
 from tracker.track_mapper import (
     group_notes_by_frame,
     detect_chord,
@@ -198,6 +199,24 @@ class TestGroupNotesByFrame(unittest.TestCase):
         grouped = group_notes_by_frame(events)
         self.assertEqual(len(grouped[0]), 2)
         self.assertEqual(grouped[0], [60, 67])
+
+class TestDrumMappingIsChannelAware(unittest.TestCase):
+    """Regression (#425/PIPE-2026-08-21-1, #471/REG-30): a drumless MIDI
+    parsed end-to-end must not produce phantom DPCM/noise percussion.
+    ffccf51 fixed map_drums's dead velocity-only guard without adding a
+    channel filter, so every melodic note-on was resolved as GM
+    percussion; the whole suite stayed green because no test fed a real
+    parsed melodic track through this exact path."""
+
+    DPCM_INDEX = "dpcm_index.json"
+
+    def test_drumless_midi_produces_no_dpcm_or_noise_events(self):
+        midi_data = parse_midi_to_frames("test_midi/simple_loop.mid")
+        result = assign_tracks_to_nes_channels(midi_data["events"], self.DPCM_INDEX)
+
+        self.assertEqual(result["dpcm"], [])
+        self.assertEqual(result["noise"], [])
+
 
 class TestNoiseChannelContention(unittest.TestCase):
     """Regression (#74/D-11): the drum noise-fallback used to be silently

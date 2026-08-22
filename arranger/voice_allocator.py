@@ -5,6 +5,7 @@ Takes analyzed MIDI data and allocates notes to NES channels frame-by-frame,
 implementing arpeggiation for polyphonic content and priority-based voice stealing.
 """
 
+import json
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from enum import Enum
@@ -74,9 +75,14 @@ class VoiceAllocator:
         self,
         arp_speed: int = DEFAULT_ARP_SPEED,
         arp_style: ArpStyle = ArpStyle.UP,
+        dpcm_index_path: str = "dpcm_index.json",
     ):
         self.arp_speed = arp_speed
         self.arp_style = arp_style
+        self.dpcm_index_path = dpcm_index_path
+        # Lazily loaded/cached by _resolve_dpcm_catalog_id -- a song with no
+        # kick/snare hits never touches the index file.
+        self._dpcm_catalog: Optional[Dict[str, int]] = None
 
         # Channel states
         self.pulse1 = ChannelState()
@@ -314,10 +320,17 @@ class VoiceAllocator:
     # `use_sample=True` for are kick (notes 35/36) and snare (note 38); slots
     # are keyed by GM_DRUM_MAP's own name so a note it does NOT route to DPCM
     # (e.g. note 40, Electric Snare -> NOISE) can never be misrouted here (#87).
-    DPCM_SAMPLE_SLOTS = {
-        "Acoustic Bass Drum": 0,
-        "Bass Drum 1": 0,
-        "Acoustic Snare": 1,
+    #
+    # Values are dpcm_index.json catalog role names, not positional slot
+    # numbers -- a bare 0/1/2 used to be packed as if it *were* the real
+    # catalog id (id 0 = a random shipped sample, id 1 = a different kit's
+    # kick), so every kick/snare played the wrong drum (#445/
+    # DPCM-2026-08-21-2). _allocate_dpcm resolves these against the loaded
+    # index the same way the legacy front-end does.
+    DPCM_SAMPLE_ROLE_NAMES = {
+        "Acoustic Bass Drum": "kick",
+        "Bass Drum 1": "kick",
+        "Acoustic Snare": "snare",
     }
 
     def _allocate_noise(
@@ -384,7 +397,31 @@ class VoiceAllocator:
 
         # Highest GM priority wins (kick outranks snare in GM_DRUM_MAP).
         _, mapping = max(dpcm_candidates, key=lambda nm: nm[1].priority)
-        return self.DPCM_SAMPLE_SLOTS.get(mapping.name, 2)
+        role_name = self.DPCM_SAMPLE_ROLE_NAMES.get(mapping.name)
+        if role_name is None:
+            return None
+        return self._resolve_dpcm_catalog_id(role_name)
+
+    def _resolve_dpcm_catalog_id(self, role_name: str) -> Optional[int]:
+        """Look up a role name ("kick"/"snare") in the loaded DPCM index,
+        the same catalog the legacy front-end resolves samples against.
+        Returns None (no DPCM sound for this hit) rather than inventing an
+        id when the index is missing or doesn't define the role -- wrong
+        silence is preferable to a confidently wrong sample."""
+        if self._dpcm_catalog is None:
+            self._dpcm_catalog = {}
+            try:
+                with open(self.dpcm_index_path) as f:
+                    index = json.load(f)
+                for name in ("kick", "snare"):
+                    entry = index.get(name)
+                    if isinstance(entry, dict) and 'id' in entry:
+                        self._dpcm_catalog[name] = entry['id']
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                print(f"Warning: could not load DPCM index "
+                      f"'{self.dpcm_index_path}' -- --arranger kick/snare "
+                      f"hits will produce no DPCM sound.")
+        return self._dpcm_catalog.get(role_name)
 
 
 class FrameByFrameAllocator:
@@ -392,10 +429,11 @@ class FrameByFrameAllocator:
     Processes entire songs frame-by-frame, producing complete NES frame data.
     """
 
-    def __init__(self, total_frames: int, fps: int = 60):
+    def __init__(self, total_frames: int, fps: int = 60,
+                 dpcm_index_path: str = "dpcm_index.json"):
         self.total_frames = total_frames
         self.fps = fps
-        self.allocator = VoiceAllocator()
+        self.allocator = VoiceAllocator(dpcm_index_path=dpcm_index_path)
 
     def process_song(
         self,
@@ -545,6 +583,7 @@ def allocate_with_arpeggiation(
     plan: ArrangementPlan,
     total_frames: int,
     arp_speed: int = 3,
+    dpcm_index_path: str = "dpcm_index.json",
 ) -> Dict[str, Dict[int, dict]]:
     """
     Convenience function to process a song with arpeggiation.
@@ -554,10 +593,12 @@ def allocate_with_arpeggiation(
         plan: ArrangementPlan from VoiceRoleAnalyzer
         total_frames: Total frames in the song
         arp_speed: Frames between arpeggio note changes (default 3 = 20Hz)
+        dpcm_index_path: Path to dpcm_index.json, used to resolve kick/snare
+            hits to real catalog ids (#445/DPCM-2026-08-21-2)
 
     Returns:
         Frame data dictionary ready for NES export
     """
-    processor = FrameByFrameAllocator(total_frames)
+    processor = FrameByFrameAllocator(total_frames, dpcm_index_path=dpcm_index_path)
     processor.allocator.arp_speed = arp_speed
     return processor.process_song(notes_by_track, plan)

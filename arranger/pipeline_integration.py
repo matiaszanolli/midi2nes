@@ -198,7 +198,29 @@ def analyze_midi_events(
                 program = event.get('program', 0) or 0
 
                 if velocity > 0:
-                    # Note on
+                    # Note on. A note-on for a pitch that's already active
+                    # (legato/repeated hits, doubled unison voices -- all
+                    # routine in real MIDI, and parser_fast delivers them in
+                    # chronological order) used to silently overwrite the
+                    # active slot: the first note never became a NoteInfo at
+                    # all, and the eventual note-off closed the *second*
+                    # onset, truncating it to the overlap window. Close the
+                    # still-active note at this new onset instead (implicit
+                    # note-off / re-trigger semantics) before re-arming the
+                    # slot (#449/ARR-2026-08-21-2).
+                    if note in active_notes:
+                        start_frame, start_vel, start_chan, start_program = active_notes[note]
+                        if frame > start_frame:
+                            note_info = NoteInfo(
+                                pitch=note,
+                                velocity=start_vel,
+                                start_frame=start_frame,
+                                end_frame=frame,
+                                channel=start_chan,
+                                program=start_program,
+                            )
+                            track_notes.append(note_info)
+                            analyzer.add_note(sub_track_idx, note_info)
                     active_notes[note] = (frame, velocity, ev_channel, program)
                 else:
                     # Note off
@@ -251,6 +273,7 @@ def arrange_for_nes(
     midi_events: Dict[str, List[Dict]],
     arp_speed: int = 3,
     verbose: bool = False,
+    dpcm_index_path: str = "dpcm_index.json",
 ) -> Dict[str, Dict[int, Dict]]:
     """
     Arrange MIDI events for NES with intelligent voice allocation and arpeggiation.
@@ -262,6 +285,8 @@ def arrange_for_nes(
         midi_events: Dict of track_name -> list of event dicts
         arp_speed: Arpeggiation speed in frames (3 = 20Hz, classic NES)
         verbose: Print arrangement analysis
+        dpcm_index_path: Path to dpcm_index.json, used to resolve kick/snare
+            hits to real catalog ids (#445/DPCM-2026-08-21-2)
 
     Returns:
         Dict with channel names as keys, each containing frame_number -> frame_data
@@ -288,6 +313,7 @@ def arrange_for_nes(
         plan,
         total_frames + 60,  # Add a second of buffer
         arp_speed=arp_speed,
+        dpcm_index_path=dpcm_index_path,
     )
 
     # Convert to format expected by existing pipeline
@@ -337,12 +363,31 @@ def arrange_for_nes(
         }
 
     # Convert DPCM. The exporters gate emission on `volume` and recover the
-    # sample id from `note` = sample_id + 1 (note 0 is the rest sentinel) — they
-    # never read a `sample` key (#84).
+    # sample id from `note` = sample_id + 1 (note 0 is the rest sentinel) —
+    # they never read a `sample` key (#84). `data['sample']` is now a raw
+    # dpcm_index.json catalog id (0-1922 in the shipped index, #445/
+    # DPCM-2026-08-21-2), too wide for the single-byte `note` field, so
+    # remap the catalog ids this song actually references to a dense,
+    # song-local 0..N-1 range before encoding -- the same convention
+    # NESEmulatorCore.process_all_tracks uses (nes/emulator_core.py),
+    # whose `dpcm_sample_map` side table the export/pack stage already
+    # reads (#200/D-14).
+    referenced_ids = sorted({data['sample'] for data in frames['dpcm'].values()})
+    dense_id_of = {raw_id: i for i, raw_id in enumerate(referenced_ids)}
+    if len(referenced_ids) > 255:
+        print(f"Warning: {len(referenced_ids)} distinct DPCM samples "
+              f"referenced, exceeding the 255-sample dense-id ceiling — "
+              f"samples beyond the 255th will silently alias onto the "
+              f"255th sample.")
     for frame, data in frames['dpcm'].items():
+        dense_id = dense_id_of[data['sample']]
         output['dpcm'][frame] = {
-            'note': min(255, data['sample'] + 1),
+            'note': min(255, dense_id + 1),
             'volume': 15,
+        }
+    if referenced_ids:
+        output['dpcm_sample_map'] = {
+            str(dense_id): raw_id for raw_id, dense_id in dense_id_of.items()
         }
 
     return output

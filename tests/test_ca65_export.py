@@ -274,18 +274,22 @@ class TestCA65Export(unittest.TestCase):
     def test_compress_macro_empty_data(self):
         self.assertEqual(self.exporter._compress_macro([]), [0xFF])
 
-    def test_register_instrument_rejects_the_257th_unique_instrument(self):
-        """Regression (#80/EXP-04): CMD_INSTRUMENT's operand is a single byte.
-        The 257th unique (vol, arp, pitch, duty) combination would assign
-        inst_id=256, overflowing `${inst_id:02X}` to a 3-hex-digit byte."""
+    def test_register_instrument_rejects_the_33rd_unique_instrument(self):
+        """Regression (#425/NH-HW-2026-08-21-1): the bytecode engine
+        computes each instrument's instrument_table row offset as
+        `current_inst * 8` with 8-bit accumulator/Y-register math
+        (nes/audio_engine.asm's EVAL_MACRO), so only ids 0-31 are
+        reachable. The 33rd unique (vol, arp, pitch, duty) combination
+        would assign inst_id=32, which the engine reads back as id 0's
+        macro pointers instead -- wrong volume/pitch/duty with no error."""
         instruments = {}
         instrument_defs = []
-        for i in range(256):
+        for i in range(32):
             inst_id = self.exporter._register_instrument(
                 (i, 0, 0, 0), instruments, instrument_defs)
             self.assertEqual(inst_id, i)
-        with self.assertRaises(ValueError, msg="257th unique instrument must raise"):
-            self.exporter._register_instrument((256, 0, 0, 0), instruments, instrument_defs)
+        with self.assertRaises(ValueError, msg="33rd unique instrument must raise"):
+            self.exporter._register_instrument((32, 0, 0, 0), instruments, instrument_defs)
 
     def test_register_instrument_reuses_existing_ids(self):
         """Re-registering the same combination must not consume a new id."""

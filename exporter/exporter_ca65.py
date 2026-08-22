@@ -1008,20 +1008,27 @@ class CA65Exporter(BaseExporter):
 
     @staticmethod
     def _register_instrument(inst, instruments, instrument_defs):
-        """Look up or assign an instrument id, guarding the single-byte
-        CMD_INSTRUMENT operand (#80/EXP-04): with more than 256 unique
-        (vol, arp, pitch, duty) macro combinations, `${inst_id:02X}` would
-        widen past two hex digits, which ca65 rejects (or the engine's
-        single-byte fetch would misread). Raises rather than emitting a
-        corrupt operand, matching the sequence-bank-overflow guard below.
+        """Look up or assign an instrument id, guarding the engine's actual
+        addressable range (#425/NH-HW-2026-08-21-1 supersedes the >256
+        single-byte-operand guard this replaced -- #80/EXP-04): each
+        instrument occupies 8 bytes of `instrument_table` and the bytecode
+        engine (nes/audio_engine.asm's EVAL_MACRO) computes the row offset
+        as `current_inst * 8` with an 8-bit accumulator/Y-register, so only
+        32 instruments (ids 0-31) are actually reachable -- id 32 silently
+        aliases to id 0's macro pointers, id 33 to id 1's, etc., with no
+        error on either side of the contract. Raises rather than emitting
+        an id the engine will misread.
         """
         if inst not in instruments:
             new_id = len(instrument_defs)
-            if new_id > 0xFF:
+            if new_id > 0x1F:
                 raise ValueError(
-                    "Too many unique instruments (>256 distinct volume/arp/"
-                    "pitch/duty combinations) -- inst_id would exceed a "
-                    "single byte. Reduce timbre variety or split the song."
+                    "Too many unique instruments (>32 distinct volume/arp/"
+                    "pitch/duty combinations) -- the bytecode engine's "
+                    "8-bit instrument-table indexing (nes/audio_engine.asm) "
+                    "can only address instrument ids 0-31. Reduce timbre "
+                    "variety, split the song, or use --no-patterns for "
+                    "full-fidelity direct export."
                 )
             instruments[inst] = new_id
             instrument_defs.append(inst)

@@ -44,6 +44,30 @@ class TestArrangerFrameContract(unittest.TestCase):
             self.assertGreaterEqual(fd['note'], 1)   # sample_id + 1, never the rest sentinel
             self.assertGreater(fd['volume'], 0)      # exporter gates on volume > 0
 
+    def test_kick_and_snare_resolve_to_the_catalogs_real_samples(self):
+        """End-to-end regression (#445/DPCM-2026-08-21-2): a kick and a
+        snare must pack as the shipped catalog's actual kick.dmc/snare.dmc,
+        not a leftover positional slot id (0/1) that happened to alias onto
+        an unrelated sample in dpcm_index.json."""
+        import json
+        from dpcm_sampler.generate_dpcm_index import get_dpcm_sample_ids_from_frames
+
+        events = {'drums': [
+            {'frame': 0, 'note': 36, 'volume': 100, 'channel': 9},   # kick
+            {'frame': 4, 'note': 36, 'volume': 0, 'channel': 9},
+            {'frame': 20, 'note': 38, 'volume': 100, 'channel': 9},  # snare
+            {'frame': 24, 'note': 38, 'volume': 0, 'channel': 9},
+        ]}
+        out = arrange_for_nes(events)
+
+        dense_to_catalog = get_dpcm_sample_ids_from_frames(out)
+        with open('dpcm_index.json') as f:
+            index = json.load(f)
+        filenames = {v['id']: v['filename'] for v in index.values()}
+        resolved_filenames = {filenames[cid] for cid in dense_to_catalog.values()}
+
+        self.assertEqual(resolved_filenames, {'kick.dmc', 'snare.dmc'})
+
     @patch('arranger.pipeline_integration.allocate_with_arpeggiation')
     def test_noise_and_dpcm_conversion_matches_legacy_contract(self, mock_alloc):
         """Drive the conversion with a controlled allocator output and assert the
@@ -62,17 +86,24 @@ class TestArrangerFrameContract(unittest.TestCase):
         self.assertEqual(set(out['noise'][0].keys()), noise_keys)
         self.assertEqual(set(out['dpcm'][0].keys()), dpcm_keys)
 
-        # Values follow the contract: noise period under `note`, DPCM sample+1.
+        # Values follow the contract: noise period under `note`, DPCM note =
+        # dense_id + 1 (#445/DPCM-2026-08-21-2 -- the raw catalog id 4 is
+        # remapped to this song's dense id 0, same convention as
+        # NESEmulatorCore.process_all_tracks) with the real catalog id
+        # recoverable via dpcm_sample_map.
         self.assertEqual(out['noise'][0]['note'], 7)
         self.assertEqual(out['noise'][0]['control'], 0)   # mode 0
-        self.assertEqual(out['dpcm'][0]['note'], 5)        # sample 4 + 1
+        self.assertEqual(out['dpcm'][0]['note'], 1)        # dense id 0 + 1
         self.assertEqual(out['dpcm'][0]['volume'], 15)
+        self.assertEqual(out['dpcm_sample_map'], {'0': 4})
 
     @patch('arranger.pipeline_integration.allocate_with_arpeggiation')
     def test_dpcm_high_sample_id_not_collapsed_to_95(self, mock_alloc):
         """Regression (#196/EXP-08): the arranger used to clamp `note` at 95
         (the pre-#67 formula), so any sample_id >= 94 collapsed to the same
-        wrong drum. It must match nes/emulator_core.py's 255 ceiling."""
+        wrong drum. A single referenced sample always dense-remaps to note=1
+        (#445/DPCM-2026-08-21-2), so the real high catalog id must instead
+        survive intact in dpcm_sample_map, not get silently dropped/aliased."""
         mock_alloc.return_value = {
             'pulse1': {}, 'pulse2': {}, 'triangle': {},
             'noise': {},
@@ -83,7 +114,8 @@ class TestArrangerFrameContract(unittest.TestCase):
             {'frame': 2, 'note': 38, 'volume': 0, 'type': 'note_off', 'channel': 9},
         ]})
 
-        self.assertEqual(out['dpcm'][0]['note'], 201)  # sample 200 + 1, not clamped to 95
+        self.assertEqual(out['dpcm'][0]['note'], 1)  # dense id 0 + 1
+        self.assertEqual(out['dpcm_sample_map'], {'0': 200})  # real id preserved
 
 
 if __name__ == '__main__':

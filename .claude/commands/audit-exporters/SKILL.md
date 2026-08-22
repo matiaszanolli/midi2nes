@@ -135,16 +135,18 @@ by truthiness of `patterns`. Check:
 Every `.byte ${val:02X}` must receive 0–255; `.word` rows must receive valid 16-bit
 labels. Hunt for values that can exceed a byte without clamping in
 `exporter/exporter_ca65.py`:
-- **Verify fix (#80, closed) — EXP-04**: the `.byte $80, ${inst_id:02X} ; CMD_INSTRUMENT`
-  operand at `:1251` can no longer widen past two hex digits. `inst_id` is now assigned by
-  the static helper `_register_instrument` (`:905-924`, called at `:1109`/`:1164`), which
-  raises `ValueError` when `len(instrument_defs) > 0xFF` (guard at `:916`) instead of
-  handing back a 3-hex-digit id for a song with >256 unique (vol,arp,pitch,duty) tuples.
-  The `loop_start` half of the original finding is now moot: loop compression was removed
-  (#163/NH-21), so `_compress_macro` (`:926-960`) only ever appends `$FF` and never emits a
-  raw `loop_start` operand into the macro byte stream (formatted `${val:02X}` at `:1179`).
-  Confirm the instrument guard still fires on every over-budget path and that no macro byte
-  can exceed 255 without clamping.
+- **Verify fix (#80, closed; superseded by #425/NH-HW-2026-08-21-1) — EXP-04**: the
+  `.byte $80, ${inst_id:02X} ; CMD_INSTRUMENT` operand can no longer widen past two hex
+  digits. `inst_id` is assigned by the static helper `_register_instrument`, which now raises
+  `ValueError` when `len(instrument_defs) > 0x1F` (32 instruments, not 256) — the real ceiling
+  is the bytecode engine's 8-bit `current_inst * 8` row-offset math in `EVAL_MACRO`
+  (`nes/audio_engine.asm`), which can only address ids 0-31; the old >256 single-byte-operand
+  guard was honest about the assembly syntax but let ids 32-255 silently alias onto another
+  instrument's macro pointers with no error on either side of the contract. The `loop_start`
+  half of the original finding is now moot: loop compression was removed (#163/NH-21), so
+  `_compress_macro` only ever appends `$FF` and never emits a raw `loop_start` operand into the
+  macro byte stream. Confirm the instrument guard still fires at 32 (not 256) on every
+  over-budget path and that no macro byte can exceed 255 without clamping.
 - **Verify fix (#77, closed)**: a legitimate volume/pitch/arp value of `0xFF`/`0xFE` can no
   longer collide with the End/Loop control bytes. `_encode_macro_offset` (`:71-84`) clamps
   every signed pitch/arp offset to `[-128, 127]` and then snaps the two colliding

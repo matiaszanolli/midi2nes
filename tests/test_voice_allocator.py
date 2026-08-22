@@ -8,6 +8,9 @@ to NOISE, and the noise period was a linear (pitch-36)//6 formula instead of
 GM_DRUM_MAP's curated per-drum values.
 """
 
+import json
+import os
+import tempfile
 import unittest
 
 from arranger import (
@@ -22,8 +25,15 @@ def _note(pitch, vel=100):
 
 
 class TestDpcmRouting(unittest.TestCase):
+    # tests/fixtures/test_dpcm_index.json defines "kick" (id=0) and
+    # "snare" (id=4) -- a real catalog, not the arbitrary positional slot
+    # numbers 0/1 the old (broken) DPCM_SAMPLE_SLOTS scheme used to return
+    # regardless of what the index actually contained (#445/
+    # DPCM-2026-08-21-2).
+    DPCM_INDEX = "tests/fixtures/test_dpcm_index.json"
+
     def setUp(self):
-        self.va = VoiceAllocator()
+        self.va = VoiceAllocator(dpcm_index_path=self.DPCM_INDEX)
         self.track_info = TrackAnalysis(track_id=0)
 
     def _candidates(self, *pitches):
@@ -34,17 +44,32 @@ class TestDpcmRouting(unittest.TestCase):
         the old code hardcoded it as a DPCM snare (note.pitch in [38, 40])."""
         self.assertIsNone(self.va._allocate_dpcm(self._candidates(40)))
 
-    def test_kick_notes_get_slot_zero(self):
+    def test_kick_notes_resolve_to_the_catalogs_kick_id(self):
         self.assertEqual(self.va._allocate_dpcm(self._candidates(35)), 0)
         self.assertEqual(self.va._allocate_dpcm(self._candidates(36)), 0)
 
-    def test_acoustic_snare_gets_slot_one(self):
-        self.assertEqual(self.va._allocate_dpcm(self._candidates(38)), 1)
+    def test_acoustic_snare_resolves_to_the_catalogs_snare_id(self):
+        self.assertEqual(self.va._allocate_dpcm(self._candidates(38)), 4)
 
     def test_kick_outranks_snare_when_both_present(self):
         """GM_DRUM_MAP gives kicks higher priority (9) than the acoustic
         snare (8); the higher-priority hit must win."""
         self.assertEqual(self.va._allocate_dpcm(self._candidates(38, 36)), 0)
+
+    def test_missing_catalog_entry_yields_no_dpcm_sound_not_a_wrong_id(self):
+        """If the index doesn't define "kick"/"snare" at all (a minimal or
+        custom catalog), a kick/snare hit must produce no DPCM allocation
+        rather than reusing a leftover positional slot number as a fake
+        catalog id."""
+        empty_index = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.json', delete=False)
+        try:
+            json.dump({}, empty_index)
+            empty_index.close()
+            va = VoiceAllocator(dpcm_index_path=empty_index.name)
+            self.assertIsNone(va._allocate_dpcm(self._candidates(36)))
+        finally:
+            os.unlink(empty_index.name)
 
     def test_no_dpcm_eligible_notes_returns_none(self):
         """A hi-hat (noise-only in GM_DRUM_MAP) must not fall through to a
