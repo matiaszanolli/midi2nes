@@ -688,6 +688,15 @@ class CA65Exporter(BaseExporter):
         print(f"  Max frame: {max_frame}")
         print(f"  Total frames to export: {max_frame + 1}")
 
+        # The frame tables hold `frame_count` entries (indices 0..max_frame).
+        # The runtime range check and loop-reset guards below must compare
+        # frame_counter against this EXCLUSIVE upper bound, not max_frame
+        # itself -- comparing against max_frame treated frame_counter ==
+        # max_frame as already out of range, so the last frame (and, for a
+        # single-frame song where max_frame == 0, the ONLY frame) never
+        # played (#430/NH-HW-2026-08-21-2).
+        frame_count = max_frame + 1
+
         # Bank-pack frame tables if the mapper's switchable window is smaller
         # than the aggregate PRG pool (MMC1, #255/MAP-2026-07-05-1). All tables
         # are exactly max_frame + 1 bytes, so the table names alone (in emission
@@ -801,6 +810,20 @@ class CA65Exporter(BaseExporter):
             '    sta frame_counter',
             '    sta frame_counter+1',
             '    ',
+            '    ; Seed last_*_note with an impossible value ($FF -- MIDI notes are',
+            "    ; 0-127) so the 'note changed' check in play_pulse1/play_pulse2/",
+            "    ; play_triangle/play_dpcm below always fires on each channel's first",
+            '    ; frame. Without this, these BSS bytes hold power-on garbage on real',
+            "    ; hardware; if garbage happens to equal a channel's first note, that",
+            '    ; note (or first DPCM trigger) is silently skipped until the next',
+            "    ; note change (#432/NH-HW-2026-08-21-5). Mirrors audio_engine.asm's",
+            '    ; last_written_hi init.',
+            '    lda #$FF',
+            '    sta last_pulse1_note',
+            '    sta last_pulse2_note',
+            '    sta last_triangle_note',
+            '    sta last_dpcm_note',
+            '    ',
             '    ; Enable NMI',
             '    lda #$80',
             '    sta $2000',
@@ -826,13 +849,15 @@ class CA65Exporter(BaseExporter):
             '    inc frame_counter+1',
             '@no_carry:',
             '    ',
-            '    ; Check for song end and loop',
+            '    ; Check for song end and loop (reset once frame_counter reaches',
+            '    ; frame_count, NOT max_frame -- frame_counter == max_frame is still',
+            '    ; the last valid frame and must play before looping, #430)',
             f'    lda frame_counter+1',
-            f'    cmp #>{max_frame}',
+            f'    cmp #>{frame_count}',
             f'    bcc @no_loop',
             f'    bne @loop_song',
             f'    lda frame_counter',
-            f'    cmp #<{max_frame}',
+            f'    cmp #<{frame_count}',
             f'    bcc @no_loop',
             '@loop_song:',
             '    lda #$00',
@@ -852,13 +877,15 @@ class CA65Exporter(BaseExporter):
 
         # Efficient table-based playback routine with 16-bit addressing
         lines.append('.proc play_music_frame')
-        lines.append('    ; Check if frame is within range')
+        lines.append('    ; Check if frame is within range (frame_counter < frame_count,')
+        lines.append('    ; i.e. frame_counter <= max_frame -- the last table entry at')
+        lines.append('    ; index max_frame must still play, #430/NH-HW-2026-08-21-2)')
         lines.append(f'    lda frame_counter+1')
-        lines.append(f'    cmp #>{max_frame}')
+        lines.append(f'    cmp #>{frame_count}')
         lines.append('    bcc @in_range')
         lines.append('    bne @done')
         lines.append(f'    lda frame_counter')
-        lines.append(f'    cmp #<{max_frame}')
+        lines.append(f'    cmp #<{frame_count}')
         lines.append('    bcs @done')
         lines.append('@in_range:')
         lines.append('')
@@ -956,6 +983,16 @@ class CA65Exporter(BaseExporter):
                 '    lda #$00',
                 '    sta frame_counter',
                 '    sta frame_counter+1',
+                '    ; Seed last_*_note with an impossible value ($FF -- MIDI notes',
+                "    ; are 0-127) so each channel's first-frame note change is never",
+                '    ; mistaken for a sustain against power-on RAM garbage',
+                '    ; (#432/NH-HW-2026-08-21-5). Mirrors the standalone reset proc',
+                "    ; above and audio_engine.asm's last_written_hi init.",
+                '    lda #$FF',
+                '    sta last_pulse1_note',
+                '    sta last_pulse2_note',
+                '    sta last_triangle_note',
+                '    sta last_dpcm_note',
                 '    rts',
                 '',
                 'update_music:',
@@ -968,13 +1005,15 @@ class CA65Exporter(BaseExporter):
                 '    inc frame_counter+1',
                 '@no_carry:',
                 '    ',
-                '    ; Check for song end and loop',
+                '    ; Check for song end and loop (reset once frame_counter reaches',
+                '    ; frame_count, NOT max_frame -- frame_counter == max_frame is still',
+                '    ; the last valid frame and must play before looping, #430)',
                 f'    lda frame_counter+1',
-                f'    cmp #>{max_frame}',
+                f'    cmp #>{frame_count}',
                 f'    bcc @no_loop',
                 f'    bne @loop_song',
                 f'    lda frame_counter',
-                f'    cmp #<{max_frame}',
+                f'    cmp #<{frame_count}',
                 f'    bcc @no_loop',
                 '@loop_song:',
                 '    lda #$00',

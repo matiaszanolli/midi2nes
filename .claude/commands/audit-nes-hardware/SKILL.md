@@ -366,14 +366,29 @@ from the ordinary pipeline. Audit it as new code, not as a verify-the-fix pass.
   order (`SEQUENCE_CHANNELS`), and the `song_count` comparison in `audio_advance_song`
   (`:310-318`) match the emitted tables exactly — see `/audit-exporters` Dimension 9 for
   the producer side. Note `song_instrument_ptr_*` is indexed by song alone (no `* 5`).
-- **Auto-advance trigger condition** (`nes/audio_engine.asm:740-760`). The end-of-stream
+- **Auto-advance trigger condition** (`nes/audio_engine.asm:740-761`). The end-of-stream
   handler sets `channel_ended, x` and scans all 5 entries, advancing only when **every**
   channel has ended. This block re-fires every frame (the surrounding silence re-arm is
-  deliberately idempotent, #159), so verify: the scan is genuinely idempotent; `X` is
-  saved/restored around the inner scan (it is reused as the scan index);
+  deliberately idempotent, #159), so verify: the scan is genuinely idempotent;
   `audio_advance_song` clears `channel_ended` on its way out so the new song cannot
   instantly re-advance; and a song whose channels end on *different* frames advances
   exactly once, not once per trailing frame.
+  `X` (the outer `channel_loop` index, reused as the inner scan index) is saved via
+  `txa/pha` before the scan on BOTH outcomes, but the two branches now diverge on
+  purpose (#433/NH-HW-2026-08-21-6, fixing a carry-over of the never-filed
+  `AUDIT_NES_HARDWARE_2026-08-07` finding NH-HW-2026-08-07-2): the not-all-ended branch
+  still restores it (`pla/tax`) before falling into `@silence` for the triggering
+  channel, but the advance-happened branch instead discards the pushed X (`pla` with no
+  `tax`) and does `ldx #0 / jmp @channel_loop` to restart the whole per-frame channel
+  loop — don't flag the missing `tax` on that branch as a bug; it's intentional. Falling
+  through to `@silence` for the triggering channel (the pre-fix behavior) never
+  re-visited it, or any channel with index below it that had already run its
+  `@fetch_byte` earlier in the same frame's loop against the pre-advance streams — both
+  groups started the new song one 60Hz frame late. The restart re-processes every
+  channel exactly once against `audio_advance_song`'s freshly-reloaded streams;
+  channels below the triggering index get revisited a second time this frame, which is
+  harmless because their first (pre-advance) pass only ever re-fetched the trailing
+  `$FF` sentinel and never touched `frame_wait`.
 - **State reset on song change.** `audio_advance_song` reloads stream pointers and clears
   per-channel playback state (`current_len`, `frame_wait`, …) so the new song does not
   inherit timing state from the previous song's last note. Verify **every** piece of
@@ -382,7 +397,14 @@ from the ordinary pipeline. Audit it as new code, not as a verify-the-fix pass.
   against what `audio_init`'s cold-boot path clears.
 - **Wrap-around.** Both auto-advance and the Start-button skip wrap past the last song
   back to song 0, so a 1-song bank wraps to itself. Confirm that is harmless (it re-inits
-  the same song) rather than an infinite re-trigger inside one frame.
+  the same song) rather than an infinite re-trigger inside one frame. This now matters
+  more directly than before the #433 fix: the channel-loop restart means a song whose
+  streams are ALL trivially end-of-stream on every channel (a malformed/empty song, not
+  one `song build` should ever emit) can re-trigger `audio_advance_song` again within
+  the SAME frame instead of waiting a frame per advance -- bounded by `song_count`
+  wrapping, not an unbounded hang, but confirm no realistic song-bank content can chain
+  enough consecutive empty songs to matter, and that this is still strictly bounded
+  (never an infinite loop) for any `song_count`.
 - **Start-button skip.** The edge-triggered poll lives in `main.asm`, not this file
   (`nes/project_builder.py:365-386`), and calls `audio_advance_song` from inside the NMI.
   Verify it cannot interleave with `audio_update`'s own channel writes in a way that

@@ -118,6 +118,43 @@ class TestCA65Export(unittest.TestCase):
         self.assertIn('jmp @silence', end_of_stream,
                       "end_of_stream must fall into the channel's silence write")
 
+    def test_jukebox_advance_restarts_channel_loop_instead_of_falling_to_silence(self):
+        # Regression (#433/NH-HW-2026-08-21-6): when the last-finishing
+        # channel's @end_of_stream handler detects all 5 channels ended and
+        # calls audio_advance_song, execution used to fall straight through
+        # to @silence for the triggering channel and simply continue the
+        # in-progress channel_loop pass for any channels after it -- so the
+        # triggering channel (and every channel already visited earlier this
+        # same frame) never got to read the new song's first byte until the
+        # NEXT NMI frame, starting one 60Hz tick (~16.7ms) late. The advance
+        # branch must instead restart the whole channel loop from x=0 so
+        # every channel gets exactly one correct pass over the new song's
+        # freshly-reloaded streams this same frame.
+        engine_path = Path(__file__).parent.parent / "nes" / "audio_engine.asm"
+        text = engine_path.read_text()
+        end_of_stream = text.split('@end_of_stream:', 1)[1].split('@next_channel:', 1)[0]
+        jukebox_block = end_of_stream.split('.ifdef JUKEBOX_BUILD', 1)[1].split('.endif', 1)[0]
+
+        advance_call = 'jsr audio_advance_song'
+        self.assertIn(advance_call, jukebox_block)
+        after_advance = jukebox_block.split(advance_call, 1)[1]
+
+        # The advance branch must restart the loop from x=0, not fall
+        # through to @silence for the triggering channel.
+        not_all_ended_pos = after_advance.index('@jukebox_not_all_ended')
+        advance_branch = after_advance[:not_all_ended_pos]
+        self.assertIn('ldx #0', advance_branch)
+        self.assertIn('jmp @channel_loop', advance_branch)
+        self.assertNotIn('jmp @silence', advance_branch,
+                          "the advance branch must not fall through to "
+                          "@silence for the triggering channel")
+
+        # The X pushed before the scan (`txa / pha`) must still be popped
+        # exactly once on the advance path to keep the stack balanced --
+        # even though the popped value is now discarded rather than
+        # restored via `tax`.
+        self.assertEqual(advance_branch.count('pla'), 1)
+
     def test_pulse_sustain_does_not_rewrite_4003_every_frame(self):
         # Regression (#161/NH-18): $4003/$4007 restart the pulse sequencer's
         # phase on every write (regardless of whether the value changes), so
@@ -604,6 +641,180 @@ class TestCA65Export(unittest.TestCase):
         finally:
             if test_output.exists():
                 test_output.unlink()
+
+
+class TestFrameRangeAndLoopGuardsIncludeLastFrame(unittest.TestCase):
+    """Regression tests for #430/NH-HW-2026-08-21-2: the frame tables hold
+    max_frame + 1 entries (indices 0..max_frame), so the runtime range check
+    in play_music_frame and the loop-reset checks in nmi/update_music must
+    treat frame_counter == max_frame as still in range -- comparing against
+    max_frame itself (instead of max_frame + 1) made the last frame dead:
+    never played, and for a single-frame song (max_frame == 0) nothing ever
+    played at all."""
+
+    def setUp(self):
+        self.exporter = CA65Exporter()
+
+    def _build_frames(self, n_frames):
+        return {
+            'pulse1': {str(i): {'note': 60 + (i % 12), 'volume': 15} for i in range(n_frames)}
+        }
+
+    def _extract_thresholds(self, content):
+        """Every `cmp #>N` / `cmp #<N` pair in the emitted asm's range/loop
+        guards must compare against the same threshold: max_frame + 1."""
+        return [int(m) for m in re.findall(r'cmp #[<>](\d+)', content)]
+
+    def test_standalone_range_and_loop_guards_use_max_frame_plus_one(self):
+        frames = self._build_frames(3)  # max_frame == 2
+        out = Path(self.tmp_dir()) / "standalone.asm"
+        self.exporter.export_direct_frames(frames, str(out), standalone=True, mapper=None)
+        content = out.read_text()
+
+        thresholds = self._extract_thresholds(content)
+        self.assertTrue(thresholds, "expected cmp #>/#< guards in emitted asm")
+        # nmi's loop-reset guard AND play_music_frame's range guard must both
+        # compare against frame_count (max_frame + 1 == 3), never max_frame (2).
+        self.assertTrue(all(t == 3 for t in thresholds),
+                         f"all range/loop thresholds must be max_frame+1=3, got {thresholds}")
+
+    def test_non_standalone_loop_guard_uses_max_frame_plus_one(self):
+        frames = self._build_frames(5)  # max_frame == 4
+        out = Path(self.tmp_dir()) / "nonstandalone.asm"
+        self.exporter.export_direct_frames(frames, str(out), standalone=False, mapper=None)
+        content = out.read_text()
+
+        thresholds = self._extract_thresholds(content)
+        self.assertTrue(thresholds)
+        self.assertTrue(all(t == 5 for t in thresholds),
+                         f"all range/loop thresholds must be max_frame+1=5, got {thresholds}")
+
+    def test_single_frame_song_threshold_is_one_not_zero(self):
+        """Degenerate case from the issue: a song whose only data is on
+        frame 0 (max_frame == 0) must compare against 1, not 0 -- comparing
+        against 0 meant frame_counter (starting at 0) was immediately
+        out-of-range and nothing ever played."""
+        frames = self._build_frames(1)  # max_frame == 0
+        out = Path(self.tmp_dir()) / "single_frame.asm"
+        self.exporter.export_direct_frames(frames, str(out), standalone=True, mapper=None)
+        content = out.read_text()
+
+        thresholds = self._extract_thresholds(content)
+        self.assertTrue(thresholds)
+        self.assertTrue(all(t == 1 for t in thresholds),
+                         f"single-frame song thresholds must be 1, got {thresholds}")
+
+    def _simulate_range_check(self, frame_counter, threshold):
+        """Emulates the emitted 6502 comparison sequence:
+        lda hi; cmp #>threshold; bcc in_range; bne done;
+        lda lo; cmp #<threshold; bcs done"""
+        hi, lo = (frame_counter >> 8) & 0xFF, frame_counter & 0xFF
+        thi, tlo = (threshold >> 8) & 0xFF, threshold & 0xFF
+        if hi < thi:
+            return 'in_range'
+        if hi != thi:
+            return 'done'
+        return 'done' if lo >= tlo else 'in_range'
+
+    def test_last_frame_index_is_playable_and_next_index_is_not(self):
+        """Direct simulation of the emitted comparison logic: frame_counter
+        == max_frame must be 'in_range' (playable), and frame_counter ==
+        max_frame + 1 must be 'done' (out of range / loop point)."""
+        for max_frame in (0, 1, 254, 255, 256, 1000):
+            frame_count = max_frame + 1
+            with self.subTest(max_frame=max_frame):
+                self.assertEqual(
+                    self._simulate_range_check(max_frame, frame_count), 'in_range')
+                self.assertEqual(
+                    self._simulate_range_check(frame_count, frame_count), 'done')
+
+    def tmp_dir(self):
+        if not hasattr(self, '_tmp_dir'):
+            import tempfile as _tempfile
+            self._tmp_dir = _tempfile.mkdtemp()
+        return self._tmp_dir
+
+    def tearDown(self):
+        if hasattr(self, '_tmp_dir'):
+            import shutil
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+
+class TestLastNoteStateInitialized(unittest.TestCase):
+    """Regression tests for #432/NH-HW-2026-08-21-5: the direct-export
+    last_pulse1_note/last_pulse2_note/last_triangle_note/last_dpcm_note BSS
+    bytes gate every register write on a "did the note change" comparison,
+    but nothing seeded them -- on real hardware (or randomized-RAM
+    emulators) they hold power-on garbage, and if that garbage equals a
+    channel's first note, the note-changed test silently fails on the first
+    frame. Both the standalone `reset` proc and the non-standalone
+    `init_music` must seed all four with $FF (impossible MIDI note) before
+    any playback code can read them."""
+
+    def setUp(self):
+        self.exporter = CA65Exporter()
+        import tempfile as _tempfile
+        self.tmp = _tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _frames(self):
+        return {'pulse1': {'0': {'note': 60, 'volume': 15}}}
+
+    def test_standalone_reset_seeds_all_four_before_nmi_enabled(self):
+        out = Path(self.tmp) / "standalone.asm"
+        self.exporter.export_direct_frames(self._frames(), str(out), standalone=True, mapper=None)
+        content = out.read_text()
+
+        reset_proc = content.split('.proc reset', 1)[1].split('.endproc', 1)[0]
+        for var in ('last_pulse1_note', 'last_pulse2_note',
+                    'last_triangle_note', 'last_dpcm_note'):
+            self.assertIn(f'sta {var}', reset_proc,
+                           f"{var} must be seeded in the standalone reset proc")
+
+        # The seed must happen BEFORE NMI is enabled ($2000), or an NMI could
+        # fire and read the still-uninitialized bytes.
+        seed_pos = reset_proc.index('sta last_pulse1_note')
+        nmi_enable_pos = reset_proc.index('sta $2000')
+        self.assertLess(seed_pos, nmi_enable_pos,
+                         "last_*_note must be seeded before NMI is enabled")
+
+        # Must be seeded with $FF specifically (an impossible MIDI note),
+        # not left at whatever A held from a prior instruction.
+        seed_block = reset_proc[:nmi_enable_pos]
+        lda_ff_pos = seed_block.rindex('lda #$FF')
+        self.assertLess(lda_ff_pos, seed_pos)
+
+    def test_non_standalone_init_music_seeds_all_four(self):
+        out = Path(self.tmp) / "nonstandalone.asm"
+        self.exporter.export_direct_frames(self._frames(), str(out), standalone=False, mapper=None)
+        content = out.read_text()
+
+        init_music = content.split('init_music:', 1)[1].split('update_music:', 1)[0]
+        for var in ('last_pulse1_note', 'last_pulse2_note',
+                    'last_triangle_note', 'last_dpcm_note'):
+            self.assertIn(f'sta {var}', init_music,
+                           f"{var} must be seeded in init_music")
+        seed_pos = init_music.index('sta last_pulse1_note')
+        lda_ff_pos = init_music.rindex('lda #$FF', 0, seed_pos + 1)
+        self.assertLess(lda_ff_pos, seed_pos)
+
+    def test_init_music_called_before_nmi_enabled_in_generated_project(self):
+        """project_builder.py's reset: delegates to init_music (which now
+        seeds last_*_note) and only enables NMI afterward -- pin that
+        ordering stays true so the seed always runs before any NMI-driven
+        update_music call could read these bytes."""
+        from nes.project_builder import NESProjectBuilder
+        from mappers.mmc3 import MMC3Mapper
+        builder = NESProjectBuilder(self.tmp, mapper=MMC3Mapper())
+        main_asm = builder._generate_main_asm()
+        reset_proc = main_asm.split('reset:', 1)[1].split('mainloop:', 1)[0]
+        init_pos = reset_proc.index('jsr init_music')
+        nmi_enable_pos = reset_proc.index('sta $2000')
+        self.assertLess(init_pos, nmi_enable_pos,
+                         "init_music must run before NMI is enabled")
 
 
 class TestExportSongBankBytecode(unittest.TestCase):
