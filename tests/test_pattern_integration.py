@@ -3,7 +3,6 @@ import unittest
 from tracker.pattern_detector import PatternDetector, EnhancedPatternDetector
 from tracker.loop_manager import LoopManager, EnhancedLoopManager
 from tracker.tempo_map import EnhancedTempoMap
-from tracker.parser import parse_midi_to_frames
 import tempfile
 import os
 import json

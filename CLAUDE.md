@@ -113,7 +113,7 @@ The full pipeline (`run_full_pipeline` in `main.py`) runs everything in a temp d
 ### Key Directories
 
 - **`tracker/`** - MIDI processing core
-  - `parser_fast.py` - Optimized MIDI parser (120x faster); `parser.py` is the older full parser
+  - `parser_fast.py` - Optimized MIDI parser (120x faster); the only front-end (`parser.py`, the older full parser, was removed — #346)
   - `pattern_detector_parallel.py` - Multi-core pattern detection (`ParallelPatternDetector`)
   - `pattern_detector.py` - Single-process `EnhancedPatternDetector` (fallback + used by `detect-patterns`)
   - `tempo_map.py` - Enhanced tempo handling

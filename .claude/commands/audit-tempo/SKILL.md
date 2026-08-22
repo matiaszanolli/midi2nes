@@ -116,7 +116,8 @@ Verify fix completeness:
 now fixed**: `TempoMap.__init__` (`tracker/tempo_map.py`, lines ~96-107) raises `ValueError` for
 any `ticks_per_beat is None or ticks_per_beat < 1`, covering both the SMPTE-negative case (#93) and
 the zero case (#95) with one guard, applied to every constructor (base `TempoMap` and
-`EnhancedTempoMap`, and every caller including `tracker/parser.py`). `parse_midi_to_frames`
+`EnhancedTempoMap`, and every caller — `tracker/parser_fast.py` is now the only one; the
+older *tracker/parser.py* was removed, #346). `parse_midi_to_frames`
 (`tracker/parser_fast.py`, lines ~22-33) additionally rejects SMPTE/non-positive division up front
 with an actionable message before constructing the tempo map at all. Verify fix completeness:
 - Confirm there is no remaining construction path that bypasses `TempoMap.__init__` (e.g. a
@@ -132,9 +133,9 @@ records tempo state into `tempo_map.loop_points`. For a loop to be seamless, the
 start and end must map to frame indices whose difference equals the loop's playback
 length with no gap or double-count. Note: `EnhancedLoopManager` is not on the default pipeline
 path today — it's only instantiated in `parse_midi_to_frames_with_analysis`
-(`tracker/parser_fast.py` line ~193, opt-in `--with-analysis`) and in the older
-`tracker/parser.py` (line ~84, not the default front-end per `CLAUDE.md`). Audit anyway, since it
-is reachable and its correctness matters whenever either path is used:
+(`tracker/parser_fast.py` line ~193, opt-in `--with-analysis`; the older *tracker/parser.py*,
+which also instantiated it unconditionally, was removed as production-dead — #346). Audit
+anyway, since it is reachable and its correctness matters whenever that path is used:
 - `detect_loops` (`tracker/loop_manager.py`, lines ~11-50) builds `start`/`end` from pattern `positions` + `length` — confirm these positions are in the same unit (frames vs ticks) the engine loops on; a unit mismatch makes loops jump.
 - The jump-table key `loop_info['end']` and value `start_pos` (`generate_jump_table`, lines ~93-112 / ~144-159): is the loop point inclusive of the end frame (replays one frame) or exclusive (drops one frame)? Off-by-one here is an audible click every loop.
 - `register_loop_point` (line ~503) / the `loop_points` dict only stores *tempo* at the boundaries — confirm a tempo change spanning the loop boundary doesn't leave the loop restarting at the wrong tempo.

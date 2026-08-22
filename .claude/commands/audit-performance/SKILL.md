@@ -187,8 +187,9 @@ PERF-11 (#262, **OPEN**):
   tracker.parser_fast import parse_midi_to_frames` — the **same fast parser** the
   production `run_parse` uses (`main.py:97` inside `run_parse`, and again at
   `main.py:776` inside `run_full_pipeline`). The "parse" stage benchmark now exercises
-  the 120x fast path, not the old slow `tracker/parser.py`. Confirm the import still
-  points at `parser_fast` if this file is touched again.
+  the 120x fast path — the old slow full parser it used to risk measuring instead is gone
+  entirely (*tracker/parser.py*, removed #346). Confirm the import still points at
+  `parser_fast` if this file is touched again.
 - **Detector module: now correct, but one param drifts.** `benchmark_pattern_detection`
   now constructs `ParallelPatternDetector` (`tracker/pattern_detector_parallel.py`), the
   same class the production detect-patterns default path uses, so it *does* now exercise

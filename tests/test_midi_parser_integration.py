@@ -2,7 +2,7 @@ import unittest
 import os
 import tempfile
 from mido import MidiFile, MidiTrack, Message, MetaMessage
-from tracker.parser import parse_midi_to_frames
+from tracker.parser_fast import parse_midi_to_frames
 from tracker.pattern_detector import EnhancedPatternDetector
 from tracker.track_mapper import assign_tracks_to_nes_channels
 from tracker.tempo_map import (

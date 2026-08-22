@@ -49,7 +49,7 @@ un-disproven finding in that area.
 | Changed path | Owning audit(s) | Risk |
 |--------------|-----------------|------|
 | `main.py` | `/audit-pipeline`, `/audit-safety` | HIGH |
-| `tracker/parser_fast.py`, `tracker/parser.py` | `/audit-pipeline`, `/audit-performance` | HIGH |
+| `tracker/parser_fast.py` (the only MIDI front-end — *tracker/parser.py* was removed, #346) | `/audit-pipeline`, `/audit-performance` | HIGH |
 | `tracker/track_mapper.py` | `/audit-pipeline`, `/audit-nes-hardware` | HIGH |
 | `tracker/tempo_map.py`, `tracker/loop_manager.py` | `/audit-tempo` | HIGH |
 | `tracker/pattern_detector_parallel.py`, `tracker/pattern_detector.py` | `/audit-patterns`, `/audit-performance` | HIGH |

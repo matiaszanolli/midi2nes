@@ -26,10 +26,16 @@ live path) or contradicts a hardware doc.
 ### Dimension 1: Logic Duplication
 Repeated logic that should be shared (the user's standing rule: improve existing code, never
 duplicate). Hot spots: the four exporters (`exporter/`) re-implementing register/byte
-serialization; per-channel handling copy-pasted across `nes/`; the two parsers
-(`tracker/parser.py` vs `tracker/parser_fast.py`) drifting; the two pattern detectors
+serialization; per-channel handling copy-pasted across `nes/`; the two pattern detectors
 (`tracker/pattern_detector.py` vs `tracker/pattern_detector_parallel.py`). `grep` for
 near-identical blocks; report the canonical home.
+
+**#346 (TD-26) is CLOSED**: the "two parsers drifting" hot spot — *tracker/parser.py*, a
+full parser reachable only by three tests and on no production pipeline path — is gone.
+`tracker/parser_fast.py` is now the sole MIDI front-end; its three former callers
+(`tests/test_midi_parser_integration.py`, `tests/test_integration.py`,
+`tests/test_pattern_integration.py`) were retargeted to it. Verify-the-fix: confirm no new
+second parser implementation reappears.
 
 Two prior instances of exactly this pattern are now fixed — verify they haven't
 regressed before hunting for new ones:

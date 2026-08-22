@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 from dpcm_sampler.enhanced_drum_mapper import (EnhancedDrumMapper, DrumMapperConfig,
                                                DrumPatternConfig, SampleManagerConfig)
-from tracker.parser import parse_midi_to_frames
+from tracker.parser_fast import parse_midi_to_frames
 from tracker.track_mapper import assign_tracks_to_nes_channels
 
 class TestDrumMapperIntegration:
