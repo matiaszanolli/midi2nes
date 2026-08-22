@@ -346,13 +346,22 @@ def arrange_for_nes(
                 'control': (data.get('duty', 2) << 6) | 0x30 | data['volume'],
             }
 
-    # Convert triangle
+    # Convert triangle. No `control` key -- matching process_all_tracks'
+    # triangle contract (nes/emulator_core.py never emits one either).
+    # Neither export sink reads a triangle `control`: export_direct_frames
+    # derives $4008 solely from `volume` (docs/APU_TRIANGLE_REFERENCE.md §1,
+    # #364/NH-HW-04), and the bytecode path's only use of `control` is
+    # extracting duty bits, which the engine unconditionally skips for
+    # channel 2 (`cpx #2 / beq @skip_duty`, nes/audio_engine.asm). A
+    # hardcoded 0x81 here used to look like a meaningful linear-counter
+    # reload (control flag + reload 1) even though it was always dead --
+    # the same latent-trap shape as the retired `volume * 7` reload
+    # (#434/NH-HW-2026-08-21-8).
     for frame, data in frames['triangle'].items():
         output['triangle'][frame] = {
             'note': data['note'],
             'pitch': midi_note_to_nes_pitch(data['note'], 'triangle'),
             'volume': data['volume'],
-            'control': 0x81,  # Triangle linear counter
         }
 
     # Convert noise. Match the canonical process_all_tracks contract (#9, #84):

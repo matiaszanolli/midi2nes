@@ -177,6 +177,56 @@ class TestCA65Export(unittest.TestCase):
         self.assertIn('sta last_written_hi, x', is_note,
                       "a new note must force the timer-high write even if the period repeats")
 
+    def test_is_note_ties_same_note_bytes_instead_of_retriggering(self):
+        # Regression (#439/EXP-2026-08-21-1): an event held longer than 32
+        # frames can't fit the Length command's cap, so the exporter chunks
+        # it into repeated ($6X, note) pairs carrying the SAME note byte
+        # (exporter/exporter_ca65.py's _build_song_bytecode dur>32 split).
+        # @is_note used to treat every note byte as a brand-new onset --
+        # resetting all four macro step counters to 0 and forcing
+        # last_written_hi to $FF (which makes @write_pulse1/@write_pulse2
+        # rewrite $4003/$4007 on an unchanged period, restarting the duty
+        # sequencer's phase) -- so a held pulse note audibly re-clicked
+        # every 32 frames (~533ms) and a live macro producer would replay
+        # its first steps. Two note bytes this same on one channel are, by
+        # construction, always one held event's own chunk boundary (the
+        # frame-by-frame source loop only starts a new event when the note
+        # value changes), so @is_note must treat a same-note byte as a tie:
+        # skip the macro reset and the last_written_hi sentinel, but still
+        # reload frame_wait from the new chunk's Length byte.
+        engine_path = Path(__file__).parent.parent / "nes" / "audio_engine.asm"
+        text = engine_path.read_text()
+        is_note = text.split('@is_note:', 1)[1].split('@process_macros:', 1)[0]
+
+        # The tie check must compare the incoming note against the
+        # currently-playing note BEFORE the reset/sentinel block, and skip
+        # it entirely when they match.
+        self.assertIn('cmp current_note, x', is_note)
+        cmp_pos = is_note.index('cmp current_note, x')
+        after_cmp = is_note[cmp_pos:]
+        beq_match = re.search(r'beq\s+(@?\w+)', after_cmp)
+        assert beq_match is not None, \
+            "the note-equality check must branch away from the reset block"
+        tie_label = beq_match.group(1)
+        self.assertIn(f'{tie_label}:', is_note,
+                       "the tie branch target must be defined within @is_note")
+
+        # Everything between the cmp and the tie label is the "genuine new
+        # note" path and must still fully reset macro state and force the
+        # phase-reset sentinel -- ties must not weaken a real onset.
+        reset_block = after_cmp.split(f'{tie_label}:', 1)[0]
+        self.assertIn('sta macro_steps_vol, x', reset_block)
+        self.assertIn('sta macro_steps_arp, x', reset_block)
+        self.assertIn('sta macro_steps_pitch, x', reset_block)
+        self.assertIn('sta macro_steps_duty, x', reset_block)
+        self.assertIn('sta last_written_hi, x', reset_block)
+
+        # Both the tie path and the genuine-new-note path must still reload
+        # frame_wait for the new chunk's length -- a tied continuation still
+        # needs its own duration honored.
+        tie_and_after = is_note[is_note.index(f'{tie_label}:'):]
+        self.assertIn('sta frame_wait, x', tie_and_after)
+
     def test_write_dpcm_skips_unpacked_slots(self):
         # Regression (#367/DP-DPCM-05): a dense id whose .dmc file was
         # missing at pack time gets a $00 dpcm_len_table placeholder (the

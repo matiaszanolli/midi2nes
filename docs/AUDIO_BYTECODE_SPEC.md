@@ -87,7 +87,7 @@ To minimize ROM footprint, the sequence stream uses a tightly packed command for
 ### Note Range ($00 - $5F)
 Values `$00` through `$5F` (0-95) represent notes to be played. 
 *   **$00:** Note Off (Rest/Release).
-*   **$01 - $5F:** Notes (C-1 to B-7). Triggers the current instrument and resets all macro pointers to 0.
+*   **$01 - $5F:** Notes (C-1 to B-7). Triggers the current instrument and resets all macro pointers to 0 — **unless the note byte is identical to the note already playing on this channel**, in which case it is a tie/continuation instead of a new onset: macro pointers keep running and the pulse channels' `$4003`/`$4007` phase-reset is skipped (only `frame_wait` reloads from the current `Note Length` state). There is no dedicated tie/continuation opcode; a same-value note byte *is* the tie encoding. This exists because the Length byte's 6-bit field caps a single note at 32 frames (see below) — the exporter (`exporter/exporter_ca65.py`'s `_build_song_bytecode`) chunks any longer held note into consecutive `(Length, Note)` pairs that repeat the same note value, and the engine (`nes/audio_engine.asm`'s `@is_note`) must treat those repeats as one continuous note rather than re-triggering every 32 frames (#439/EXP-2026-08-21-1).
 
 *When a note is read, the engine waits for the duration specified by the current `Note Length` state before reading the next byte.*
 

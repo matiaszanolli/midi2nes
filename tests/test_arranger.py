@@ -351,9 +351,12 @@ class TestChannelHonoringInvariant(unittest.TestCase):
         self.assertGreater(len(out['triangle']), 0, "bass should route to triangle")
         for fd in out['triangle'].values():
             self.assertNotIn('duty', fd)
-            # Triangle control is the linear-counter byte ($81), never a pulse
-            # (duty<<6) control byte.
-            self.assertEqual(fd['control'], 0x81)
+            # Regression (#434/NH-HW-2026-08-21-8): the arranger used to emit
+            # a hardcoded 'control': 0x81 that neither export sink read --
+            # dead data shaped like a meaningful linear-counter reload. No
+            # consumer reads a triangle `control`, so it must not be emitted
+            # at all, matching process_all_tracks' triangle contract.
+            self.assertNotIn('control', fd)
 
     def test_legacy_triangle_has_no_duty(self):
         core = NESEmulatorCore()

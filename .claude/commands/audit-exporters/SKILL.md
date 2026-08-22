@@ -282,6 +282,29 @@ file exists in the repo anymore.) Check:
   0)`/`event.get('volume', 0)`, matching both the CA65 path and this file's own dpcm
   branch. Verify-the-fix: confirm no exporter still has a bare `event[...]`/`frame_data[...]`
   subscript for an optional frame field — grep is the fastest check.
+- **Verify fix (#441/EXP-2026-08-21-3, closed)**: same divergence class as #370, one level
+  up — key lookup instead of field lookup. `exporter_famistudio.py`'s per-frame loop now
+  reads `events.get(str(frame), events.get(frame))`, mirroring `exporter_ca65.py`'s dual-key
+  tolerance (`channel_frames.get(str(frame_idx), channel_frames.get(frame_idx))`,
+  direct-export path). Both CA65 emitters have always accepted int OR str frame keys
+  (in-memory frames carry int keys, JSON round-trips produce str keys); the FamiStudio path
+  used to check only `str(frame) in events`, silently exporting nothing but `"... .."` rest
+  rows for an int-keyed frames dict. Verify-the-fix: an int-keyed and a str-keyed frames
+  dict for the same song produce byte-for-byte identical FamiStudio output.
+- **Verify fix (#440/EXP-2026-08-21-2, closed)**: `generate_famistudio_txt`'s `PATTERN` keys
+  and `SEQUENCE` references must agree on the same per-channel 0-based numbering for every
+  channel, not just the first one processed. Full patterns are now keyed by a
+  `channel_pattern_count` counter local to each channel's loop (incremented for both full and
+  remainder patterns), replacing the old `len(patterns)` — a count across *every* channel's
+  patterns emitted so far, which only coincided with the per-channel numbering `SEQUENCE`
+  always uses for the first channel processed; every later channel's full-pattern keys landed
+  on indices already claimed by earlier channels, so `SEQUENCE` referenced undefined (or
+  wrong) `PATTERN`s for channel 2+. The remainder pattern's `LENGTH` is now the pattern's
+  actual row count (`len(pattern_data)`) instead of a hardcoded `64`. Verify-the-fix: for a
+  song with >=2 non-empty channels spanning >=64 frames, every `SEQUENCE` reference resolves
+  to a defined `PATTERN` — `TestFamiStudioSequenceReferencesResolveToPatterns`
+  (`tests/test_famistudio_export.py`) pins this structurally, since the file's prior tests
+  only checked for `"PATTERNS"` presence (#339/REG-20), not internal consistency.
 - This dimension overlaps `/audit-tech-debt` Dimension 1 (the exporters duplicating
   serialization). Report duplication there; report *behavioral divergence* here.
 
