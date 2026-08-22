@@ -483,28 +483,42 @@ class EnhancedPatternDetector(PatternDetector):
             'variations': self._get_variation_summary(patterns)
         }
     
-    def _analyze_pattern_tempo(self, pattern_id: str, 
+    def _event_tempo(self, events: List[Dict], index: int, tick: int) -> int:
+        """Look up the tempo active at a pattern-space `index` into `events`.
+
+        `index` is a position in the event/pattern sequence pattern detection
+        ran over, not a MIDI tick -- each event already carries the real tempo
+        active at its own tick, stamped during parsing, so read it directly
+        instead of a wrongly-unit'd `get_tempo_at_tick(index)` call (mirrors
+        the #345/TEMPO-16 fix in loop_manager.py). Falls back to
+        get_tempo_at_tick(tick) if the event is out of range or untagged.
+        """
+        if 0 <= index < len(events) and 'tempo' in events[index]:
+            return events[index]['tempo']
+        return self.tempo_map.get_tempo_at_tick(tick)
+
+    def _analyze_pattern_tempo(self, pattern_id: str,
                              pattern_info: Dict, events: List[Dict]):
         """Analyze tempo characteristics of a pattern"""
         positions = pattern_info['exact_matches']
         length = pattern_info['length']
-        
+
         # Calculate average tempo for the pattern
         pattern_tempos = []
         for pos in positions:
             segment_tempos = [
-                self.tempo_map.get_tempo_at_tick(tick)
+                self._event_tempo(events, tick, tick)
                 for tick in range(pos, pos + length)
             ]
             pattern_tempos.append(sum(segment_tempos) / len(segment_tempos))
-            
+
         base_tempo = int(sum(pattern_tempos) / len(pattern_tempos))
-        
+
         # Detect tempo variations within the pattern
         variations = []
         for pos in positions:
             current_tempos = [
-                self.tempo_map.get_tempo_at_tick(tick)
+                self._event_tempo(events, tick, tick)
                 for tick in range(pos, pos + length)
             ]
             if max(current_tempos) - min(current_tempos) > 1000:  # Significant variation

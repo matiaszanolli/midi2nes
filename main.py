@@ -1093,7 +1093,11 @@ def detect_patterns_or_direct_export(frames, use_patterns, args):
         # (#104). Direct export applies no pattern compression, so ratio is
         # 0% reduction (#17) and coverage is 0% -- nothing is patterned
         # (#169/PAT-03).
-        direct_size = sum(len(ch) for ch in frames.values())
+        # Use the same frames->events extractor the real detectors call so the
+        # stub's counts stay value-equivalent to what they'd report for this
+        # frames dict (#104) -- a plain frames.values() sweep would double-count
+        # the non-channel dpcm_sample_map side table as events (#200/D-14, #261).
+        direct_size = len(frames_to_events(frames))
         pattern_result = {
             'patterns': {},
             'references': {},

@@ -188,19 +188,28 @@ This dimension changed substantially since the O(n) hash-grouping rewrite (#114,
 old "entire sequence embedded in every chunk" design is gone:
 - `_detect_patterns_parallel` (`pattern_detector_parallel.py:106-197`) now builds one **tiny**
   work chunk per pattern length — just `{'pattern_length': length}`
-  (`pattern_detector_parallel.py:117-121`) — and ships the (potentially large) `sequence` and
-  `valid_events` to each worker **once** via the `ProcessPoolExecutor(initializer=
-  _init_pattern_worker, initargs=(sequence, valid_events))` call (`:146-150`), stashed as
-  module globals `_WORKER_SEQUENCE`/`_WORKER_EVENTS` (`:289-298`) instead of being re-pickled
-  per chunk × per length. This directly fixes the old memory-blowup / pickle-cost concern —
-  confirm it stays true (no code re-introduces per-chunk copies of the full sequence).
-  Everything shipped through `initargs` here is a plain list of tuples/dicts — confirm nothing
+  (`pattern_detector_parallel.py:117-121`) — and ships the (potentially large) `sequence` to
+  each worker **once** via the `ProcessPoolExecutor(initializer=_init_pattern_worker,
+  initargs=(sequence,))` call (`:200-201`), stashed as the module global `_WORKER_SEQUENCE`
+  (`:356-368`) instead of being re-pickled per chunk × per length. `valid_events` stays in the
+  parent process — since the #332/PERF-12 O(n)-hash-grouping rewrite, worker processes
+  (`_detect_window_groups_worker`, `:463-472`) only bucket window positions by value; candidate
+  selection (`_select_candidates_from_groups`, the step that needs `events`) runs back in the
+  parent against its own `valid_events` (`:244-253`). A `_WORKER_EVENTS` global used to also
+  ship `valid_events` to every worker for the old candidate-building worker entry point that
+  rewrite replaced — dead weight pickled to every spawned process for nothing, fixed in
+  #438/PAT-2026-08-21-4. This directly fixes the old memory-blowup / pickle-cost concern —
+  confirm it stays true (no code re-introduces per-chunk copies of the full sequence, and no
+  events payload creeps back into `initargs` without a worker that actually reads it).
+  Everything shipped through `initargs` here is a plain list of tuples — confirm nothing
   non-picklable (a `tempo_map`, a closure, a numpy array) is added to that call in future
   changes, since `EnhancedTempoMap` itself is deliberately kept out of the worker payload.
-- Confirm `_detect_patterns_worker` (`pattern_detector_parallel.py:371-379`) and
-  `_init_pattern_worker` (`:293-298`) are module-level (picklable/importable by the child
-  process) and that `_collect_length_candidates` (`:301-368`), the actual per-length work, reads
-  the globals but mutates no shared state across workers.
+- Confirm `_detect_window_groups_worker` (`pattern_detector_parallel.py:463-472`) and
+  `_init_pattern_worker` (`:363-368`) are module-level (picklable/importable by the child
+  process), that the worker reads only `_WORKER_SEQUENCE` and mutates no shared state across
+  workers, and that `_collect_window_groups`/`_select_candidates_from_groups`
+  (`:371-434`) — the actual grouping/candidate-selection work — take `sequence`/`events` as
+  plain parameters rather than reading module globals themselves.
 - The dead `ThreadedPatternDetector` (formerly a second, thread-based, shared-`patterns`-dict
   race) is confirmed **removed** (#102, closed) — `grep -rn ThreadedPatternDetector` matches
   only a doc comment in `pattern_detector.py:12` and a regression test

@@ -218,9 +218,17 @@ def parse_midi_to_frames_with_analysis(midi_path):
         ]
 
         if note_on_events:  # Only analyze tracks with actual notes
-            # Detect patterns
+            # Detect patterns. This "expensive analysis" path hands the
+            # detector's positions straight to loop/tempo analysis below
+            # against the FULL note_on_events list, so it must not let the
+            # detector sample the sequence down internally -- a sampled run
+            # would persist positions in sampled-index space while loop_manager
+            # and _analyze_pattern_tempo dereference them against the full,
+            # unsampled list (#436/PAT-2026-08-21-2). Size the cap to this
+            # track so detect_patterns never takes the sampling branch.
+            pattern_detector.max_events = len(note_on_events)
             pattern_data = pattern_detector.detect_patterns(note_on_events)
-            
+
             # Detect loops based on compressed patterns
             loops = loop_manager.detect_loops(
                 note_on_events, pattern_data['patterns']
