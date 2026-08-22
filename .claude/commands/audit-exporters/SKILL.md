@@ -147,13 +147,25 @@ labels. Hunt for values that can exceed a byte without clamping in
   `_compress_macro` only ever appends `$FF` and never emits a raw `loop_start` operand into the
   macro byte stream. Confirm the instrument guard still fires at 32 (not 256) on every
   over-budget path and that no macro byte can exceed 255 without clamping.
-- **Verify fix (#77, closed)**: a legitimate volume/pitch/arp value of `0xFF`/`0xFE` can no
-  longer collide with the End/Loop control bytes. `_encode_macro_offset` (`:71-84`) clamps
-  every signed pitch/arp offset to `[-128, 127]` and then snaps the two colliding
-  encodings away from the reserved bytes (`MACRO_CTRL_END = 0xFF`, `MACRO_CTRL_LOOP =
-  0xFE` at `:68-69`): `-1 (0xFF) -> 0x00`, `-2 (0xFE) -> 0xFD`. Confirm every pitch/arp
-  encode site (note-start `:1117`/`:1121`, continuation `:1136`/`:1137`) routes through
-  this helper rather than formatting a raw offset directly.
+- **Verify fix (#77, closed)**: a legitimate pitch/arp value of `0xFF`/`0xFE` can no longer
+  collide with the End/Loop control bytes. `_encode_macro_offset` (`:71-84`) clamps every
+  signed pitch/arp offset to `[-128, 127]` and then snaps the two colliding encodings away
+  from the reserved bytes (`MACRO_CTRL_END = 0xFF`, `MACRO_CTRL_LOOP = 0xFE` at `:68-69`):
+  `-1 (0xFF) -> 0x00`, `-2 (0xFE) -> 0xFD`. Confirm every pitch/arp encode site (note-start
+  `:1117`/`:1121`, continuation `:1136`/`:1137`) routes through this helper rather than
+  formatting a raw offset directly. #77 did NOT cover volume — see the next bullet.
+- **Verify fix (#442/EXP-2026-08-21-7, closed)**: volume was the one macro value #77 left
+  unguarded. Every in-pipeline producer clamps volume to 0-15, but the step-by-step `export`
+  CLI accepts a user-editable frames JSON with no mask, and `vol_seq` bytes were emitted raw
+  (unlike pitch/arp). A volume `>= 0xFE` as the FIRST byte of a macro collided with the
+  reserved control bytes -- `0xFF` reads as end-at-step-0, silently playing the null default
+  (15) instead of the value asked for; 16-253 emitted and were masked `& $0F` by the engine
+  at write time (a different, silent-modulo failure mode). `vol` is now clamped to `[0, 15]`
+  at collection time (matching `docs/AUDIO_BYTECODE_SPEC.md` §2.3's stated domain), so a
+  `vol_seq` byte can never reach `0xFE`/`0xFF` in the first place -- no encode-time snap is
+  needed the way pitch/arp's signed range requires one. Confirm the clamp still sits before
+  `vol_seq` is appended (both the note-start and continuation sites) and that no future
+  volume producer bypasses it.
 - The `CMD_DMC_LEVEL` ($87) emitter was removed as a dead path (#72/D-09): no stage
   produces `dmc_level`, and grepping `exporter_ca65.py` for `$87`/`CMD_DMC_LEVEL` now
   turns up nothing. Note the engine (`nes/audio_engine.asm`) still contains an unreachable

@@ -1866,6 +1866,25 @@ class TestRunSongBuild:
         with pytest.raises(SystemExit):
             run_song_build(self._args())
 
+    @patch('builtins.print')
+    def test_malformed_song_entry_exits_cleanly_not_raw_traceback(self, mock_print):
+        """Regression (#427/PIPE-2026-08-21-5): a song entry missing
+        'metadata' used to reach the metadata['order'] sort key as an
+        unguarded KeyError, escaping run_song_build's try/except (which
+        only wraps import_bank itself) as a raw traceback. import_bank must
+        now catch this at load time, so the same try/except that already
+        handles #220/SAFE-09 also covers it -- clean [ERROR], exit(1)."""
+        self.bank_path.write_text(json.dumps({
+            'version': '0.3.0',
+            'bank_info': {'total_banks': 8, 'bank_size': 16384},
+            'songs': {'broken_song': {'bank': 0, 'size': 100}},  # missing 'metadata'
+        }))
+        with pytest.raises(SystemExit) as exc_info:
+            run_song_build(self._args())
+        assert exc_info.value.code == 1
+        printed_text = " ".join(str(call[0][0]) for call in mock_print.call_args_list)
+        assert "[ERROR]" in printed_text
+
     @patch('main.NESProjectBuilder')
     def test_song_with_dpcm_events_is_rejected(self, mock_builder_class):
         """v1 scope cut (#30/F-13, see docs/ROADMAP.md): DPCM/drums aren't

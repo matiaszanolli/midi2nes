@@ -232,9 +232,41 @@ class SongBank:
             )
         if 'songs' not in data:
             raise ValueError(f"song bank file missing expected key 'songs': {path}")
+        songs = data['songs']
+        if not isinstance(songs, dict):
+            raise ValueError(f"song bank file's 'songs' must be a JSON object: {path}")
+        # Per-song-entry validation (#427/PIPE-2026-08-21-5): the bank-level
+        # guard above (#220/SAFE-09) stops one level up -- a song entry
+        # missing 'metadata' (or with a non-dict value, or missing 'bank'/
+        # 'size') reached run_song_build's sort key, run_song_list's print
+        # loop, or get_bank_size's sum as an unguarded subscript, raising a
+        # raw KeyError/TypeError outside any of those callers' try/except
+        # (which only wraps this call). add_song's canonical entry shape is
+        # {'segments', 'metadata': dict, 'bank': int, 'size': int,
+        # 'midi_path': optional} -- validate the fields every consumer
+        # indexes directly so a malformed/hand-edited/truncated bank fails
+        # here, once, with the same clean ValueError style as the checks
+        # above, instead of wherever it happens to be read next.
+        for name, entry in songs.items():
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"song bank file has a malformed entry for song '{name}' "
+                    f"(expected a JSON object): {path}"
+                )
+            if not isinstance(entry.get('metadata'), dict):
+                raise ValueError(
+                    f"song bank file's entry for song '{name}' is missing a "
+                    f"valid 'metadata' object: {path}"
+                )
+            for key in ('bank', 'size'):
+                if key not in entry:
+                    raise ValueError(
+                        f"song bank file's entry for song '{name}' is missing "
+                        f"expected key '{key}': {path}"
+                    )
         self.total_banks = bank_info['total_banks']
         self.max_bank_size = bank_info['bank_size']
-        self.songs = data['songs']
+        self.songs = songs
     
     def get_bank_data(self) -> Dict:
         """Get all bank data for compression"""

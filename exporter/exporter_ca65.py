@@ -1037,8 +1037,14 @@ class CA65Exporter(BaseExporter):
         # write.
         atomic_write_text(output_path, '\n'.join(lines))
 
-        # Calculate total data size (4 tables per channel: note, control, timer_lo, timer_hi)
-        total_bytes = (max_frame + 1) * 4 * len(all_channels)
+        # Reuse the same per-channel accounting estimate_direct_export_size
+        # uses (4 bytes/frame for pulse/triangle, 3 for noise, 1 for dpcm) --
+        # a flat `* 4 * len(all_channels)` overstated the total whenever
+        # noise or dpcm was active (e.g. +25% on a 5-channel song, #444/
+        # EXP-2026-08-21-9). Nothing downstream consumes this printed
+        # number; it's purely cosmetic, but must not contradict the
+        # estimator that capacity decisions actually rely on.
+        total_bytes = self.estimate_direct_export_size(frames)
         print(f"✅ Table-based export complete: {output_path}")
         print(f"   Data size: {total_bytes:,} bytes ({total_bytes/1024:.1f} KB)")
         print(f"   Channels exported: {', '.join(all_channels.keys())}")
@@ -1214,7 +1220,17 @@ class CA65Exporter(BaseExporter):
             for frame_idx in range(max_frame + 1):
                 frame_data = channel_frames.get(str(frame_idx), channel_frames.get(frame_idx))
                 note = frame_data.get('note', 0) if frame_data else 0
-                vol = frame_data.get('volume', 0) if frame_data else 0
+                # Every in-pipeline producer already clamps volume to 0-15,
+                # but this JSON is user-editable (the step-by-step `export`
+                # CLI), and vol_seq bytes -- unlike pitch/arp, which route
+                # through _encode_macro_offset (#77) -- were emitted raw. A
+                # volume >= $FE collides with the reserved end-of-macro/loop
+                # control bytes: $FF as the first macro byte reads as
+                # end-at-step-0, silently playing the null default (15)
+                # instead of the value asked for (#442/EXP-2026-08-21-7).
+                # Clamp to the spec's stated 0-15 domain (docs/
+                # AUDIO_BYTECODE_SPEC.md §2.3), matching the pitch/arp guard.
+                vol = max(0, min(15, frame_data.get('volume', 0))) if frame_data else 0
                 control = frame_data.get('control', 0x80) if frame_data else 0x80
                 duty = (control >> 6) & 0x03
 

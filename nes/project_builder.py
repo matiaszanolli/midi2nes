@@ -188,7 +188,7 @@ class NESProjectBuilder:
 .segment "CODE"
 ; ------------------------------------------------------------------
 ; fetch_sequence_byte
-; Swaps the sequence bank into $8000-$9FFF, reads 1 byte, increments ptr
+; Swaps the sequence bank into $A000-$BFFF (R7), reads 1 byte, increments ptr
 ; ------------------------------------------------------------------
 .global fetch_sequence_byte
 fetch_sequence_byte:
