@@ -4,6 +4,7 @@ from typing import List, Dict, Tuple
 import numpy as np
 from tqdm import tqdm
 from tracker.tempo_map import TempoChangeType, TempoChange, EnhancedTempoMap
+from core.events import event_velocity
 
 # There are exactly TWO event caps, one per detector complexity class — they do
 # NOT shadow each other; each binds a different algorithm (#102). Both decimate
@@ -624,7 +625,11 @@ class DrumPatternDetector(PatternDetector):
         if not events:
             return {}
             
-        sequence = [(e['note'], e.get('volume', e.get('velocity', 100))) for e in events]
+        # Default 100 (not 0) is deliberate: this feeds vel_similarity
+        # scoring below, where a genuinely missing value should read as
+        # "typical", not "silent" -- 0 would skew comparisons toward
+        # maximal dissimilarity for an edge case that isn't actually silent.
+        sequence = [(e['note'], event_velocity(e, default=100)) for e in events]
         patterns = {}
         
         def score_drum_pattern(length: int, matches: List[int], 

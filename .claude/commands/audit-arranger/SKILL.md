@@ -107,7 +107,11 @@ checklist:
   order — check determinism of role ties (see Dimension 8).
 - Velocity threshold `> 100` / `< 60` operate on raw MIDI velocity (0–127); confirm the
   values flowing in are velocity, not an already-scaled volume (events use
-  `velocity = event.get('velocity', event.get('volume', 100))`).
+  `velocity = event_velocity(event)`, `core/events.py`). **Fixed (#460/TD-40, verify)**:
+  this site's default used to be a divergent `100` (`event.get('velocity',
+  event.get('volume', 100))`) — a keyless/malformed event read as a spurious note-on
+  (`velocity > 0`) instead of the note-off/no-op every other velocity-reading site in
+  the codebase defaults to. Migrated to `event_velocity`'s shared `default=0`.
 - **#360 (ARR-2026-07-19-2) is CLOSED**: `analyze_midi_events`
   (`arranger/pipeline_integration.py:84-88`) dropped its unused `ticks_per_beat`/`tempo`/`fps`
   parameters — frame numbers arrive pre-computed from `parser_fast` and density uses a fixed

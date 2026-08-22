@@ -479,5 +479,24 @@ class TestDroppedTracksAreSurfaced(unittest.TestCase):
         self.assertIn("Dropped", output)
 
 
+class TestMissingVelocityDefaultsToNoteOff(unittest.TestCase):
+    """Regression (#460/TD-40): analyze_midi_events's velocity read used to
+    default to 100 when an event carried neither 'velocity' nor 'volume' --
+    treating a malformed/keyless event as a spurious note-on, diverging from
+    every other velocity-reading site in the codebase (which default to 0,
+    i.e. note-off/no-op). Migrated to core.events.event_velocity's shared
+    default of 0."""
+
+    def test_keyless_event_produces_no_note(self):
+        from arranger import analyze_midi_events
+        events = {'track': [
+            {'frame': 0, 'note': 60},  # no 'velocity'/'volume' at all
+        ]}
+        _, notes_by_track, _ = analyze_midi_events(events, sustain=False)
+        # No note-on ever registers, so no NoteInfo is produced for it.
+        all_notes = [n for notes in notes_by_track.values() for n in notes]
+        self.assertEqual(all_notes, [])
+
+
 if __name__ == '__main__':
     unittest.main()

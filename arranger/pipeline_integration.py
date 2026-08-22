@@ -11,6 +11,7 @@ from typing import Dict, List, Tuple
 from .role_analyzer import VoiceRoleAnalyzer, NoteInfo, ArrangementPlan
 from .voice_allocator import allocate_with_arpeggiation
 from nes.pitch_table import NES_NOTE_TABLE, NES_TRIANGLE_TABLE
+from core.events import event_velocity
 
 
 def _apply_sustain(notes: List[NoteInfo], max_gap: int) -> List[NoteInfo]:
@@ -193,7 +194,12 @@ def analyze_midi_events(
             for event in ch_events:
                 frame = event.get('frame', 0)
                 note = event.get('note', 60)
-                velocity = event.get('velocity', event.get('volume', 100))
+                # Default 0 (#460/TD-40, dropped from a divergent 100 at
+                # migration): the default only fires when an event is
+                # missing both keys entirely (malformed/synthetic), and 0
+                # makes that read as a note-off/no-op like every other
+                # velocity-reading site, rather than a spurious note-on.
+                velocity = event_velocity(event)
                 ev_channel = event.get('channel', 0) or 0
                 program = event.get('program', 0) or 0
 

@@ -2,6 +2,7 @@ import random
 from collections import defaultdict
 from dpcm_sampler.drum_engine import map_drums_to_dpcm
 from arranger.pipeline_integration import _split_events_by_channel
+from core.events import event_velocity
 
 
 # Simplified initial mapping strategy
@@ -12,8 +13,7 @@ def group_notes_by_frame(events):
     """Group note-on events by frame, ignoring note-offs (volume/velocity = 0)."""
     grouped = defaultdict(list)
     for e in events:
-        # Handle both 'volume' and 'velocity' field names for compatibility
-        vel = e.get('volume', e.get('velocity', 0))
+        vel = event_velocity(e)
         if vel > 0:
             grouped[e['frame']].append(e['note'])
     return grouped
@@ -26,7 +26,7 @@ def _find_matching_note_off(sorted_events, start_frame, note):
     for e in sorted_events:
         if e['frame'] <= start_frame:
             continue
-        vel = e.get('volume', e.get('velocity', 0))
+        vel = event_velocity(e)
         if vel == 0 and e.get('note') == note:
             return e['frame']
     return None
@@ -298,8 +298,7 @@ def assign_tracks_to_nes_channels(midi_events, dpcm_index_path):
         # Multiple tracks - use original logic
         # Basic heuristic: choose based on pitch and density
         def average_pitch(events):
-            # Handle both 'volume' and 'velocity' field names for compatibility
-            notes = [e['note'] for e in events if e.get('volume', e.get('velocity', 0)) > 0]
+            notes = [e['note'] for e in events if event_velocity(e) > 0]
             return sum(notes) / len(notes) if notes else 0
 
         channel_scores = [

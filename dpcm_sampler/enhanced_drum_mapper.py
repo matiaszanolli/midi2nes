@@ -6,6 +6,7 @@ from tracker.pattern_detector import DrumPatternDetector
 from .dpcm_sample_manager import DPCMSampleManager
 from .drum_engine import DEFAULT_MIDI_DRUM_MAPPING, ADVANCED_MIDI_DRUM_MAPPING, DPCM_ROLE_ALIASES
 from .generate_dpcm_index import resolve_dpcm_sample_path
+from core.events import event_velocity
 
 
 @dataclass
@@ -317,11 +318,11 @@ class EnhancedDrumMapper:
             
             for e in events:
                 # Real parsed MIDI events (tracker/parser_fast.py) carry
-                # 'volume', not 'velocity' -- match the defensive dual-key
-                # idiom used everywhere else in this codebase (e.g.
-                # tracker/track_mapper.py, nes/emulator_core.py) so legacy-mode
-                # drum detection isn't dead code on real input (#DP-DPCM-12).
-                velocity = e.get('velocity', e.get('volume', 0))
+                # 'volume', not 'velocity' -- event_velocity (core/events.py)
+                # reads both so legacy-mode drum detection isn't dead code on
+                # real input (#DP-DPCM-12), with one shared precedence/default
+                # instead of a hand-rolled fallback per call site (#460/TD-40).
+                velocity = event_velocity(e)
                 if velocity == 0:
                     continue
 

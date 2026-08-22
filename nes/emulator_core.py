@@ -6,6 +6,7 @@ from .envelope_processor import (
     NOISE_DECAY_FRAMES,
     noise_strike_decay_volume,
 )
+from core.events import event_velocity
 
 
 class NESEmulatorCore:
@@ -29,15 +30,15 @@ class NESEmulatorCore:
         polyphony across channels upstream.
         """
         note_ons = sorted(
-            (e for e in events if e.get('velocity', e.get('volume', 0)) > 0),
+            (e for e in events if event_velocity(e) > 0),
             key=lambda e: e['frame'])
         kept = []
         dropped = 0
         for e in note_ons:
-            vel = e.get('velocity', e.get('volume', 0))
+            vel = event_velocity(e)
             if kept and kept[-1]['frame'] == e['frame']:
                 dropped += 1
-                prev_vel = kept[-1].get('velocity', kept[-1].get('volume', 0))
+                prev_vel = event_velocity(kept[-1])
                 if vel >= prev_vel:
                     kept[-1] = e  # louder note wins; equal velocity keeps the later one (#344/TEMPO-15)
             else:
@@ -68,8 +69,7 @@ class NESEmulatorCore:
         num_events = len(events)
 
         for i, event in enumerate(events):
-            # Handle both 'velocity' and 'volume' fields for compatibility
-            velocity = event.get('velocity', event.get('volume', 0))
+            velocity = event_velocity(event)
             if velocity == 0:
                 continue  # We simulate note-off via time
 
@@ -83,7 +83,7 @@ class NESEmulatorCore:
             for other in all_events_sorted:
                 if other['frame'] <= start_frame:
                     continue
-                other_velocity = other.get('velocity', other.get('volume', 0))
+                other_velocity = event_velocity(other)
                 if other_velocity == 0 and other.get('note') == note_pitch:
                     end_frame = other['frame']
                     break
@@ -91,7 +91,7 @@ class NESEmulatorCore:
             # Stop early if another note starts before this note's end
             for j in range(i + 1, num_events):
                 next_event = events[j]
-                next_velocity = next_event.get('velocity', next_event.get('volume', 0))
+                next_velocity = event_velocity(next_event)
                 if next_velocity > 0 and next_event['frame'] > start_frame:
                     end_frame = min(end_frame, next_event['frame'])
                     break
@@ -154,7 +154,7 @@ class NESEmulatorCore:
                 events, _ = self._collapse_same_frame_events(events, 'noise')
                 sorted_events = sorted(events, key=lambda ev: ev['frame'])
                 for i, e in enumerate(sorted_events):
-                    velocity = e.get('velocity', e.get('volume', 0))
+                    velocity = event_velocity(e)
                     if velocity <= 0:
                         continue
                     # Period index 0 is the bytecode rest sentinel, so floor an
@@ -208,7 +208,7 @@ class NESEmulatorCore:
 
                 referenced_ids = sorted({
                     e.get('sample_id', 0) for e in events
-                    if e.get('velocity', e.get('volume', 0)) > 0
+                    if event_velocity(e) > 0
                 })
                 dense_id_of = {raw_id: i for i, raw_id in enumerate(referenced_ids)}
 
@@ -226,7 +226,7 @@ class NESEmulatorCore:
                           f"alias onto the 255th sample.")
 
                 for e in events:
-                    velocity = e.get('velocity', e.get('volume', 0))
+                    velocity = event_velocity(e)
                     if velocity <= 0:
                         continue
                     sample_id = e.get('sample_id', 0)

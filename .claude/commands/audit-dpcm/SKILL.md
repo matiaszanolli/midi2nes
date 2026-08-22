@@ -66,13 +66,30 @@ Mapping resolution is in `EnhancedDrumMapper._resolve_dpcm_sample_name` and
   carry **`volume`**, not `velocity` — so the key defaulted to `0` on every real event
   and the whole legacy-mode drum-detection loop was dead code on real input, skipping
   every note as if it were a note-off. It now reads
-  `velocity = e.get('velocity', e.get('volume', 0))` before the zero test
-  (`enhanced_drum_mapper.py:324-325`), matching the defensive dual-key idiom used in
-  `tracker/track_mapper.py` and `nes/emulator_core.py`. Verify-the-fix: this bug was
-  invisible to the test suite because the fixtures used synthetic `velocity`-keyed
-  events. Any check here must exercise **parser output**, not hand-built dicts — and the
-  same grep (`get('velocity'` with no `volume` fallback) should come back clean across
-  `dpcm_sampler/`. A regression silently drops every drum in legacy mode.
+  `velocity = event_velocity(e)` (`core/events.py`, migrated by #460/TD-40 from the
+  hand-rolled `e.get('velocity', e.get('volume', 0))`) before the zero test. Verify-
+  the-fix: this bug was invisible to the test suite because the fixtures used synthetic
+  `velocity`-keyed events. Any check here must exercise **parser output**, not
+  hand-built dicts — and the same grep (`get('velocity'` with no `event_velocity` call)
+  should come back clean across `dpcm_sampler/`. A regression silently drops every drum
+  in legacy mode.
+- **#460/TD-40 is CLOSED**: the "defensive dual-key idiom" this bullet used to describe
+  was hand-rolled separately at 15 sites across `tracker/`, `nes/`, `arranger/`, and
+  `dpcm_sampler/`, and had already diverged on both key precedence and missing-key
+  default — the very comment `ffccf51` added here claimed uniformity with
+  `tracker/track_mapper.py` that didn't exist (that module was `volume`-first at the
+  time; this one wrote `velocity`-first). All 15 sites now share one implementation,
+  `core.events.event_velocity(event, default=0)`: `velocity` wins when both keys are
+  present with different values, and a missing-both event defaults to 0 (silent/
+  note-off) except at two call sites that deliberately override the default for their
+  own semantics (`tracker/pattern_detector.py`'s drum-pattern similarity scorer keeps
+  `default=100`, justified since a genuinely missing value there should read as
+  "typical" not "silent"; `arranger/pipeline_integration.py`'s note-on/off read had its
+  divergent `default=100` dropped to 0 at migration, since it had no comparable
+  justification and defaulted a malformed event to a spurious note-on instead of a
+  no-op). Verify-the-fix: grep for `get('velocity'.*get('volume'` /
+  `get('volume'.*get('velocity'` — it should return nothing outside `core/events.py`
+  and its own test file.
 - `_get_advanced_sample` (`enhanced_drum_mapper.py:452-466`) selects by
   `velocity_ranges`; its result is now just one candidate in the fallback chain
   above rather than a hard commit — confirm a nonexistent velocity-split name no
