@@ -68,6 +68,13 @@ class NESEmulatorCore:
         events, _ = self._collapse_same_frame_events(events, channel_type)
         num_events = len(events)
 
+        # Tracks the immediately-preceding written event's (end_frame, note)
+        # so a genuine same-pitch retrigger (#481/NH-HW-2026-08-22-1, below)
+        # can be detected across loop iterations. `events` is chronological
+        # (collapse sorts by frame and this loop never reorders it).
+        prev_end_frame = None
+        prev_note_pitch = None
+
         for i, event in enumerate(events):
             velocity = event_velocity(event)
             if velocity == 0:
@@ -96,6 +103,30 @@ class NESEmulatorCore:
                     end_frame = min(end_frame, next_event['frame'])
                     break
 
+            # A genuine new note-on that starts exactly where the previous
+            # note on this (monophonic) channel ended, at the SAME pitch, is
+            # indistinguishable on the wire from a continued sustain: both
+            # exporters key their retrigger/phase-reset logic purely on
+            # "did the per-frame note value change" -- direct-export's
+            # last_pulse*_note/last_triangle_note compare, and the bytecode
+            # serializer's `if note != current_note` event-boundary test
+            # (`exporter/exporter_ca65.py`). Two adjacent frames carrying the
+            # identical note with no value change in between produce ONE
+            # merged event with no phase reset and (if the velocities also
+            # match) no volume step either -- the second attack is silently
+            # absorbed into the first note's sustain (#481/NH-HW-2026-08-22-1).
+            # Borrow one frame from the front of this note to render a true
+            # 1-frame rest, forcing the note value through 0 between the two
+            # attacks so both consumers' existing note-changed logic sees a
+            # real boundary and retriggers correctly -- no exporter/engine
+            # changes needed. Skipped when the note is too short to spare a
+            # frame (end_frame - start_frame <= 1); that residual merge is
+            # inaudible either way.
+            render_start_frame = start_frame
+            if (prev_end_frame == start_frame and prev_note_pitch == note_pitch
+                    and end_frame - start_frame > 1):
+                render_start_frame = start_frame + 1
+
             # Use the pitch_processor instance instead of static function
             pitch = self.midi_to_nes_pitch(event['note'], channel_type)
             # envelope_type is currently always 'default' — no pipeline stage sets
@@ -103,7 +134,7 @@ class NESEmulatorCore:
             # a future GM-based producer can drive real envelopes without re-plumbing.
             envelope_type = event.get('envelope_type', 'default')
 
-            for f in range(start_frame, end_frame):
+            for f in range(render_start_frame, end_frame):
                 frame_offset = f - start_frame
                 if channel_type.startswith('pulse'):
                     control_byte = self.envelope_processor.get_envelope_control_byte(
@@ -122,6 +153,9 @@ class NESEmulatorCore:
                         "volume": velocity_to_volume(velocity),
                         "note": event['note']
                     }
+
+            prev_end_frame = end_frame
+            prev_note_pitch = note_pitch
 
         return dict(sorted(frames.items()))
 
