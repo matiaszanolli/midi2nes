@@ -91,7 +91,7 @@ class TestConfigManager(unittest.TestCase):
         """Regression (#219): sampling caps ship as config keys with the same
         values as the hardcoded tracker/pattern_detector.py defaults."""
         config = ConfigManager()
-        self.assertEqual(config.get("processing.pattern_detection.max_events"), 1000)
+        self.assertEqual(config.get("processing.pattern_detection.max_events"), 300)
         self.assertEqual(config.get("processing.pattern_detection.max_pattern_events"), 15000)
 
     def test_pattern_detection_sampling_caps_validation(self):

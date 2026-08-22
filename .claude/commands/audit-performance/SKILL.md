@@ -111,7 +111,7 @@ before the shared-sampling consolidation, #100/#102):
   `ParallelPatternDetector.detect_patterns` calls `sample_events_for_detection(valid_events)`
   with this default, downsampling via `np.linspace` when exceeded. This still **drops
   events from pattern analysis** — a speed/quality trade-off.
-- `DETECTOR_MAX_EVENTS = 1000` — a second, separate cap in the same file, for the
+- `DETECTOR_MAX_EVENTS = 300` — a second, separate cap in the same file, for the
   O(n²)-ish sequential `EnhancedPatternDetector`. It is used by the `detect-patterns`
   subcommand (`run_detect_patterns` in `main.py`) and by the full pipeline's sequential
   fallback when parallel detection raises. Both call sites sample **uniformly straight

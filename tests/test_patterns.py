@@ -1290,7 +1290,7 @@ class TestEventLimitConsolidation(unittest.TestCase):
     def test_two_named_caps(self):
         from tracker import pattern_detector as pd
         self.assertEqual(pd.MAX_PATTERN_EVENTS, 15000)   # O(n) parallel path
-        self.assertEqual(pd.DETECTOR_MAX_EVENTS, 1000)   # O(n^2) sequential path
+        self.assertEqual(pd.DETECTOR_MAX_EVENTS, 300)    # O(n^2 x L) sequential path (#352)
 
     def test_sequential_detector_binds_at_detector_max_events(self):
         # The sequential detector's effective limit is DETECTOR_MAX_EVENTS (not

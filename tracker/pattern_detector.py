@@ -15,12 +15,24 @@ from tracker.tempo_map import TempoChangeType, TempoChange, EnhancedTempoMap
 # #114) handles far more events, so the default full pipeline samples to this.
 MAX_PATTERN_EVENTS = 15000
 
-# DETECTOR_MAX_EVENTS: the sequential `PatternDetector` is O(n^2)-ish, so it caps
-# its working set far lower. The `detect-patterns` subcommand and the pipeline's
+# DETECTOR_MAX_EVENTS: the sequential `PatternDetector` is O(n^2 * pattern-length-
+# range) -- `detect_patterns` calls both `_find_pattern_matches` and
+# `_detect_pattern_variations` (each an O(n) scan) for every (length, start) pair,
+# an O(n) * O(L) outer loop. The `detect-patterns` subcommand and the pipeline's
 # sequential fallback both run this detector, so they sample to THIS number, not
 # MAX_PATTERN_EVENTS. Applied by *uniform* sampling (not a head cut) so the whole
 # song is covered (#100); callers report THIS as the retained count.
-DETECTOR_MAX_EVENTS = 1000
+#
+# The cap exists specifically to bound worst-case latency ("Safeguard" below) --
+# it was previously 1000, a value nobody had actually timed. Measured against
+# production parameters (max_pattern_length=12, non-repetitive/worst-case input,
+# the same parameters main.py always uses) that took ~26s; 500 events ~6s; 300
+# events ~2.5s. 300 keeps the worst case in the low single digits of seconds
+# instead of a de-facto hang (#352/REG-21) while still covering most real songs
+# before the sequential path is even reached (the default pipeline's parallel
+# detector, MAX_PATTERN_EVENTS=15000 above, handles the common case and only
+# falls back to this detector on a parallel-pool failure).
+DETECTOR_MAX_EVENTS = 300
 
 
 def sample_events_for_detection(events, max_events=MAX_PATTERN_EVENTS):

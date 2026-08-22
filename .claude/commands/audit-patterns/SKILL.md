@@ -217,7 +217,7 @@ Sampling must not silently change the song. The old "three inconsistent limits" 
   `ParallelPatternDetector.detect_patterns` (`pattern_detector_parallel.py:60`) samples to
   `MAX_PATTERN_EVENTS = 15000` (`pattern_detector.py:16`); the sequential
   `PatternDetector.detect_patterns` (`pattern_detector.py:204-207`) samples to
-  `DETECTOR_MAX_EVENTS = 1000` (`pattern_detector.py:23`) because it is O(n²)-ish. Trace whether
+  `DETECTOR_MAX_EVENTS = 300` (`pattern_detector.py:23`) because it is O(n²)-ish. Trace whether
   the sampled `valid_events` is what later feeds `references`/frame reconstruction: since
   `export_tables_with_patterns` derives all bytes from `frames` (not from the sampled detection
   sequence, #4), the exported song is NOT altered by this sampling — only pattern-detection

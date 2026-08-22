@@ -273,7 +273,7 @@ parallel→sequential fallback (`main.py:827-853`).
   accurate as sampling behavior changes elsewhere.
 - **Truncation-to-2000 (F-04/#10, closed)**: the fallback no longer
   does `events = events[:2000]`. It now calls `sample_events_for_detection(events,
-  max_events)` (`main.py:844`; default `DETECTOR_MAX_EVENTS = 1000`,
+  max_events)` (`main.py:844`; default `DETECTOR_MAX_EVENTS = 300`,
   `tracker/pattern_detector.py:23`), which samples *uniformly* across the whole song
   (`np.linspace`, `tracker/pattern_detector.py:26-38`) rather than head-cutting it, so
   musical structure is preserved in what pattern detection sees. This closes the literal
@@ -297,7 +297,7 @@ parallel→sequential fallback (`main.py:827-853`).
   fallback behavior — the old "no fallback, no threshold, processes the full set unbounded"
   asymmetry is gone. Verify: the *parallel* detector (used by default when it succeeds) still
   has a different, higher cap (`MAX_PATTERN_EVENTS = 15000`, `tracker/pattern_detector.py:16`)
-  than the sequential detector/subcommand (`DETECTOR_MAX_EVENTS = 1000`) — this remains an
+  than the sequential detector/subcommand (`DETECTOR_MAX_EVENTS = 300`) — this remains an
   intentional, documented complexity-driven difference (comments at
   `tracker/pattern_detector.py:14-23`: parallel is O(n) hash-grouping, sequential is
   O(n^2)-ish), not a bug. Both caps are now overridable via `--config` (#219) through

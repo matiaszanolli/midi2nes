@@ -1355,7 +1355,7 @@ class TestRunDetectPatterns:
         run_detect_patterns(args)
 
         mock_print.assert_any_call(
-            " Pattern coverage: 1.0% of 1,000 events matched a detected pattern "
+            f" Pattern coverage: 1.0% of {DETECTOR_MAX_EVENTS:,} events matched a detected pattern "
             "(lossy — measured over the sampled subset, detection quality reduced)")
 
     def test_run_detect_patterns_empty_frames(self):
