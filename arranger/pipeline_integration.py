@@ -10,7 +10,7 @@ from typing import Dict, List, Tuple
 
 from .role_analyzer import VoiceRoleAnalyzer, NoteInfo, ArrangementPlan
 from .voice_allocator import allocate_with_arpeggiation
-from nes.pitch_table import NES_NOTE_TABLE, NES_TRIANGLE_TABLE
+from nes.pitch_table import NES_NOTE_TABLE, NES_TRIANGLE_TABLE, CHANNEL_RANGES
 from core.events import event_velocity
 
 
@@ -414,6 +414,19 @@ def midi_note_to_nes_pitch(midi_note: int, channel: str) -> int:
     APU_PULSE_REFERENCE §3/§7), which the old formula's floor-0 clamp did not
     enforce and could violate for extreme high notes.
 
+    Clamps to CHANNEL_RANGES[channel] before the table lookup, mirroring
+    PitchProcessor.get_channel_pitch (nes/pitch_table.py) exactly. This
+    matters beyond hardware range: the bytecode serializer
+    (exporter/exporter_ca65.py) floors the *stream* note to the channel's
+    range floor (24) and derives its macro base from `table[24]`, on the
+    assumption that any out-of-range frame `pitch` was already clamped the
+    same way. The legacy front-end satisfies that via get_channel_pitch; this
+    function used to only clamp to the full MIDI 0-127 range and index the
+    raw table, so a sub-C1 note's `pitch` (e.g. table[21]) disagreed with the
+    serializer's `table[24]` base by more than the macro offset encoding can
+    represent, clamping to a detuned pitch that was neither the note asked
+    for nor the intended clamp target (#431/NH-HW-2026-08-21-4).
+
     Noise has no timer -- its period comes from the voice allocator's 0-15
     clamp, never from this function (#90/ARR-07); only 'pulse1'/'pulse2'/
     'triangle' are meaningful `channel` values here.
@@ -426,6 +439,8 @@ def midi_note_to_nes_pitch(midi_note: int, channel: str) -> int:
         NES timer value (11-bit, floored at 8)
     """
     midi_note = max(0, min(127, midi_note))
+    min_note, max_note = CHANNEL_RANGES.get(channel, (0, 127))
+    midi_note = max(min_note, min(max_note, midi_note))
     if channel == 'triangle':
         return NES_TRIANGLE_TABLE[midi_note]
     return NES_NOTE_TABLE[midi_note]

@@ -755,6 +755,22 @@ audio_update:
     cpx #5
     bne @jukebox_scan_ended
     jsr audio_advance_song      ; clears channel_ended itself on the way out
+    ; audio_advance_song just reloaded every channel's stream pointers, but
+    ; falling through to @silence below would silence THIS channel (the one
+    ; that triggered the scan, X still on the stack) instead of reading the
+    ; new song's first byte, and channels with index < X already ran their
+    ; @fetch_byte this frame against the OLD (pre-advance) streams -- both
+    ; groups would start the new song one 60Hz frame late (#433/
+    ; NH-HW-2026-08-21-6). Discard the saved X (it's about to be reset to 0
+    ; anyway) and restart the whole channel loop for this frame instead of
+    ; falling through: every channel gets exactly one correct pass over the
+    ; new song's streams. A channel with index < X gets re-visited a second
+    ; time this frame, but harmlessly -- its first (pre-advance) pass never
+    ; touched frame_wait (it only re-fetched the trailing $FF sentinel), so
+    ; the restarted pass's @fetch_byte is the only one that does real work.
+    pla
+    ldx #0
+    jmp @channel_loop
 @jukebox_not_all_ended:
     pla
     tax

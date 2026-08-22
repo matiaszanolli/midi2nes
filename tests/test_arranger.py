@@ -366,6 +366,33 @@ class TestChannelHonoringInvariant(unittest.TestCase):
             self.assertNotIn('control', fd)  # legacy triangle emits no control byte
 
 
+class TestSubC1BassNotePitchMatchesChannelClampedTable(unittest.TestCase):
+    """End-to-end regression for #431/NH-HW-2026-08-21-4: a sub-C1 bass note
+    routed to triangle through the full arrange_for_nes pipeline must carry
+    a frame `pitch` clamped to CHANNEL_RANGES['triangle'] (floor 24), the
+    same floor the bytecode serializer's base timer uses -- not the raw,
+    unclamped table lookup that produced a detuned runtime pitch."""
+
+    def test_bass_note_below_c1_clamps_pitch_to_channel_floor(self):
+        from nes.pitch_table import NES_TRIANGLE_TABLE, CHANNEL_RANGES
+
+        # MIDI 21 (A0) -- below triangle's channel-range floor of 24 (C1).
+        bass = {'bass': _held(21, 0, 18)}
+        out = arrange_for_nes(bass)
+        self.assertGreater(len(out['triangle']), 0, "sub-C1 bass should still route to triangle")
+
+        floor_pitch = NES_TRIANGLE_TABLE[CHANNEL_RANGES['triangle'][0]]
+        for fd in out['triangle'].values():
+            self.assertEqual(fd['pitch'], floor_pitch,
+                              "frame pitch must clamp to the channel-range floor "
+                              "(table[24]), matching what the serializer's base "
+                              "timer uses for a note this low")
+            # The raw, unclamped table lookup (the pre-fix behavior) would have
+            # produced a different, higher timer value -- confirm we're not
+            # accidentally still returning it.
+            self.assertNotEqual(fd['pitch'], NES_TRIANGLE_TABLE[21])
+
+
 class TestArrangerContract(unittest.TestCase):
     """arrange_for_nes must be structurally interchangeable with
     process_all_tracks: {channel: {frame(int): {field: ...}}} (#44)."""
@@ -400,24 +427,35 @@ class TestArrangerContract(unittest.TestCase):
 
 
 class TestMidiNoteToNesPitchMatchesCanonicalTable(unittest.TestCase):
-    """Regression tests for #89/ARR-06 and #90/ARR-07.
+    """Regression tests for #89/ARR-06, #90/ARR-07, and #431/NH-HW-2026-08-21-4.
 
     midi_note_to_nes_pitch used to hand-roll its own float timer formula
     (a second pitch source diverging from nes/pitch_table.py and the
     exporter's midi_note_to_timer_value) with a floor-0 clamp instead of the
-    hardware-correct floor-8 clamp, plus a dead, unclamped noise branch."""
+    hardware-correct floor-8 clamp, plus a dead, unclamped noise branch.
 
-    def test_matches_canonical_pulse_table(self):
+    It was later delegated to the canonical tables (#89/#90) but only
+    clamped to the full MIDI 0-127 range, not the per-channel range
+    PitchProcessor.get_channel_pitch (nes/pitch_table.py) clamps to before
+    its own table lookup -- so an out-of-channel-range note (e.g. a sub-C1
+    bass note on triangle) produced a `pitch` the bytecode serializer's
+    channel-range-floored base timer disagreed with, detuning the note
+    (#431). midi_note_to_nes_pitch must clamp to CHANNEL_RANGES[channel]
+    exactly like get_channel_pitch."""
+
+    def test_matches_canonical_pulse_table_within_channel_range(self):
         from arranger.pipeline_integration import midi_note_to_nes_pitch
-        from nes.pitch_table import NES_NOTE_TABLE
-        for note in range(0, 128):
+        from nes.pitch_table import NES_NOTE_TABLE, CHANNEL_RANGES
+        min_note, max_note = CHANNEL_RANGES['pulse1']
+        for note in range(min_note, max_note + 1):
             self.assertEqual(midi_note_to_nes_pitch(note, 'pulse1'), NES_NOTE_TABLE[note])
             self.assertEqual(midi_note_to_nes_pitch(note, 'pulse2'), NES_NOTE_TABLE[note])
 
-    def test_matches_canonical_triangle_table(self):
+    def test_matches_canonical_triangle_table_within_channel_range(self):
         from arranger.pipeline_integration import midi_note_to_nes_pitch
-        from nes.pitch_table import NES_TRIANGLE_TABLE
-        for note in range(0, 128):
+        from nes.pitch_table import NES_TRIANGLE_TABLE, CHANNEL_RANGES
+        min_note, max_note = CHANNEL_RANGES['triangle']
+        for note in range(min_note, max_note + 1):
             self.assertEqual(midi_note_to_nes_pitch(note, 'triangle'), NES_TRIANGLE_TABLE[note])
 
     def test_high_notes_floor_at_8_not_0(self):
@@ -430,11 +468,48 @@ class TestMidiNoteToNesPitchMatchesCanonicalTable(unittest.TestCase):
             self.assertGreaterEqual(midi_note_to_nes_pitch(note, 'pulse1'), 8)
             self.assertGreaterEqual(midi_note_to_nes_pitch(note, 'triangle'), 8)
 
-    def test_out_of_range_midi_notes_are_clamped(self):
+    def test_out_of_midi_range_notes_clamp_to_channel_range(self):
+        """A note outside 0-127 must clamp to the channel's own range
+        boundary (24-108 for pulse), not just the full MIDI range -- the
+        clamp target IS the note whose table entry gets returned."""
         from arranger.pipeline_integration import midi_note_to_nes_pitch
         from nes.pitch_table import NES_NOTE_TABLE
-        self.assertEqual(midi_note_to_nes_pitch(-5, 'pulse1'), NES_NOTE_TABLE[0])
-        self.assertEqual(midi_note_to_nes_pitch(200, 'pulse1'), NES_NOTE_TABLE[127])
+        self.assertEqual(midi_note_to_nes_pitch(-5, 'pulse1'), NES_NOTE_TABLE[24])
+        self.assertEqual(midi_note_to_nes_pitch(200, 'pulse1'), NES_NOTE_TABLE[108])
+
+    def test_sub_channel_range_notes_clamp_to_channel_floor_not_full_midi_floor(self):
+        """Regression for #431: a note below the channel's own range floor
+        (e.g. 21 on triangle, whose floor is 24, not MIDI's 0) must clamp to
+        the CHANNEL range floor -- matching PitchProcessor.get_channel_pitch
+        -- not just the full 0-127 MIDI range. Before the fix, notes 0-23
+        indexed the table directly instead of clamping to 24, producing a
+        pitch the bytecode serializer's channel-floored base timer (also 24)
+        disagreed with."""
+        from arranger.pipeline_integration import midi_note_to_nes_pitch
+        from nes.pitch_table import NES_TRIANGLE_TABLE, NES_NOTE_TABLE, CHANNEL_RANGES
+
+        for note in range(0, CHANNEL_RANGES['triangle'][0]):
+            self.assertEqual(midi_note_to_nes_pitch(note, 'triangle'),
+                              NES_TRIANGLE_TABLE[CHANNEL_RANGES['triangle'][0]])
+        for note in range(0, CHANNEL_RANGES['pulse1'][0]):
+            self.assertEqual(midi_note_to_nes_pitch(note, 'pulse1'),
+                              NES_NOTE_TABLE[CHANNEL_RANGES['pulse1'][0]])
+
+    def test_matches_pitch_processor_get_channel_pitch_exactly(self):
+        """midi_note_to_nes_pitch and PitchProcessor.get_channel_pitch are two
+        independent call sites that must agree bit-for-bit on every MIDI note
+        for every tone channel -- a drift between them is exactly the #431
+        defect class."""
+        from arranger.pipeline_integration import midi_note_to_nes_pitch
+        from nes.pitch_table import PitchProcessor
+
+        processor = PitchProcessor()
+        for channel in ('pulse1', 'pulse2', 'triangle'):
+            for note in range(0, 128):
+                self.assertEqual(
+                    midi_note_to_nes_pitch(note, channel),
+                    processor.get_channel_pitch(note, channel),
+                    f"mismatch at note={note} channel={channel}")
 
 
 def _melodic_track(pitch, channel=0):
