@@ -294,18 +294,22 @@ def arrange_for_nes(
     # Analyze the MIDI
     plan, notes_by_track, total_frames = analyze_midi_events(midi_events)
 
+    # Surface dropped tracks unconditionally, not just under --verbose: an
+    # entire musical part can silently vanish from the ROM whenever more
+    # than 4 pitched voices compete for NES's channels, and nothing on this
+    # path used to show plan.notes/plan.dropped_tracks at all -- unlike the
+    # legacy front-end's unconditional same-frame-drop warnings
+    # (#451/ARR-2026-08-21-4).
+    for note in plan.notes:
+        print(f"Warning: {note}")
+
     if verbose:
-        # Print arrangement analysis
-        print("\n" + "=" * 60)
-        print("NES ARRANGEMENT ANALYSIS")
-        print("=" * 60)
-        for track in plan.tracks:
-            print(f"\nTrack {track.track_id}: {track.name}")
-            print(f"  Role: {track.role.name} (confidence: {track.confidence:.0%})")
-            print(f"  Max Polyphony: {track.max_polyphony}")
-            if track.needs_arpeggiation:
-                print(f"  → Will arpeggiate at {60 // arp_speed}Hz")
-        print("=" * 60)
+        # print_analysis already covers everything the old inline block did
+        # (per-track role/confidence/polyphony) plus GM instrument name,
+        # pitch range, note density, channel assignments, and the dropped-
+        # track/notes diagnostics above in more detail -- no reason to keep
+        # a second, narrower copy of the same printout (#451).
+        VoiceRoleAnalyzer.print_analysis(plan)
 
     # Allocate with arpeggiation
     frames = allocate_with_arpeggiation(

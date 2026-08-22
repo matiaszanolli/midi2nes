@@ -117,6 +117,41 @@ class TestArrangerFrameContract(unittest.TestCase):
         self.assertEqual(out['dpcm'][0]['note'], 1)  # dense id 0 + 1
         self.assertEqual(out['dpcm_sample_map'], {'0': 200})  # real id preserved
 
+    @patch('arranger.pipeline_integration.allocate_with_arpeggiation')
+    def test_period_zero_noise_hit_floors_to_note_one(self, mock_alloc):
+        """Regression (#452/ARR-2026-08-21-5): period 0 (e.g. a closed
+        hi-hat, #253) is the bytecode rest sentinel -- the conversion must
+        floor it to note 1 so a period-0 drum still triggers, one step
+        lower in frequency than its curated period, instead of silently
+        reading as a rest."""
+        mock_alloc.return_value = {
+            'pulse1': {}, 'pulse2': {}, 'triangle': {},
+            'noise': {0: {'period': 0, 'volume': 9}},
+            'dpcm': {},
+        }
+        out = arrange_for_nes({'drums': [
+            {'frame': 0, 'note': 42, 'volume': 100, 'type': 'note_on', 'channel': 9},
+            {'frame': 2, 'note': 42, 'volume': 0, 'type': 'note_off', 'channel': 9},
+        ]})
+        self.assertEqual(out['noise'][0]['note'], 1)
+
+    @patch('arranger.pipeline_integration.allocate_with_arpeggiation')
+    def test_zero_velocity_noise_hit_floors_volume_to_one(self, mock_alloc):
+        """Regression (#452/ARR-2026-08-21-5): a hit with volume 0 must
+        still floor to volume 1 in the output frame -- the exporter gates
+        DPCM/noise emission on volume, so a true 0 would make an otherwise
+        real hit silently unplayable."""
+        mock_alloc.return_value = {
+            'pulse1': {}, 'pulse2': {}, 'triangle': {},
+            'noise': {0: {'period': 7, 'volume': 0}},
+            'dpcm': {},
+        }
+        out = arrange_for_nes({'drums': [
+            {'frame': 0, 'note': 42, 'volume': 100, 'type': 'note_on', 'channel': 9},
+            {'frame': 2, 'note': 42, 'volume': 0, 'type': 'note_off', 'channel': 9},
+        ]})
+        self.assertEqual(out['noise'][0]['volume'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 
 from arranger import (
     VoiceAllocator, NoteInfo, TrackAnalysis, ArrangementPlan, NESChannel,
@@ -79,6 +80,27 @@ class TestDpcmRouting(unittest.TestCase):
     def test_empty_notes_returns_none(self):
         self.assertIsNone(self.va._allocate_dpcm([]))
 
+    def test_use_sample_role_missing_from_role_names_yields_no_sound_not_a_wrong_id(self):
+        """Regression (#452/ARR-2026-08-21-5): if GM_DRUM_MAP ever grows a
+        third use_sample=True entry that DPCM_SAMPLE_ROLE_NAMES doesn't
+        cover, the old code's `.get(mapping.name, 2)` fallback would emit a
+        bare positional slot number as if it were a real catalog id --
+        exactly the #445 bug, just for a different role. It must instead
+        produce no DPCM allocation, matching the missing-catalog-entry
+        behavior above."""
+        from arranger.gm_instruments import DrumMapping, NESChannel as GMChannel, PlayStyle
+        fake_mapping = DrumMapping(
+            name="Hypothetical Third Sample Role",
+            channel=GMChannel.DPCM,
+            style=PlayStyle.SAMPLE,
+            priority=9,
+            use_sample=True,
+        )
+        with unittest.mock.patch(
+            'arranger.voice_allocator.get_drum_mapping', return_value=fake_mapping
+        ):
+            self.assertIsNone(self.va._allocate_dpcm(self._candidates(35)))
+
 
 class TestNoisePeriodRouting(unittest.TestCase):
     def setUp(self):
@@ -115,6 +137,21 @@ class TestNoisePeriodRouting(unittest.TestCase):
                 period, _velocity, _mode = result
                 self.assertGreaterEqual(period, 0)
                 self.assertLessEqual(period, 15)
+
+    def test_no_curated_period_fallback_matches_get_drum_mappings_own_default(self):
+        """Regression (#452/ARR-2026-08-21-5): _allocate_noise's fallback
+        (5, used when a mapped drum has no curated noise_period -- e.g.
+        High Agogo, note 67, routed to PULSE2) is a *separate* literal from
+        get_drum_mapping's own "Unknown Drum" default (also 5,
+        arranger/gm_instruments.py). Nothing pinned the two in sync, so a
+        change to either could silently diverge the fallback sound. Assert
+        equality against the source of truth instead of a bare literal."""
+        from arranger.gm_instruments import get_drum_mapping
+        result = self.va._allocate_noise(self._candidates(67))  # High Agogo
+        self.assertIsNotNone(result)
+        period, _velocity, _mode = result
+        unmapped_default = get_drum_mapping(999).noise_period  # "Unknown Drum"
+        self.assertEqual(period, unmapped_default)
 
 
 class TestNoiseModeBit(unittest.TestCase):

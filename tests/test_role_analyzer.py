@@ -256,5 +256,60 @@ class TestDetermineRoleChannelCuration(unittest.TestCase):
         self.assertEqual(analysis.preferred_channel, NESChannel.ANY_PULSE)
 
 
+class TestDetermineRoleNeverPicksAnOutOfBucketRole(unittest.TestCase):
+    """Regression (#450/ARR-2026-08-21-3): GM_INSTRUMENT_MAP curates 19/128
+    programs with role=PERCUSSION or SFX -- neither is one of the 4 scoring
+    buckets (BASS/MELODY/HARMONY/DECORATIVE) analyze_track picks from. The
+    defaultdict fix for #ARR-2026-08-07-1's KeyError still credited that
+    out-of-bucket role its full +3.0 GM bonus, which for an unremarkable
+    track (nothing else scoring >3.0 in any real bucket) let PERCUSSION/SFX
+    win max() outright -- contradicting this function's own documented
+    invariant that an out-of-bucket hint "contributes no bonus"."""
+
+    def setUp(self):
+        self.analyzer = VoiceRoleAnalyzer()
+
+    def _unremarkable_analysis(self, program):
+        # Mid-range pitch, moderate density/velocity, monophonic -- every
+        # real bucket scores low (<=2.0), so a stray +3.0 elsewhere would
+        # otherwise dominate.
+        return TrackAnalysis(
+            track_id=0, name="track", program=program,
+            avg_pitch=60.0, note_density=1.0, avg_velocity=80.0,
+            max_polyphony=1,
+        )
+
+    def test_percussion_curated_program_lands_in_a_real_bucket(self):
+        # Timpani (program 47) is curated PERCUSSION.
+        analysis = self._unremarkable_analysis(program=47)
+        self.analyzer._determine_role(analysis)
+        self.assertIn(analysis.role, (
+            MusicalRole.BASS, MusicalRole.MELODY,
+            MusicalRole.HARMONY, MusicalRole.DECORATIVE,
+        ))
+
+    def test_sfx_curated_program_lands_in_a_real_bucket(self):
+        # Orchestra Hit (program 55) is curated SFX.
+        analysis = self._unremarkable_analysis(program=55)
+        self.analyzer._determine_role(analysis)
+        self.assertIn(analysis.role, (
+            MusicalRole.BASS, MusicalRole.MELODY,
+            MusicalRole.HARMONY, MusicalRole.DECORATIVE,
+        ))
+
+    def test_out_of_bucket_gm_hint_contributes_literally_no_bonus(self):
+        """Pin the exact score, not just the winning role: with this
+        analysis (pitch 60 -> +1.0 MELODY/+1.0 HARMONY, no density/
+        velocity/polyphony bonus), a genuine +3.0 GM credit landing
+        anywhere in the 4 real buckets would change the winner and/or
+        confidence. MELODY wins the 1.0/1.0 tie by dict insertion order,
+        with confidence exactly 1.0/2.0 -- proving PERCUSSION's GM bonus
+        landed nowhere, not just that it happened not to win."""
+        analysis = self._unremarkable_analysis(program=47)  # Timpani, PERCUSSION
+        self.analyzer._determine_role(analysis)
+        self.assertEqual(analysis.role, MusicalRole.MELODY)
+        self.assertAlmostEqual(analysis.confidence, 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()

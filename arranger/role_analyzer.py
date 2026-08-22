@@ -217,9 +217,13 @@ class VoiceRoleAnalyzer:
         # programs (Timpani, Orchestra Hit, Agogo, Woodblock, etc.) with
         # role=PERCUSSION or SFX, neither of which is a scoring bucket -- any
         # non-drum-channel track using one of those programs would otherwise
-        # KeyError below (#ARR-2026-08-07-1). defaultdict lets an
-        # out-of-bucket GM hint contribute no bonus while the pitch/density/
-        # velocity signals below still pick one of the 4 real buckets.
+        # KeyError below (#ARR-2026-08-07-1). defaultdict lets the lookups
+        # further down (BASS/MELODY/HARMONY/DECORATIVE) read/increment
+        # freely without a KeyError; the out-of-bucket GM hint itself is
+        # guarded explicitly below so it never becomes a 5th key `max()` can
+        # pick (#450/ARR-2026-08-21-3 -- crediting PERCUSSION/SFX here let
+        # that key win outright on an unremarkable track's +3.0 alone, since
+        # none of the analysis below can ever add to it).
         role_scores = defaultdict(float, {
             MusicalRole.BASS: 0.0,
             MusicalRole.MELODY: 0.0,
@@ -227,8 +231,13 @@ class VoiceRoleAnalyzer:
             MusicalRole.DECORATIVE: 0.0,
         })
 
-        # GM instrument hint
-        role_scores[gm_mapping.role] += 3.0
+        # GM instrument hint -- only credited when it names one of the 4
+        # scoring buckets above. `in` never triggers the defaultdict's
+        # factory, so an out-of-bucket role (PERCUSSION/SFX) is left
+        # genuinely uncontested rather than inserted with a score that
+        # could win max() on its own.
+        if gm_mapping.role in role_scores:
+            role_scores[gm_mapping.role] += 3.0
 
         # Pitch analysis
         if analysis.avg_pitch < self.BASS_THRESHOLD:
@@ -461,8 +470,15 @@ class VoiceRoleAnalyzer:
                     f"Track {track.track_id} ({track.name}): Dropped - no channels available"
                 )
 
-    def print_analysis(self, plan: ArrangementPlan):
-        """Print a human-readable analysis."""
+    @staticmethod
+    def print_analysis(plan: ArrangementPlan):
+        """Print a human-readable analysis.
+
+        A staticmethod since it only ever reads `plan` -- callable without
+        an analyzer instance (arrange_for_nes's verbose path calls it
+        directly, #451/ARR-2026-08-21-4); still callable as
+        `analyzer.print_analysis(plan)` for existing callers/examples.
+        """
         print("\n" + "=" * 60)
         print("NES ARRANGEMENT ANALYSIS")
         print("=" * 60)

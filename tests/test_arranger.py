@@ -7,6 +7,8 @@ detection, arpeggiation, channel-honoring, and the output contract were all
 unguarded. These pin the behavior a polyphonic (--arranger) run relies on.
 """
 
+import contextlib
+import io
 import unittest
 
 from arranger import arrange_for_nes, analyze_midi_events, MusicalRole
@@ -433,6 +435,48 @@ class TestMidiNoteToNesPitchMatchesCanonicalTable(unittest.TestCase):
         from nes.pitch_table import NES_NOTE_TABLE
         self.assertEqual(midi_note_to_nes_pitch(-5, 'pulse1'), NES_NOTE_TABLE[0])
         self.assertEqual(midi_note_to_nes_pitch(200, 'pulse1'), NES_NOTE_TABLE[127])
+
+
+def _melodic_track(pitch, channel=0):
+    return [
+        {'frame': 0, 'note': pitch, 'volume': 100, 'channel': channel},
+        {'frame': 10, 'note': pitch, 'volume': 0, 'channel': channel},
+    ]
+
+
+class TestDroppedTracksAreSurfaced(unittest.TestCase):
+    """Regression (#451/ARR-2026-08-21-4): plan.dropped_tracks/plan.notes
+    were faithfully recorded but never shown anywhere on the live path --
+    an entire musical part could vanish from the ROM with zero indication,
+    even under --verbose."""
+
+    def _six_melodic_tracks(self):
+        # 6 monophonic melodic tracks compete for pulse1/pulse2 -- more than
+        # the pitched channels can hold, so several are dropped.
+        return {f'track_{i}': _melodic_track(60 + i) for i in range(6)}
+
+    def test_drops_are_warned_about_without_verbose(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            arrange_for_nes(self._six_melodic_tracks(), verbose=False)
+        output = buf.getvalue()
+        self.assertIn("Dropped", output)
+        self.assertIn("Warning:", output)
+
+    def test_no_drops_means_no_drop_warnings(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            arrange_for_nes({'melody': _melodic_track(60)}, verbose=False)
+        self.assertNotIn("Dropped", buf.getvalue())
+
+    def test_verbose_still_shows_the_full_analysis_and_the_drops(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            arrange_for_nes(self._six_melodic_tracks(), verbose=True)
+        output = buf.getvalue()
+        self.assertIn("NES ARRANGEMENT ANALYSIS", output)
+        self.assertIn("DROPPED", output)
+        self.assertIn("Dropped", output)
 
 
 if __name__ == '__main__':

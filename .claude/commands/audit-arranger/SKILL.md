@@ -74,8 +74,9 @@ and `volume=15`. Verify-the-fix checklist:
 - `--no-patterns` builds its stub stats from `sum(len(ch) for ch in frames.values())` — verify
   the arranger's five-channel dict is shaped so that sum is meaningful.
 - `tests/test_arranger_frame_contract.py` covers the DPCM/noise key shape and cross-checks
-  against the legacy contract — check it actually exercises the floor/clamp edge cases (period
-  0 hit, sample index 95, volume 0 hit) rather than just a single happy-path frame.
+  against the legacy contract, including (since #452/ARR-2026-08-21-5, verify) the period-0
+  and volume-0 floor edge cases via mocked allocator output — confirm any new floor/clamp added
+  to the conversion gets the same direct coverage rather than only the happy-path frame.
 - Confirm the exporter consumes `pitch`/`control` if present, or recomputes — i.e. whether the
   arranger pre-baking `pitch`/`control` (see Dimension 7) is even honored downstream or dead.
 
@@ -168,8 +169,16 @@ Checklist:
   (`_allocate_noise`) keeps the **highest velocity** hit. Verify these tie-breaks are
   deterministic and that dropped simultaneous notes are the musically-right ones to drop.
 - `set_arrangement` maps assigned tracks; tracks in `dropped_tracks` get no entry and
-  `allocate_frame` skips them (`channel is None: continue`) — confirm dropped notes vanish
-  silently with no warning beyond the `verbose` print.
+  `allocate_frame` skips them (`channel is None: continue`) — the notes themselves still
+  vanish from the frame data (no rescue path exists), but **#451/ARR-2026-08-21-4 is
+  CLOSED**: `arrange_for_nes` now prints a `Warning:` line per `plan.notes` entry
+  unconditionally (not gated on `verbose`), and `verbose=True` additionally calls
+  `VoiceRoleAnalyzer.print_analysis` (converted to a `@staticmethod`, replacing the narrower
+  duplicate inline printout `arrange_for_nes` used to have) for the full per-track/channel-
+  assignment/dropped-tracks breakdown. Previously nothing on this path — verbose or not —
+  ever showed `dropped_tracks`/`plan.notes` at all; `print_analysis` had no caller anywhere in
+  the codebase. Verify-the-fix: a >4-pitched-voice arrangement prints at least one `Warning:`
+  line even with `verbose=False`, and `verbose=True` still shows the richer analysis.
 
 ### Dimension 4: GM Instrument Mapping Coverage
 `arranger/gm_instruments.py` `GM_INSTRUMENT_MAP` (programs 0–127) + `get_instrument_mapping`
@@ -266,11 +275,15 @@ subsystem (`dpcm_sampler/`, `dpcm_index.json`).
   has no curated `noise_period` (matching `get_drum_mapping`'s own "Unknown Drum" default).
   Confirm the fallback value stays in sync with `get_drum_mapping`'s default (`:1295-1299`) if
   either changes independently — they are two separate literals (`5`) that must agree.
-- `tests/test_voice_allocator.py` covers electric-snare-not-DPCM, kick→slot 0, acoustic
-  snare→slot 1, kick-outranks-snare, no-eligible-notes, curated period usage, and the
-  0–15 clamp — check it also asserts the slot-2 fallback path and the noise-period
-  "no curated value" fallback (`5`) explicitly, since both are edge cases not exercised by a
-  standard drum kit.
+- `tests/test_voice_allocator.py` covers electric-snare-not-DPCM, kick/snare→their real
+  `dpcm_index.json` catalog ids (`DPCM_SAMPLE_ROLE_NAMES`, since #445), kick-outranks-snare,
+  no-eligible-notes, curated period usage, and the 0–15 clamp. Since #452/ARR-2026-08-21-5
+  (verify), it also directly asserts: a `use_sample=True` GM role missing from
+  `DPCM_SAMPLE_ROLE_NAMES` (monkeypatched `get_drum_mapping`, since no real GM_DRUM_MAP entry
+  currently exercises this — the analogue of the old slot-2 fallback, now "produce no DPCM
+  allocation" instead of a fake id) yields `None`, not a wrong id; and the noise-period
+  "no curated value" fallback (`5`) is asserted *equal to* `get_drum_mapping`'s own "Unknown
+  Drum" default rather than hardcoded twice, so the two literals can't silently drift apart.
 
 ### Dimension 7: NES Hardware-Limit Compliance (cross-ref /audit-nes-hardware)
 Where the arranger's Python values become APU register intent. Triangle volume/duty and
@@ -337,19 +350,25 @@ Checklist:
 - `analyze_midi_events` iterates `midi_events.items()` (insertion order in py3.7+) and assigns
   `track_idx` by enumeration — confirm stable ordering from the parser.
 - Role ties: `max(role_scores, key=role_scores.get)` returns the first max by dict iteration
-  order. **#ARR-2026-08-07-1 is CLOSED**: `role_scores` is now a
-  `defaultdict(float, {...4 buckets...})` (`arranger/role_analyzer.py:223-228`) rather than a
-  plain dict literal. It had to change because `GM_INSTRUMENT_MAP` curates 19/128 programs
-  (Timpani, Orchestra Hit, Agogo, Woodblock, …) with `role=PERCUSSION` or `SFX` — neither of
-  which is one of the four scoring buckets — so `role_scores[gm_mapping.role] += 3.0`
-  (`:231`) raised `KeyError` for any non-drum-channel track using one of those programs.
-  Verify-the-fix, on both axes: **(a) determinism** — insertion order still starts with the
-  four seeded buckets, so a tie still resolves to the same bucket every run, and an
-  out-of-bucket GM role only ever *appends* a key that scored the GM bonus alone (never
-  enough to win against a real signal) — confirm that cannot now become the `max`;
-  **(b) coverage** — a `defaultdict` converts what used to be a loud crash into a silent
-  default, so any *new* out-of-bucket key reaching this dict will no longer announce itself.
-  Spot-check the GM map's non-bucket roles against the scoring branches.
+  order. **#ARR-2026-08-07-1 is CLOSED, #450/ARR-2026-08-21-3 is CLOSED (verify both)**:
+  `role_scores` is a `defaultdict(float, {...4 buckets...})` rather than a plain dict literal
+  (fixing the `KeyError` #ARR-2026-08-07-1 reported — `GM_INSTRUMENT_MAP` curates 19/128
+  programs with `role=PERCUSSION` or `SFX`, neither a scoring bucket). The GM instrument hint
+  is now only credited (`role_scores[gm_mapping.role] += 3.0`) when `gm_mapping.role in
+  role_scores` — i.e. is genuinely one of the 4 buckets — using plain `in` so the membership
+  check itself never triggers the defaultdict's factory and inserts a 5th key. **#450 was**:
+  the original defaultdict fix credited the bonus unconditionally, so `role_scores[PERCUSSION]`
+  (or `SFX`) became a real 3.0-valued key nothing else could ever add to — for an unremarkable
+  track (every real bucket scoring 0-2), that key won `max()` outright, contradicting the
+  function's own comment ("contributes no bonus"). With `#450`'s guard, `role_scores` can only
+  ever contain the 4 seeded keys, so `max()` provably lands in one of them. Verify-the-fix:
+  (a) determinism — insertion order still starts with the four seeded buckets, so a tie still
+  resolves to the same bucket every run; (b) confirm no code path still inserts an out-of-bucket
+  key into `role_scores` (a future edit adding a 5th scoring branch would need the same `in`
+  guard). Spot-check the GM map's non-bucket roles (PERCUSSION/SFX) against the scoring
+  branches — they still take the generic-channel path with no dedicated role-adjustment branch,
+  by design (`#450`'s suggested-fix alternative — first-class PERCUSSION/SFX branches — was not
+  taken).
 - `_assign_channels` sorts `plan.tracks` by `priority` only (`reverse=True`); equal-priority
   tracks keep their pre-sort order (Python `sort` is stable) — confirm the pre-sort order
   (analysis append order = `self.tracks` dict order) is itself deterministic.
