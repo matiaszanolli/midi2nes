@@ -1600,7 +1600,15 @@ class TestDetectPatternsOrDirectExport:
 
     def test_direct_export_returns_matching_schema_stub(self):
         from main import detect_patterns_or_direct_export
-        frames = {"pulse1": [1, 2, 3], "triangle": [4, 5]}
+        # Real per-channel shape ({frame_num: {...}}, as process_all_tracks
+        # produces) -- the stub now goes through the shared frames_to_events
+        # extractor (#435/PAT-2026-08-21-1), which requires real channel
+        # dicts rather than the bare length-count placeholders this fixture
+        # used to hold.
+        frames = {
+            "pulse1": {"0": {"note": 60, "volume": 100}, "4": {"note": 62, "volume": 90}, "8": {"note": 64, "volume": 80}},
+            "triangle": {"0": {"note": 40, "volume": 100}, "4": {"note": 42, "volume": 90}},
+        }
         args = Namespace(verbose=False, config=None)
 
         result, loss_warning, lossy_note = detect_patterns_or_direct_export(

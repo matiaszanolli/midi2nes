@@ -31,7 +31,7 @@ from main import (
     load_config, run_config_init, run_config_validate,
     run_benchmark, run_benchmark_memory, run_full_pipeline, main,
     DETECTOR_MAX_EVENTS, resolve_mapper, get_mapper_choice,
-    enforce_direct_export_dpcm_mapper,
+    enforce_direct_export_dpcm_mapper, detect_patterns_or_direct_export,
 )
 from core.exceptions import ConfigurationError
 
@@ -1379,6 +1379,49 @@ class TestRunDetectPatterns:
                 
                 # Should handle empty input gracefully
                 mock_detector.detect_patterns.assert_called_once_with([])
+
+
+class TestDetectPatternsOrDirectExportDpcmSampleMap:
+    """Regression test for #435/PAT-2026-08-21-1: the --no-patterns stub must
+    not count the non-channel dpcm_sample_map side table as events."""
+
+    def test_direct_export_stats_exclude_dpcm_sample_map(self):
+        """A drum song's dpcm_sample_map side table must not inflate the
+        direct-export stub's original_size/compressed_size/total_events --
+        only real per-frame channel events count."""
+        frames = {
+            "pulse1": {"0": {"note": 60, "volume": 15}, "4": {"note": 62, "volume": 14}},
+            "noise": {"0": {"note": 1, "volume": 15}},
+            # Non-channel side table added by NESEmulatorCore.process_all_tracks
+            # for drum songs (nes/emulator_core.py) -- must be skipped, not
+            # swept in as if it were a channel of frame events.
+            "dpcm_sample_map": {"0": 3, "1": 7, "2": 9},
+        }
+
+        pattern_result, pattern_loss_warning, coverage_lossy_note = (
+            detect_patterns_or_direct_export(frames, use_patterns=False, args=Namespace())
+        )
+
+        # 2 pulse1 events + 1 noise event = 3; the 3 dpcm_sample_map entries
+        # must NOT be added on top (previously yielded 6).
+        assert pattern_result['stats']['total_events'] == 3
+        assert pattern_result['stats']['original_size'] == 3
+        assert pattern_result['stats']['compressed_size'] == 3
+        assert pattern_loss_warning is None
+        assert coverage_lossy_note == ""
+
+    def test_direct_export_stats_unaffected_without_dpcm_sample_map(self):
+        """Non-drum songs (no dpcm_sample_map key) are unaffected by the fix."""
+        frames = {
+            "pulse1": {"0": {"note": 60, "volume": 15}},
+            "pulse2": {"0": {"note": 64, "volume": 12}},
+        }
+
+        pattern_result, _, _ = detect_patterns_or_direct_export(
+            frames, use_patterns=False, args=Namespace()
+        )
+
+        assert pattern_result['stats']['total_events'] == 2
 
 
 class TestSongBankCommands:

@@ -380,6 +380,54 @@ class TestAnalyzeTempoOptOut(unittest.TestCase):
         self.assertEqual(with_analysis['stats'], without_analysis['stats'])
 
 
+class TestPatternTempoUsesEventTempoField(unittest.TestCase):
+    """Regression test for #437/PAT-2026-08-21-3: _analyze_pattern_tempo and
+    _analyze_variation_tempos must read each event's own stamped 'tempo'
+    field, not call tempo_map.get_tempo_at_tick(pos) with a pattern/event
+    INDEX passed as though it were a MIDI TICK -- mirrors the #345/TEMPO-16
+    fix already applied to loop_manager.py's analogous unit mismatch."""
+
+    def test_pattern_base_tempo_reflects_event_tempo_not_index_lookup(self):
+        # A flat, single-tempo map: get_tempo_at_tick(anything) always
+        # returns this value regardless of the tick/index passed in, so it's
+        # a clean tell for whether the buggy index-as-tick lookup ran.
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+
+        # Repeating 3-note pattern; every event stamped with a real tempo (as
+        # parser_fast.py does during parsing) that deliberately differs from
+        # the tempo map's flat get_tempo_at_tick() value.
+        events = [
+            {'frame': i, 'note': 60 + (i % 3) * 4, 'volume': 100, 'tempo': 300000}
+            for i in range(30)
+        ]
+
+        detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3)
+        result = detector.detect_patterns(events)
+        self.assertGreater(len(result['patterns']), 0)
+        self.assertGreater(len(tempo_map.pattern_tempos), 0)
+
+        for info in tempo_map.pattern_tempos.values():
+            # Must come from the stamped per-event 'tempo' field (300000),
+            # not tempo_map.get_tempo_at_tick(index) (would report 500000).
+            self.assertEqual(info.base_tempo, 300000)
+
+    def test_falls_back_to_get_tempo_at_tick_when_event_untagged(self):
+        """Events without a 'tempo' key (e.g. from a caller that doesn't
+        stamp one) must still get a real tempo value via the tick-based
+        lookup, not crash or silently read a missing key."""
+        tempo_map = EnhancedTempoMap(initial_tempo=500000)
+        events = [
+            {'frame': i, 'note': 60 + (i % 3) * 4, 'volume': 100}  # no 'tempo' key
+            for i in range(30)
+        ]
+
+        detector = EnhancedPatternDetector(tempo_map, min_pattern_length=3)
+        result = detector.detect_patterns(events)
+        self.assertGreater(len(result['patterns']), 0)
+        for info in tempo_map.pattern_tempos.values():
+            self.assertEqual(info.base_tempo, 500000)
+
+
 class TestPatternEdgeCases(unittest.TestCase):
     """Additional tests for edge cases and complex scenarios"""
     
@@ -987,6 +1035,23 @@ class TestParallelPatternEquivalence(unittest.TestCase):
         self.assertNotIn("'events': valid_events", src)
         self.assertIn('initializer=_init_pattern_worker', src)
         self.assertIn('initargs=', src)
+
+    def test_worker_initializer_does_not_ship_dead_events_payload(self):
+        """Regression for #438/PAT-2026-08-21-4: since the #332/PERF-12
+        rewrite, _detect_window_groups_worker only reads _WORKER_SEQUENCE --
+        candidate selection (the step that needs `events`) runs in the
+        parent process against its own valid_events. The pool initializer
+        must not still pickle a dead copy of events to every worker."""
+        import inspect
+        from tracker import pattern_detector_parallel as pdp
+
+        self.assertFalse(hasattr(pdp, '_WORKER_EVENTS'))
+
+        sig = inspect.signature(pdp._init_pattern_worker)
+        self.assertEqual(list(sig.parameters), ['sequence'])
+
+        src = inspect.getsource(pdp.ParallelPatternDetector._detect_patterns_parallel)
+        self.assertIn('initargs=(sequence,)', src)
 
 
 class TestParallelWorkerPoolSizing(unittest.TestCase):

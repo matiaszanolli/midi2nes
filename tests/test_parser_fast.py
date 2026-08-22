@@ -633,6 +633,53 @@ class TestParseMidiToFramesWithAnalysis:
         tempo_map = _build_tempo_map(reopened, config)
         assert tempo_map.ticks_per_beat == 96
 
+    @patch('tracker.pattern_detector.EnhancedPatternDetector')
+    @patch('tracker.loop_manager.EnhancedLoopManager')
+    def test_pattern_detector_sized_to_avoid_sampling(self, mock_loop_manager, mock_pattern_detector):
+        """Regression (#436/PAT-2026-08-21-2): detect_patterns' internal
+        sampling (for tracks over DETECTOR_MAX_EVENTS) persists pattern
+        positions in SAMPLED-index space, but loop_manager.detect_loops right
+        below is handed the FULL, unsampled note_on_events list -- so a
+        sampled run's loop start/end/tempo would silently dereference the
+        wrong events. The caller must size max_events to the track's own
+        note_on count so this "expensive analysis" path never samples."""
+        from tracker.pattern_detector import DETECTOR_MAX_EVENTS
+
+        mock_detector_instance = MagicMock()
+        mock_detector_instance.detect_patterns.return_value = {
+            'patterns': {}, 'references': {}, 'stats': {}
+        }
+        mock_pattern_detector.return_value = mock_detector_instance
+
+        mock_loop_instance = MagicMock()
+        mock_loop_instance.detect_loops.return_value = {}
+        mock_loop_instance.generate_jump_table.return_value = {}
+        mock_loop_manager.return_value = mock_loop_instance
+
+        # More note_on events than the detector's default sampling cap.
+        note_count = DETECTOR_MAX_EVENTS + 50
+        track = []
+        track.append(mido.MetaMessage('track_name', name='BigTrack', time=0))
+        for i in range(note_count):
+            note = 60 + (i % 12)
+            track.append(mido.Message('note_on', channel=0, note=note, velocity=64, time=0))
+            track.append(mido.Message('note_off', channel=0, note=note, velocity=0, time=10))
+        track.append(mido.MetaMessage('end_of_track', time=0))
+
+        mid = mido.MidiFile()
+        midi_track = mido.MidiTrack()
+        midi_track.extend(track)
+        mid.tracks.append(midi_track)
+        midi_path = self.temp_dir / "big_track.mid"
+        mid.save(str(midi_path))
+
+        parse_midi_to_frames_with_analysis(str(midi_path))
+
+        # The detector's max_events cap must be raised to (at least) the
+        # track's full note_on count -- left at the default it would sample,
+        # putting positions/loop metadata in the wrong index space.
+        assert mock_detector_instance.max_events >= note_count
+
 
 class TestCommandLineInterface:
     """Test the command-line interface functionality"""

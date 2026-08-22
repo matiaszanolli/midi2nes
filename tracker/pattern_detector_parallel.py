@@ -198,7 +198,7 @@ class ParallelPatternDetector:
             with ProcessPoolExecutor(
                 max_workers=pool_workers,
                 initializer=_init_pattern_worker,
-                initargs=(sequence, valid_events),
+                initargs=(sequence,),
             ) as executor:
                 # Submit all work chunks
                 future_to_chunk = {
@@ -353,19 +353,24 @@ class ParallelPatternDetector:
         }
 
 
-# Shared, read-only data for the worker processes. The sequence and events are
-# stashed here ONCE per worker via the pool initializer (see ProcessPoolExecutor
+# Shared, read-only data for the worker processes. The sequence is stashed
+# here ONCE per worker via the pool initializer (see ProcessPoolExecutor
 # initargs) instead of being pickled into every per-length work chunk (#114).
+# Only the sequence travels: since the #332/PERF-12 rewrite, worker processes
+# only bucket window positions (_detect_window_groups_worker, sequence-only);
+# candidate selection -- the step that needs `events` -- runs in the parent
+# process against its own `valid_events` (see _detect_patterns_parallel
+# below). Events used to also be shipped here for the old worker entry point
+# that built candidates in-process; that made it dead weight pickled to every
+# spawned worker for nothing (#438/PAT-2026-08-21-4).
 _WORKER_SEQUENCE: Optional[List[Tuple]] = None
-_WORKER_EVENTS: Optional[List[Dict]] = None
 
 
-def _init_pattern_worker(sequence: List[Tuple], events: List[Dict]) -> None:
-    """ProcessPoolExecutor initializer: stash the shared sequence/events as module
-    globals so each worker invocation reuses them instead of re-shipping them."""
-    global _WORKER_SEQUENCE, _WORKER_EVENTS
+def _init_pattern_worker(sequence: List[Tuple]) -> None:
+    """ProcessPoolExecutor initializer: stash the shared sequence as a module
+    global so each worker invocation reuses it instead of re-shipping it."""
+    global _WORKER_SEQUENCE
     _WORKER_SEQUENCE = sequence
-    _WORKER_EVENTS = events
 
 
 def _collect_window_groups(sequence: List[Tuple], pattern_length: int,
