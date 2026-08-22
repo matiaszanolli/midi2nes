@@ -123,6 +123,49 @@ class TestEnhancedDrumMapper:
 
         assert len(dpcm_events) + len(noise_events) == 1
 
+    def test_map_drums_skips_melodic_notes_on_real_input(self, config):
+        """A drumless melodic track parsed by tracker/parser_fast.py carries
+        'channel' != 9 on every event. Before the channel filter, map_drums's
+        only guard was volume > 0, so every melodic note-on (most sit in
+        GM's 35-81 percussion range) was resolved as a phantom drum hit
+        (#425)."""
+        mapper = EnhancedDrumMapper(
+            dpcm_index_path="tests/fixtures/test_dpcm_index.json",
+            config=config
+        )
+        melodic_track_events = {
+            "Piano": [
+                {"note": 60, "volume": 100, "frame": 0, "channel": 0},
+                {"note": 64, "volume": 90, "frame": 30, "channel": 0},
+                {"note": 67, "volume": 80, "frame": 60, "channel": 0},
+            ]
+        }
+
+        dpcm_events, noise_events = mapper.map_drums(melodic_track_events)
+
+        assert dpcm_events == []
+        assert noise_events == []
+
+    def test_map_drums_separates_channel_9_from_melodic_within_one_track(self, config):
+        """A Type-0 MIDI (or any multi-channel track) puts every channel's
+        events in one track's event list -- per-event 'channel' must decide
+        drum vs. melodic, not the outer track-name key (#425)."""
+        mapper = EnhancedDrumMapper(
+            dpcm_index_path="tests/fixtures/test_dpcm_index.json",
+            config=config
+        )
+        mixed_track_events = {
+            "Track 0": [
+                {"note": 36, "volume": 100, "frame": 0, "channel": 9},   # kick
+                {"note": 60, "volume": 100, "frame": 30, "channel": 0},  # melodic, ignore
+                {"note": 38, "volume": 90, "frame": 60, "channel": 9},   # snare
+            ]
+        }
+
+        dpcm_events, noise_events = mapper.map_drums(mixed_track_events)
+
+        assert len(dpcm_events) + len(noise_events) == 2
+
     def test_advanced_mapping_features(self, sample_midi_events, config):
         """Test advanced mapping features"""
         mapper = EnhancedDrumMapper(

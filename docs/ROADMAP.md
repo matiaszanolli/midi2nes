@@ -76,6 +76,11 @@ v1 deliberately narrowed scope — tracked as follow-ups, not silent gaps:
 - [ ] `--debug` overlay support for jukebox builds.
 - [ ] A visual song-select screen. Today's Start-skip is audible-only; no
       PPU/tile-rendering code exists anywhere in this codebase yet.
+- **51-song hard limit.** The engine's `song_table` is indexed
+  `song_index*5+channel` with 8-bit accumulator/Y-register math
+  (`load_song_streams_indexed` in `nes/audio_engine.asm`), which caps at
+  index 255 — `export_song_bank_bytecode` raises `ValueError` past 51 songs
+  rather than let the index wrap and silently corrupt playback (#426).
 
 ## 🧭 Mid-term (v0.7.0–v0.9.0)
 

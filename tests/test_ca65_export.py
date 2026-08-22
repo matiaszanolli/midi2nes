@@ -620,6 +620,27 @@ class TestExportSongBankBytecode(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.exporter.export_song_bank_bytecode([], "unused.asm")
 
+    def test_rejects_more_than_51_songs(self):
+        # song_table is indexed song_index*5 + channel by the jukebox
+        # engine's 8-bit accumulator/Y-register math (audio_engine.asm's
+        # load_song_streams_indexed) -- 52 songs (index 51, byte 255+)
+        # wraps in 8 bits with no build-time signal otherwise (#426).
+        songs = [self._song(60, n_events=1) for _ in range(52)]
+        with self.assertRaises(ValueError):
+            self.exporter.export_song_bank_bytecode(songs, "unused.asm")
+
+    def test_accepts_exactly_51_songs(self):
+        # Boundary: 51 songs is the last index (50) that still fits the
+        # engine's 8-bit song_index*5+channel indexing (50*5+4 == 254).
+        songs = [self._song(60, n_events=1) for _ in range(51)]
+        out = Path("test_jukebox_51songs.asm")
+        try:
+            self.exporter.export_song_bank_bytecode(songs, str(out))
+            self.assertTrue(out.exists())
+        finally:
+            if out.exists():
+                out.unlink()
+
     def test_symbols_are_prefixed_per_song_no_collisions(self):
         songs = [self._song(60), self._song(67), self._song(72)]
         out = Path("test_jukebox_symbols.asm")

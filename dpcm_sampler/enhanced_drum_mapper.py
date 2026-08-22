@@ -325,6 +325,30 @@ class EnhancedDrumMapper:
                 if velocity == 0:
                     continue
 
+                # GM percussion lives on MIDI channel 9 (channel 10) --
+                # real parsed events (tracker/parser_fast.py) always carry
+                # a per-event 'channel' field, which is essential for a
+                # Type-0 MIDI or any multi-channel track where one track's
+                # event list mixes channel-9 drums with melodic channels.
+                # Hand-built/legacy-shaped test fixtures instead key the
+                # whole midi_events dict by channel number with no
+                # per-event 'channel' -- fall back to the outer key when
+                # it's an int. When neither carries a channel at all (the
+                # documented "no channel info" case -- see
+                # arranger.pipeline_integration._split_events_by_channel),
+                # leave channel unresolved and keep the pre-existing
+                # permissive behavior (name-heuristic drum detection is
+                # this codebase's only signal for those inputs). Only skip
+                # an event once we have positive evidence it's not channel
+                # 9 -- without this, every melodic note-on (most sit in
+                # GM's 35-81 percussion range) was treated as a drum hit
+                # whenever a per-event channel was known (#425).
+                channel = e.get('channel')
+                if channel is None and isinstance(ch, int):
+                    channel = ch
+                if channel is not None and channel != 9:
+                    continue
+
                 midi_note = e['note']
                 frame = e['frame']
                 

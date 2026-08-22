@@ -1571,6 +1571,25 @@ class CA65Exporter(BaseExporter):
         if not songs:
             raise ValueError("export_song_bank_bytecode requires at least one song")
 
+        # song_table (below) is indexed song_index*5 + channel by the
+        # jukebox engine's 8-bit accumulator/Y-register math
+        # (load_song_streams_indexed in nes/audio_engine.asm) -- the
+        # highest valid index is 255, so the highest valid song_index is
+        # (255 - 4) // 5 = 50, i.e. at most 51 songs. Past that the index
+        # (or the current_song*5 multiply itself) wraps in 8 bits and every
+        # gate downstream (bank pool, CC65, ROM validation) still passes,
+        # so songs at index >= 51 would silently play the wrong streams on
+        # the wrong channels with no build-time signal (#426).
+        max_songs = (255 - (len(self.SEQUENCE_CHANNELS) - 1)) // len(self.SEQUENCE_CHANNELS) + 1
+        if len(songs) > max_songs:
+            raise ValueError(
+                f"export_song_bank_bytecode: {len(songs)} songs exceeds the "
+                f"jukebox engine's {max_songs}-song limit (song_table index "
+                f"song_index*{len(self.SEQUENCE_CHANNELS)}+channel must stay "
+                f"<= 255 for the engine's 8-bit indexing). Split this bank "
+                f"into multiple ROMs."
+            )
+
         print(f"🔧 CA65 Exporter: MMC3 Macro Bytecode mode ({len(songs)}-song jukebox build)")
 
         lines = []
