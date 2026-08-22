@@ -44,6 +44,17 @@ def convert_wav_to_unsigned_pcm(wav_path, sample_rate=DEFAULT_DMC_RATE_HZ):
 
 
 def delta_encode(data):
+    """Model the NES DMC's sigma-delta reconstruction: a 7-bit (0-127)
+    counter that steps +-2 per emitted bit (docs/APU_DMC_REFERENCE.md §3).
+
+    ``data`` arrives as 8-bit unsigned PCM (0-255, from
+    convert_wav_to_unsigned_pcm) -- halve it onto the counter's own 0-127
+    scale before comparing. Left unnormalized, PCM silence (128) sits
+    entirely above the tracker's 127 ceiling, permanently pinning every
+    delta positive and biasing the whole encode; and a +-1 step models
+    half the amplitude hardware actually reconstructs per bit
+    (#448/DPCM-2026-08-21-5).
+    """
     encoded = []
     # Start at 0, not mid-range: the engine's init routine writes $00 to
     # $4011 before any sample plays (docs/APU_DMC_REFERENCE.md §5, "Silence
@@ -53,8 +64,9 @@ def delta_encode(data):
     # that doesn't exist on the actual hardware playback path (#342/DP-DPCM-03).
     prev = 0x00
     for sample in data:
-        delta = sample - prev
-        step = 1 if delta > 0 else -1 if delta < 0 else 0
+        target = sample >> 1  # 0-255 PCM -> the counter's 0-127 scale
+        delta = target - prev
+        step = 2 if delta > 0 else -2 if delta < 0 else 0
         prev = np.clip(prev + step, 0, 127)
         encoded.append(prev)
     return encoded
@@ -64,11 +76,20 @@ def dpcm_compress(encoded):
     """
     Compress 7-bit values into NES 1-bit delta format (8 samples per byte).
     Returns byte array.
+
+    Includes a bit for the transition into ``encoded[0]`` itself, not just
+    ``encoded[1:]`` -- delta_encode's init level (0, matching the engine's
+    silence-initialization, docs/APU_DMC_REFERENCE.md §5) is a real starting
+    point the first emitted bit steps away from. Skipping it used to leave
+    playback permanently offset by one step from the modeled reconstruction
+    (#448/DPCM-2026-08-21-5).
     """
     bits = []
-    for i in range(1, len(encoded)):
-        bit = 1 if encoded[i] > encoded[i - 1] else 0
+    prev = 0x00  # delta_encode's own init level
+    for level in encoded:
+        bit = 1 if level > prev else 0
         bits.append(bit)
+        prev = level
 
     # Pad to multiple of 8
     while len(bits) % 8 != 0:

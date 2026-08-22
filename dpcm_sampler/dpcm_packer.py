@@ -10,6 +10,27 @@ class DpcmPacker:
         self.sample_metadata = {}
         self.pending_samples = []
 
+    @staticmethod
+    def _length_reg(size_bytes: int) -> int:
+        """The DMC engine's $4013 length register for a sample of this size.
+
+        Reads `(length_reg*16)+1` bytes (docs/APU_DMC_REFERENCE.md §2/§4).
+        Ceiling division (not floor) so every sample not exactly 16k+1 bytes
+        still gets its full tail read -- flooring under-read up to 15
+        trailing bytes (regression of #75, #295/DP-01).
+
+        Floored at 1 rather than 0 for any real (packed) sample: $4013=0 is
+        the *valid* encoding for a genuine 1-byte sample (reads 1 byte), but
+        this codebase also uses length_reg==0 as the "never packed" sentinel
+        in generate_assembly's positional lookup tables (an unrelated,
+        separate mechanism -- see _table()). Without this floor, a real
+        0- or 1-byte sample computed the same 0 and was silently
+        indistinguishable from "not packed," so it could never trigger
+        (#447/DPCM-2026-08-21-4). Reading a 1-byte sample's 17-byte tail is
+        harmless zero-pad within its 64-byte-aligned block.
+        """
+        return max(1, (size_bytes + 14) // 16)
+
     def add_sample(self, sample_id: str, file_path: str, pitch_rate: int = 15,
                    truncate: bool = False):
         """Adds a sample to the packing queue, respecting NES 64-byte boundaries.
@@ -35,7 +56,18 @@ class DpcmPacker:
             size_bytes = 4081
             incbin_size = 4081
 
-        aligned_size = math.ceil(size_bytes / 64) * 64
+        # The block reserved for this sample must cover both its own bytes
+        # AND the engine's (length_reg*16)+1 read -- a ceiling-rounded
+        # length_reg can read 1 byte past a 64-byte-aligned size_bytes with
+        # no gap to absorb it (the next sample starts immediately at the
+        # next 64-byte boundary), silently pulling in the next sample's
+        # first byte or, for a bank-ending sample, an arbitrary byte from
+        # the fixed PRG bank (#446/DPCM-2026-08-21-3).
+        read_length = self._length_reg(size_bytes) * 16 + 1
+        aligned_size = max(
+            math.ceil(size_bytes / 64) * 64,
+            math.ceil(read_length / 64) * 64,
+        )
 
         self.pending_samples.append({
             'id': sample_id,
@@ -76,16 +108,13 @@ class DpcmPacker:
 
     def _place_sample(self, sample: dict, bank_id: int, start_address: int):
         dpcm_address_val = (start_address - 0xC000) // 64
-        # $4013 = length_reg; the DMC engine reads (length_reg*16)+1 bytes
-        # (docs/APU_DMC_REFERENCE.md §2/§4). Ceiling division (not floor)
-        # so every sample not exactly 16k+1 bytes still gets its full tail
-        # read -- flooring under-read up to 15 trailing bytes (regression
-        # of #75, #295/DP-01). The `.align 64` gap after each sample makes
-        # the few extra bytes a ceiling read pulls in safe zero-pad, not
-        # neighbouring sample data. size is already bounded to 4081 by the
+        # See _length_reg for the (length_reg*16)+1 read-length formula and
+        # the floor-at-1 rationale. size is already bounded to 4081 by the
         # truncate/raise guard in add_sample, so this can't exceed the
-        # register's 8-bit range (max(0,...) only guards a size==0 sample).
-        dpcm_length_val = max(0, (sample['size'] + 14) // 16)
+        # register's 8-bit range. add_sample sizes this sample's
+        # aligned_size block to always cover the read this produces
+        # (#446/DPCM-2026-08-21-3).
+        dpcm_length_val = self._length_reg(sample['size'])
         dpcm_pitch_val = sample['pitch'] & 0x0F
         
         self.sample_metadata[sample['id']] = {

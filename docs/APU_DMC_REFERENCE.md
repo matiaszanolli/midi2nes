@@ -38,6 +38,9 @@ When a sample is triggered (via bit 4 of `$4015`), the memory reader fetches byt
     *   If `1`, add 2 to the output level.
     *   If `0`, subtract 2 from the output level.
 *   The output level clamps between 0-127 and will not wrap around.
+*   Each fetched byte's bits are consumed **LSB-first** (bit 0, then bit 1,
+    ... bit 7) -- an encoder packing bits into bytes must match this order
+    or every byte plays back in the wrong bit sequence.
 
 ### Direct Load / PCM Playback
 Writing directly to `$4011` bypasses the memory reader and immediately forces the output level to the given 7-bit value. High-frequency writes here can play raw PCM audio (e.g., *Skate or Die 2* title screen), but this requires nearly 100% of the CPU's processing time.

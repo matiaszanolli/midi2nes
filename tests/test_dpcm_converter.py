@@ -79,17 +79,22 @@ class TestConvertWavToUnsignedPcm:
 
 
 class TestDeltaEncode:
-    """#337/REG-18: pin the ±1-step delta modulator's exact output and its
-    [0,127] clamp at both ends. Start level is 0 (#342/DP-DPCM-03): the
-    engine's init routine writes $00 to $4011 before any sample plays
-    (docs/APU_DMC_REFERENCE.md §5), so the real hardware output level a
-    played-back sample reconstructs from is 0, not the mid-range 0x40 (64)
-    this encoder used to start at -- which produced a startup DC ramp/attack
-    transient that doesn't exist on the actual playback path."""
+    """#337/REG-18 (superseded by #448/DPCM-2026-08-21-5): pin the ±2-step
+    delta modulator's exact output and its [0,127] clamp at both ends.
+    Input arrives as 8-bit unsigned PCM (0-255) and is halved onto the
+    counter's own 0-127 scale before comparing -- an unnormalized 0-255
+    target compared directly against a 0-127 tracker used to pin the
+    tracker at its ceiling for any input >= 127 (#448). Start level is 0
+    (#342/DP-DPCM-03): the engine's init routine writes $00 to $4011 before
+    any sample plays (docs/APU_DMC_REFERENCE.md §5), so the real hardware
+    output level a played-back sample reconstructs from is 0, not the
+    mid-range 0x40 (64) this encoder used to start at -- which produced a
+    startup DC ramp/attack transient that doesn't exist on the actual
+    playback path."""
 
     def test_starts_at_zero_and_steps_toward_target(self):
-        # Target (70) is above the 0 start on every sample.
-        assert delta_encode([70, 70, 70]) == [1, 2, 3]
+        # PCM 70 -> target 35 (70 >> 1), above the 0 start on every sample.
+        assert delta_encode([70, 70, 70]) == [2, 4, 6]
 
     def test_zero_delta_holds_steady(self):
         # Target matches the 0 start -- no movement needed.
@@ -98,22 +103,23 @@ class TestDeltaEncode:
     def test_steps_down_toward_a_lower_target_after_climbing(self):
         """From the 0 start there's nowhere to step down to on the very
         first sample (already at the floor), so exercise the downward step
-        by climbing first (target 200), then dropping the target to 0."""
-        encoded = delta_encode([200, 200, 200, 0, 0, 0])
-        # Climbs 0->1->2->3, then descends 3->2->1.
-        assert encoded == [1, 2, 3, 2, 1, 0]
+        by climbing first (PCM 255 -> target 127), then dropping to PCM 0
+        (target 0)."""
+        encoded = delta_encode([255, 255, 255, 0, 0, 0])
+        # Climbs 0->2->4->6 (target 127), then descends 6->4->2 (target 0).
+        assert encoded == [2, 4, 6, 4, 2, 0]
 
     def test_clamps_at_upper_bound_127(self):
-        # 127 steps needed to go from 0 to 127; hold there afterward.
-        encoded = delta_encode([200] * 140)
+        # PCM 255 -> target 127, the counter's true ceiling.
+        encoded = delta_encode([255] * 140)
         assert max(encoded) == 127
         assert encoded[-1] == 127
         assert encoded[-5:] == [127, 127, 127, 127, 127]
 
     def test_clamps_at_lower_bound_0(self):
-        # Climb to 127 first (127 steps), then descend back to 0 (127 more
-        # steps) and hold there.
-        encoded = delta_encode([200] * 130 + [0] * 130)
+        # Climb to 127 first (target 127 from PCM 255), then descend back to
+        # 0 (target 0 from PCM 0) and hold there.
+        encoded = delta_encode([255] * 130 + [0] * 130)
         assert min(encoded) == 0
         assert encoded[-1] == 0
         assert encoded[-3:] == [0, 0, 0]
@@ -126,38 +132,52 @@ class TestDeltaEncode:
 
 
 class TestDpcmCompress:
-    """#337/REG-18: pin the 1-bit-delta LSB-first bit-packing and padding,
-    and the 4081-byte NES DMC size cap."""
+    """#337/REG-18 (superseded by #448/DPCM-2026-08-21-5): pin the 1-bit-delta
+    LSB-first bit-packing and padding, and the 4081-byte NES DMC size cap.
+
+    One bit is emitted per `encoded` value, including the very first --
+    the transition from delta_encode's own init level (0) into encoded[0]
+    is itself a real step the hardware reconstructs. Skipping it used to
+    leave playback permanently offset by one step (#448)."""
 
     def test_packs_8_bits_lsb_first_no_padding_needed(self):
-        # 9 values -> 8 consecutive-comparison bits -> exactly 1 byte, no pad.
-        encoded = [64, 65, 66, 65, 64, 63, 64, 65, 64]
-        # bits (encoded[i] > encoded[i-1]): 1,1,0,0,0,1,1,0
+        # 8 values -> 8 bits (one per value, including the init->encoded[0]
+        # transition) -> exactly 1 byte, no pad.
+        encoded = [64, 65, 66, 65, 64, 63, 64, 65]
+        # bits (each value vs. the previous, starting from init level 0):
+        # 64>0, 65>64, 66>65, 65<66, 64<65, 63<64, 64>63, 65>64
+        #  1     1      1      0      0      0      1      1
         result = dpcm_compress(encoded)
-        assert result == bytes([0b01100011])  # bit0..bit7 = 1,1,0,0,0,1,1,0 -> 99
+        assert result == bytes([0b11000111])  # LSB..MSB = 1,1,1,0,0,0,1,1 -> 199
 
     def test_pads_short_tail_with_zero_bits(self):
-        # 5 values -> 4 bits -> padded with four 0 bits to fill the byte.
+        # 5 values -> 5 real bits -> padded with three 0 bits to fill the byte.
         encoded = [64, 65, 66, 65, 64]
-        # bits: 1,1,0,0 -> padded [1,1,0,0,0,0,0,0] -> LSB-first = 0b00000011
+        # bits: 64>0, 65>64, 66>65, 65<66, 64<65 -> 1,1,1,0,0
+        # padded [1,1,1,0,0,0,0,0] -> LSB-first = 0b00000111
         result = dpcm_compress(encoded)
-        assert result == bytes([0b00000011])  # 3
+        assert result == bytes([0b00000111])  # 7
 
     def test_strictly_increasing_input_packs_all_ones(self):
         encoded = list(range(100))
         result = dpcm_compress(encoded)
-        assert len(result) == (99 + 7) // 8  # 99 bits padded to 13 bytes
-        assert all(b == 0xFF for b in result[:-1])  # last byte may be partly padded
-        # Last byte: 99 bits = 12*8 + 3 real bits, all 1, rest padded 0.
-        assert result[-1] == 0b00000111
+        assert len(result) == (100 + 7) // 8  # 100 bits padded to 13 bytes
+        # encoded[0] == 0 is not > the init level 0 -> its own bit is 0;
+        # every later value is strictly greater than the one before it.
+        assert result[0] == 0xFE  # bit0=0, bits1..7=1
+        assert all(b == 0xFF for b in result[1:-1])
+        # Last byte: bits 96..99 real (all 1, indices 96-99 still climbing),
+        # bits 100..103 are padding zeros.
+        assert result[-1] == 0x0F
 
     def test_never_exceeds_4081_byte_nes_dmc_limit(self):
-        # Strictly increasing -> every bit is 1 -> far more than 4081 bytes
-        # of real data before the cap.
+        # Strictly increasing -> every bit but the very first is 1 -> far
+        # more than 4081 bytes of real data before the cap.
         encoded = list(range(40_000))
         result = dpcm_compress(encoded)
         assert len(result) == 4081
-        assert result == bytes([0xFF] * 4081)
+        assert result[0] == 0xFE  # bit0=0 (encoded[0]==0 not > init level 0)
+        assert all(b == 0xFF for b in result[1:])
 
 
 class TestConvertWavToDmc:

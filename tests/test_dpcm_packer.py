@@ -215,3 +215,52 @@ class TestDpcmPacker:
         packer = DpcmPacker()
         asm = packer.generate_assembly()
         assert "dpcm_bank_table:\n    .byte $00" in asm
+
+    @patch('os.path.getsize')
+    def test_aligned_block_covers_the_ceiling_read_past_a_64_byte_size(self, mock_getsize):
+        """Regression (#446/DPCM-2026-08-21-3): a size that lands exactly on
+        a 64-byte boundary (or just under one) can still produce a
+        length_reg whose (length_reg*16)+1 read spills 1 byte past that
+        boundary -- with no gap, since samples pack contiguously by
+        aligned_size. The reserved block must always cover the engine's
+        actual read, not just the sample's own byte count."""
+        for size in (0, 50, 63, 64):
+            mock_getsize.return_value = size
+            packer = DpcmPacker()
+            packer.add_sample('0', 'a.dmc')
+            packer._pack_samples()
+            meta = packer.sample_metadata['0']
+            read_length = meta['length_reg'] * 16 + 1
+            aligned_size = packer.pending_samples[0]['aligned_size']
+            assert aligned_size >= read_length, (
+                f"size={size}: read_length={read_length} exceeds "
+                f"aligned_size={aligned_size} -- the engine would read past "
+                f"this sample's reserved block"
+            )
+            assert aligned_size % 64 == 0
+
+    @patch('os.path.getsize')
+    def test_a_genuine_tiny_sample_never_computes_the_unpacked_sentinel(self, mock_getsize):
+        """Regression (#447/DPCM-2026-08-21-4): length_reg==0 is reused as
+        the "never packed" sentinel in generate_assembly's positional lookup
+        tables. A real 0- or 1-byte sample's own (size+14)//16 formula also
+        computes 0, making it indistinguishable from an unpacked slot and
+        silently un-triggerable. A packed sample's length_reg must floor
+        at 1, never 0."""
+        for size in (0, 1):
+            mock_getsize.return_value = size
+            packer = DpcmPacker()
+            packer.add_sample('0', 'a.dmc')
+            packer._pack_samples()
+            assert packer.sample_metadata['0']['length_reg'] == 1
+
+    @patch('os.path.getsize')
+    def test_a_zero_byte_sample_still_reserves_a_real_block(self, mock_getsize):
+        """A 0-byte sample used to compute aligned_size=0 (ceil(0/64)*64),
+        reserving no bank space at all -- two such samples could collide at
+        the same address. Flooring length_reg to 1 means the block must
+        reserve at least 64 bytes to cover the resulting 17-byte read."""
+        mock_getsize.return_value = 0
+        packer = DpcmPacker()
+        packer.add_sample('0', 'a.dmc')
+        assert packer.pending_samples[0]['aligned_size'] == 64

@@ -137,22 +137,33 @@ The index is loaded in the same three places, still against two different shapes
 ### Dimension 3: DPCM conversion correctness (1-bit delta)
 `dpcm_sampler/dpcm_converter.py` does WAV→PCM→delta→packed-bits. It remains
 orphaned (nothing in the pipeline calls it; `generate_dpcm_index` scans pre-made
-`.dmc` files directly) but its known assumption bugs were fixed (#342/DP-DPCM-03):
-- `delta_encode` (lines 34-42) walks a ±1 step counter, but `dpcm_compress`
-  (lines 45-66) then re-derives the bit purely from `encoded[i] > encoded[i-1]`.
-  Check that the two stages agree and that the bit polarity matches hardware: per
-  `docs/APU_DMC_REFERENCE.md`, a `1` bit **adds 2** to the output level and `0`
-  **subtracts 2** (the engine never sets a level, only nudges ±2). A constant-input
-  run encodes all-zero bits ⇒ the level ramps *down* on playback.
+`.dmc` files directly) but its known assumption bugs were fixed (#342/DP-DPCM-03,
+#448/DPCM-2026-08-21-5):
+- `delta_encode` walks a ±2 step counter (per `docs/APU_DMC_REFERENCE.md`, a `1`
+  bit **adds 2** to the output level and `0` **subtracts 2** — the engine never
+  sets a level, only nudges ±2). Its input is 8-bit unsigned PCM (0-255) from
+  `convert_wav_to_unsigned_pcm`, halved (`sample >> 1`) onto the tracker's own
+  0-127 scale before each comparison. **Fixed (#448, verify)**: it previously
+  stepped ±1 and compared the raw unnormalized 0-255 `sample` directly against
+  the 0-127 `prev` — PCM silence (128) sat entirely above the tracker's ceiling,
+  so any signal near silence permanently pinned `prev` at 127 and biased the
+  whole encode, and the ±1 step modeled half the amplitude hardware actually
+  reconstructs.
   **Fixed (#342, verify)**: the start-level assumption was `prev = 0x40`
   (mid-range); the engine's init routine writes `$00` to `$4011` before any
   sample plays (docs/APU_DMC_REFERENCE.md §5), so `prev` now starts at `0x00` to
   match the real hardware level a played-back sample reconstructs from, instead
   of producing a startup DC ramp/attack transient that doesn't exist on the
   actual playback path.
-- Bit packing order (line 63): `byte |= (bits[i+j] << j)` packs LSB-first. Confirm
-  against the DMC shifter order in `docs/APU_DMC_REFERENCE.md` ("Reader → Buffer →
-  Shifter") — wrong bit order plays the sample bit-reversed (audible garbage).
+- `dpcm_compress` derives one bit per `encoded` value, including the transition
+  from `delta_encode`'s own init level (0) into `encoded[0]`. **Fixed (#448,
+  verify)**: it previously started the loop at `encoded[1]`, so that first real
+  step was never bit-emitted and playback started one step offset from the
+  modeled reconstruction.
+- Bit packing order: `byte |= (bits[i+j] << j)` packs LSB-first, matching the DMC
+  shifter's actual consumption order (`docs/APU_DMC_REFERENCE.md` §3, now stated
+  explicitly there per #448) — wrong bit order plays the sample bit-reversed
+  (audible garbage).
 - Resampling: `convert_wav_to_unsigned_pcm` (line 7) uses `np.interp` linear
   resampling to `sample_rate`, independent of the DMC rate index written elsewhere
   (`pitch`/`$4010`). **Fixed (#342, verify)**: the default was a fixed
@@ -170,16 +181,35 @@ orphaned (nothing in the pipeline calls it; `generate_dpcm_index` scans pre-made
 ### Dimension 4: Sample size / address / DMC range constraints
 `dpcm_sampler/dpcm_packer.py` computes the `$4012`/`$4013` register values:
 - **Fixed (#75 → regressed → #295/DP-01) — verify it holds**: `_place_sample`
-  (lines 77-98) computes `dpcm_address_val = (start_address - 0xC000) // 64`
-  (line 78) and `dpcm_length_val = max(0, (sample['size'] + 14) // 16)` (line 88).
-  Verify against `docs/APU_DMC_REFERENCE.md`: address = `$C000 + A*64`, length =
-  `(L*16)+1` bytes. `length_reg` now uses **ceiling** division (`(size + 14) // 16`
-  = ceil((size-1)/16)) so a `size` not of the form `16k+1` still gets its full tail
-  read: the engine reads `(length_reg*16)+1` bytes and the `.align 64` gap after
-  each sample makes the few extra bytes safe zero-pad, not neighbouring data. This
-  is the flooring bug originally closed as #75 that regressed and was re-fixed here
-  as #295 (commit `d392ef6`); confirm the ceiling still holds and that `size` stays
-  bounded to 4081 so the 8-bit register can't overflow.
+  computes `dpcm_address_val = (start_address - 0xC000) // 64` and
+  `dpcm_length_val = self._length_reg(sample['size'])` (the ceiling/floor-at-1
+  formula factored into the `_length_reg` static method by #446/#447, shared
+  with `add_sample`'s block-sizing — see below). Verify against
+  `docs/APU_DMC_REFERENCE.md`: address = `$C000 + A*64`, length = `(L*16)+1`
+  bytes. `length_reg` uses **ceiling** division (`(size + 14) // 16` =
+  ceil((size-1)/16)) so a `size` not of the form `16k+1` still gets its full
+  tail read. This is the flooring bug originally closed as #75 that
+  regressed and was re-fixed as #295 (commit `d392ef6`); confirm the ceiling
+  still holds and that `size` stays bounded to 4081 so the 8-bit register
+  can't overflow.
+- **Fixed (#446/DPCM-2026-08-21-3, verify)**: the `.align 64` gap comment used
+  to claim the ceiling read's extra bytes were "safe zero-pad" — false when
+  `size` lands exactly on (or just under) a 64-byte boundary: `.align 64`
+  inserts nothing when already aligned, so the next sample starts immediately
+  at the read's overrun offset, and a bank-ending sample's overrun instead
+  reads an arbitrary byte from the fixed PRG bank. `add_sample` now sizes each
+  sample's `aligned_size` block to `max(ceil(size/64)*64, ceil(read_length/64)*64)`
+  where `read_length = length_reg*16+1`, guaranteeing the reserved block always
+  covers the engine's actual read. Verify no code path still assumes
+  `aligned_size == ceil(size/64)*64` alone is sufficient.
+- **Fixed (#447/DPCM-2026-08-21-4, verify)**: `length_reg == 0` is reused
+  elsewhere (`generate_assembly`'s positional lookup tables, below) as the
+  "never packed" sentinel for a sparse catalog. A genuinely packed 0- or
+  1-byte sample's own `(size+14)//16` formula also computed 0, making it
+  indistinguishable from an unpacked slot and silently un-triggerable.
+  `_length_reg` now floors at 1 for any packed sample (`max(1, ...)`), so
+  `length_reg` can only be 0 for a slot `_place_sample` never wrote --
+  confirm no packed sample can still produce 0.
 - **Fixed (verify)**: the 4081-byte oversized-sample path no longer aborts the pack.
   `DpcmPacker.add_sample` (lines 13-47) now truncates to 4081 bytes when
   `truncate=True` (lines 31-36) instead of always raising `ValueError` — and the
@@ -356,8 +386,11 @@ orphaned (nothing in the pipeline calls it; `generate_dpcm_index` scans pre-made
 - [ ] Do `length`/`data`/`frequency` ever come from the real index, or always
       defaults — and does that still matter now that the dead similarity/dedup
       code that depended on `data` has been removed?
-- [ ] Does `length_reg = max(0, (size+14)//16)` (ceiling) read the full sample tail
-      for a sample not sized `16k+1` (#75 regressed, re-fixed as #295 — verify)?
+- [ ] Does `DpcmPacker._length_reg` (`max(1, (size+14)//16)`, ceiling with a
+      floor-at-1) read the full sample tail for a sample not sized `16k+1`
+      (#75 regressed, re-fixed as #295 — verify), and does every packed
+      sample's `aligned_size` block still cover that read even when `size`
+      lands on a 64-byte boundary (#446, verify)?
 - [ ] Does `DrumMapperConfig.from_file` still raise an uncaught `TypeError` on a
       stray config key (#76, unfixed)?
 - [ ] Can an evicted sample id still be reused now that `_next_id` is monotonic —
