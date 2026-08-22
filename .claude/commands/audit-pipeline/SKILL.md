@@ -351,6 +351,20 @@ operate on a JSON bank via `nes/song_bank.py` (`SongBank.add_song_from_midi`, `e
   shape `_process_segments` (`nes/song_bank.py:105`) expects from `parse_midi_to_frames`'s
   output still matches what `run_parse`/`run_map` treat as canonical, since this is now a
   second, independent consumer of that output shape.
+- **Verify fix (#427/PIPE-2026-08-21-5, closed)**: `import_bank`'s guard (#220/SAFE-09)
+  used to validate only the bank-level shape (`bank_info`, `songs` presence) and store
+  `data['songs']` as-is, with no per-entry validation. A song entry missing `'metadata'`
+  (or non-dict, or missing `'bank'`/`'size'`) reached the sort key above
+  (`bank.songs[name]['metadata'].get('order', 0)`) or `run_song_list`'s print loop as an
+  unguarded `KeyError`/`AttributeError`, escaping as a raw traceback -- both call sites'
+  `try/except` wraps only the `import_bank()` call itself, not their own subsequent
+  indexing. `import_bank` now validates every song entry is a dict with a dict
+  `'metadata'` and both `'bank'`/`'size'` keys present (the shape `add_song` always
+  writes) before storing `self.songs`, raising the same `ValueError` style as the
+  bank-level checks. Verify-the-fix: a bank with one malformed song entry among otherwise
+  valid ones still fails the whole import (not a silent partial load) with a clean
+  `[ERROR]` and nonzero exit from all three CLI entry points that call `import_bank`
+  (`song list`/`song remove`/`song build`).
 
 ## Output
 Write the report to **`docs/audits/AUDIT_PIPELINE_<TODAY>.md`** (YYYY-MM-DD). Structure:

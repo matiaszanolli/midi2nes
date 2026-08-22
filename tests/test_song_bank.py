@@ -207,6 +207,74 @@ class TestSongBank(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.bank.import_bank(str(self.test_bank_path))
 
+    def test_import_bank_song_entry_not_a_dict_raises_clear_error(self):
+        """Regression (#427/PIPE-2026-08-21-5): the bank-level guard (#220/
+        SAFE-09) stops one level up -- a per-song entry that isn't even a
+        JSON object must still raise a clear ValueError here, not reach a
+        consumer's raw subscript."""
+        self.test_bank_path.write_text(json.dumps({
+            'bank_info': {'total_banks': 1, 'bank_size': 100},
+            'songs': {'broken_song': "not an object"}
+        }))
+        with self.assertRaises(ValueError):
+            self.bank.import_bank(str(self.test_bank_path))
+
+    def test_import_bank_song_entry_missing_metadata_raises_clear_error(self):
+        """Regression (#427/PIPE-2026-08-21-5): a song entry missing
+        'metadata' used to reach run_song_build's sort key
+        (bank.songs[name]['metadata'].get('order', 0)) or run_song_list's
+        print loop as an unguarded KeyError, outside any try/except -- must
+        now raise a clear ValueError at import time instead."""
+        self.test_bank_path.write_text(json.dumps({
+            'bank_info': {'total_banks': 1, 'bank_size': 100},
+            'songs': {'broken_song': {'bank': 0, 'size': 100}}
+        }))
+        with self.assertRaises(ValueError):
+            self.bank.import_bank(str(self.test_bank_path))
+
+    def test_import_bank_song_entry_metadata_not_a_dict_raises_clear_error(self):
+        """A 'metadata' value that parses but isn't itself a JSON object
+        (e.g. a string) would raise AttributeError on the first .get() call
+        downstream -- must be caught here instead."""
+        self.test_bank_path.write_text(json.dumps({
+            'bank_info': {'total_banks': 1, 'bank_size': 100},
+            'songs': {'broken_song': {'metadata': "oops", 'bank': 0, 'size': 100}}
+        }))
+        with self.assertRaises(ValueError):
+            self.bank.import_bank(str(self.test_bank_path))
+
+    def test_import_bank_song_entry_missing_bank_raises_clear_error(self):
+        """Regression (#427/PIPE-2026-08-21-5): a song entry missing 'bank'
+        used to reach run_song_list's print loop (song_data['bank']) as an
+        unguarded KeyError."""
+        self.test_bank_path.write_text(json.dumps({
+            'bank_info': {'total_banks': 1, 'bank_size': 100},
+            'songs': {'broken_song': {'metadata': {'title': 'x'}, 'size': 100}}
+        }))
+        with self.assertRaises(ValueError):
+            self.bank.import_bank(str(self.test_bank_path))
+
+    def test_import_bank_song_entry_missing_size_raises_clear_error(self):
+        """Regression (#427/PIPE-2026-08-21-5): a song entry missing 'size'
+        used to reach get_bank_size's sum (song_data['size']) as an
+        unguarded KeyError."""
+        self.test_bank_path.write_text(json.dumps({
+            'bank_info': {'total_banks': 1, 'bank_size': 100},
+            'songs': {'broken_song': {'metadata': {'title': 'x'}, 'bank': 0}}
+        }))
+        with self.assertRaises(ValueError):
+            self.bank.import_bank(str(self.test_bank_path))
+
+    def test_import_bank_songs_not_a_dict_raises_clear_error(self):
+        """A 'songs' value that parses but isn't a JSON object (e.g. a list)
+        must raise a clear ValueError, not an AttributeError from .items()."""
+        self.test_bank_path.write_text(json.dumps({
+            'bank_info': {'total_banks': 1, 'bank_size': 100},
+            'songs': ["not", "an", "object"]
+        }))
+        with self.assertRaises(ValueError):
+            self.bank.import_bank(str(self.test_bank_path))
+
     def test_add_song_from_midi_stores_resolved_midi_path(self):
         """Regression (#30/F-13): `song build` re-parses/re-maps from the
         original MIDI (SongBank's stored `segments` are raw parsed events

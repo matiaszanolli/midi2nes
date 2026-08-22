@@ -331,6 +331,44 @@ class TestCA65Export(unittest.TestCase):
         self.assertEqual(self.exporter._encode_macro_offset(127), 0x7F)
         self.assertEqual(self.exporter._encode_macro_offset(-128), 0x80)
 
+    def test_out_of_range_volume_clamps_instead_of_colliding_with_control_bytes(self):
+        # Regression (#442/EXP-2026-08-21-7): every in-pipeline producer
+        # clamps volume to 0-15, but the step-by-step `export` CLI accepts a
+        # user-editable frames JSON with no mask applied. vol_seq bytes used
+        # to be emitted raw (unlike pitch/arp, which route through
+        # _encode_macro_offset, #77): volume 255 ($FF) as the FIRST macro
+        # byte collided with the end-of-macro control byte, so EVAL_MACRO
+        # read end-at-step-0 and played the null default (15) instead of the
+        # value asked for. Volume must clamp into the spec's 0-15 domain
+        # (docs/AUDIO_BYTECODE_SPEC.md §2.3) before emission.
+        frames = {'pulse1': {'0': {'note': 60, 'volume': 255}}}
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            self.exporter.export_tables_with_patterns(
+                frames, patterns={'x': {'events': []}}, references={}, output_path=out)
+            text = Path(out).read_text()
+            macro_start = text.index('macro_vol_1:')
+            macro_body = text[macro_start:].split('\n', 2)[1]
+            self.assertIn('$0F', macro_body, f"volume 255 must clamp to $0F: {macro_body}")
+            self.assertNotIn('$FF, $FF', macro_body,
+                              "clamped volume must not collide with the end-of-macro byte")
+        finally:
+            Path(out).unlink(missing_ok=True)
+
+    def test_volume_within_spec_range_is_unaffected(self):
+        # A normal, in-range volume must pass through unchanged.
+        frames = {'pulse1': {'0': {'note': 60, 'volume': 12}}}
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            self.exporter.export_tables_with_patterns(
+                frames, patterns={'x': {'events': []}}, references={}, output_path=out)
+            text = Path(out).read_text()
+            macro_start = text.index('macro_vol_1:')
+            macro_body = text[macro_start:].split('\n', 2)[1]
+            self.assertIn('$0C', macro_body)  # 12 decimal
+        finally:
+            Path(out).unlink(missing_ok=True)
+
     # NOTE: the former #80/EXP-04 loop-operand tests
     # (test_compress_macro_skips_loop_candidates_past_byte_255 /
     # test_compress_macro_still_loops_when_loop_start_fits_one_byte) were
@@ -1591,6 +1629,59 @@ class TestEstimateDirectExportSize(unittest.TestCase):
         }
         # Only pulse1 (4 bytes x 1 frame) should count.
         self.assertEqual(self.exporter.estimate_direct_export_size(frames), 4)
+
+
+class TestDirectExportSummaryMatchesEstimator(unittest.TestCase):
+    """Regression for #444/EXP-2026-08-21-9: export_direct_frames' printed
+    "Data size" summary used to multiply frames x 4 x channel-count,
+    overstating the total whenever noise (3 tables) or dpcm (1 table) was
+    active -- a 5-channel song reported 20 bytes/frame where only 16 are
+    actually emitted (+25%). estimate_direct_export_size already has the
+    correct per-channel accounting; the summary must reuse it instead of
+    its own, independently-drifted math."""
+
+    def setUp(self):
+        self.exporter = CA65Exporter()
+
+    def _run_export_and_capture_summary(self, frames):
+        import io
+        import contextlib
+        out = tempfile.mktemp(suffix='.asm')
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.exporter.export_direct_frames(frames, out, standalone=False, mapper=None)
+        Path(out).unlink(missing_ok=True)
+        return buf.getvalue()
+
+    def test_five_channel_song_summary_matches_estimator_not_flat_times_four(self):
+        n = 10
+        frames = {
+            'pulse1': {str(i): {'note': 60, 'volume': 15} for i in range(n)},
+            'pulse2': {str(i): {'note': 64, 'volume': 12} for i in range(n)},
+            'triangle': {str(i): {'note': 48, 'volume': 15} for i in range(n)},
+            'noise': {str(i): {'volume': 10} for i in range(n)},
+            'dpcm': {str(i): {'note': 5, 'volume': 15} for i in range(n)},
+        }
+        expected = self.exporter.estimate_direct_export_size(frames)
+        # 4+4+4+3+1 = 16 bytes/frame, not the old flat 4*5 = 20.
+        self.assertEqual(expected, 16 * n)
+
+        output = self._run_export_and_capture_summary(frames)
+        self.assertIn(f"Data size: {expected:,} bytes", output)
+        self.assertNotIn(f"Data size: {4 * 5 * n:,} bytes", output)
+
+    def test_tone_only_song_summary_unaffected(self):
+        """A tone-channel-only song (the common case) must report the same
+        number either way -- this fix must not change output there."""
+        n = 10
+        frames = {
+            'pulse1': {str(i): {'note': 60, 'volume': 15} for i in range(n)},
+            'pulse2': {str(i): {'note': 64, 'volume': 12} for i in range(n)},
+        }
+        expected = self.exporter.estimate_direct_export_size(frames)
+        self.assertEqual(expected, 4 * 2 * n)
+        output = self._run_export_and_capture_summary(frames)
+        self.assertIn(f"Data size: {expected:,} bytes", output)
 
 
 class TestMMC1BankSwitchedDirectExportStructure(unittest.TestCase):

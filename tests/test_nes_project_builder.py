@@ -787,6 +787,32 @@ class TestDeadMacroInstrumentCodeRemoved:
         assert "fetch_sequence_byte:" in music_content
 
 
+class TestFetchSequenceByteCommentMatchesActualBankWindow:
+    """Regression (#443/EXP-2026-08-21-8): fetch_sequence_byte's header
+    comment claimed it swaps the sequence bank into $8000-$9FFF, but the
+    code selects MMC3 PRG Bank Register 7 and translates the pointer into
+    $A000-$BFFF (docs/MAPPER_MMC3_REFERENCE.md: R7 maps $A000-$BFFF in both
+    PRG modes) -- contradicting the correct "$A000-$BFFF" comment a few
+    lines below in the same generated block."""
+
+    def test_header_comment_states_a000_not_8000(self, project_dir, temp_dir):
+        bytecode_music_asm = temp_dir / "music.asm"
+        bytecode_music_asm.write_text(
+            "; CA65 Exporter: MMC3 Macro Bytecode mode\n"
+            ".segment \"CODE\"\ninit_music:\n    rts\nupdate_music:\n    rts\n"
+        )
+
+        builder = NESProjectBuilder(str(project_dir))
+        assert builder.prepare_project(str(bytecode_music_asm))
+
+        music_content = (project_dir / "music.asm").read_text()
+        fetch_block = music_content.split(
+            "; fetch_sequence_byte", 1)[1].split("fetch_sequence_byte:", 1)[0]
+        assert "$A000-$BFFF" in fetch_block
+        assert "$8000-$9FFF" not in fetch_block, \
+            "header comment must not claim the wrong 8KB bank window"
+
+
 class TestReturnValues:
     """Test function return values."""
 
