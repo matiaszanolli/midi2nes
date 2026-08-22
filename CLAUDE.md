@@ -274,7 +274,7 @@ External tools:
 
 ## Project Status
 
-✅ Fully operational end-to-end pipeline (see PROJECT_STATUS.md)
+✅ Fully operational end-to-end pipeline (see docs/ROADMAP.md)
 - Parses any MIDI file correctly
 - Maps tracks to NES channels with intelligent priority
 - Generates frame-accurate timing data

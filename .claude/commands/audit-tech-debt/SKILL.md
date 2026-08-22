@@ -68,12 +68,16 @@ unrelated-implementation *check_rom.py* at the repo root were removed in commit
 fixed and reframe the check as: confirm no new stray root-level script, duplicate
 `check_rom.py`/`validate_rom.py`, or other dead module has been reintroduced since.
 
-Non-Python files count too, and the current known lead is `nes/linker_mmc3.cfg`: it is
-checked in but `grep -rn linker_mmc3` finds **no reference anywhere** in the tree — every
+Non-Python files count too. **Verify fix (#461/TD-41, closed)**: `nes/linker_mmc3.cfg` was
+checked in but `grep -rn linker_mmc3` found no reference anywhere in the tree — every
 mapper emits its `nes.cfg` programmatically from `generate_linker_config()`, so nothing
-reads this file. Confirm that still holds (a build script or test picking it up would make
-it live), then judge whether it's a stale leftover or a deliberately-kept reference copy —
-if the latter, the fix is a comment saying so, not deletion.
+read it. It also failed the "deliberately-kept reference copy" test: its header described a
+128KB PRG layout while `mappers/mmc3.py` generates 512KB/60 swap banks, so as a reference it
+was actively misleading. Deleted (git history preserves it). Confirm no new orphaned
+non-Python config/data file (a `*.cfg`, `*.s`, or similar checked-in artifact nothing reads)
+has been reintroduced since — the same "checked in but grep -rn finds nothing" test applies
+to any future candidate; only judge a hit as a deliberately-kept reference copy (comment,
+not deletion) if its content still matches what the live generator produces.
 
 Retired placeholders to watch for a reappearance: `prepare_multi_song_project` and
 `add_song_bank` in `nes/project_builder.py` were removed once `song build` gave the song
@@ -119,9 +123,13 @@ Bare `except:` / `except Exception: pass`, broad catches that hide the real erro
 `print`-and-continue where the pipeline should stop. Overlaps `/audit-safety` — here, focus
 on the *pattern* prevalence and a shared remedy, not each individual site.
 
-A concrete, still-open instance: `utils/profiling.py` has a bare `except:` clause
-(line 120) that also swallows `KeyboardInterrupt`/`SystemExit` (TD-10/#135).
-Blast radius is limited to profiling/benchmark tooling, not the MIDI→ROM pipeline, hence LOW.
+**Verify fix (TD-10/#135, closed)**: `utils/profiling.py` had a bare `except:` clause
+that also swallowed `KeyboardInterrupt`/`SystemExit`. No bare `except:` remains anywhere
+in the file — only narrow `except (psutil.NoSuchProcess, psutil.AccessDenied):` and
+`except Exception:` (with a comment explaining `KeyboardInterrupt`/`SystemExit` are
+deliberately let through); the module docstring refers to the old bare except in the past
+tense. Confirm no new bare `except:` (or `except Exception: pass`) has crept back into this
+file or elsewhere in profiling/benchmark tooling.
 
 ### Dimension 8: Module / Function Size & Structure
 Oversized modules or functions doing too much. TD-11/#136 covered two monoliths;
@@ -133,9 +141,12 @@ one half is now closed, the other explicitly deferred:
   (`:453`), `_emit_noise_proc` (`:507`), `_emit_dpcm_proc` (`:545`) for playback
   subroutines — cutting `export_direct_frames` (`:603-1027`) from ~750 lines to ~425.
   Verified byte-for-byte identical emitted output via a golden-file diff across 24
-  configs at the time of the fix. `exporter_ca65.py` is now ~1445 lines total (grew
-  overall — extraction adds method boilerplate — but the one oversized function is
-  gone). Verify-the-fix: confirm the 8 emitters stay focused (one channel's table or
+  configs at the time of the fix. `exporter_ca65.py` is now ~1766 lines total (grown
+  well past the ~1445 an earlier pass of this file claimed -- not a re-inlining
+  regression but the jukebox feature, `_build_song_bytecode`/
+  `export_song_bank_bytecode`, added after that count was taken; TD-43/#463). Treat any
+  line count here as a snapshot, not a target -- `wc -l` before citing a fresh one.
+  Verify-the-fix: confirm the 8 emitters stay focused (one channel's table or
   proc each) and a future edit doesn't re-inline them back into
   `export_direct_frames`.
 - **`main.py`'s `run_full_pipeline` half is now CLOSED** (#406): three of its stages
