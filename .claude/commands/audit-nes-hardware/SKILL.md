@@ -97,6 +97,16 @@ volume and no duty** (`docs/APU_TRIANGLE_REFERENCE.md` §1; `docs/NES_APU_REFERE
   carries only `pitch`/`volume`/`arpeggio`/`note`, **no `control`/duty key at all**.
   Any path that writes a duty or 4-bit volume into a triangle register ($4008/$400B)
   is **HIGH** per the Special Rules table.
+- **Verify fix (#434/NH-HW-2026-08-21-8, closed)**: the `--arranger` front-end's own
+  triangle frame conversion (`arranger/pipeline_integration.py`, the `output['triangle']`
+  loop) used to hardcode `'control': 0x81` -- a key neither export sink reads for triangle
+  (`export_direct_frames` derives `$4008` solely from `volume`, as above; the bytecode
+  path's only use of `control` is extracting duty bits, unconditionally skipped for
+  channel 2 by the engine), so it was always dead data. But `0x81` (control/halt flag +
+  reload 1) *looks* like a meaningful near-instant-gate linear-counter reload -- the same
+  latent-trap shape the loudness-derived reload above was retired for. Now emits no
+  `control` key at all for triangle, matching `process_all_tracks`' contract exactly:
+  both front-ends now agree on the triangle frame shape.
 - In `exporter/exporter_ca65.py`'s `export_direct_frames`, the triangle control byte
   is derived independently from `volume`: `0x00` when silent, else the named
   `TRIANGLE_CONTROL_ON` constant (`0x80` control/halt flag `| 0x7F` max reload =

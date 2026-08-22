@@ -443,6 +443,23 @@ audio_update:
     jmp @read_next
     
 @is_note:
+    ; A holds the just-fetched note byte. An event whose duration exceeds
+    ; the 32-frame Length cap gets chunked by the exporter into several
+    ; ($6X, note) pairs that repeat the SAME note byte
+    ; (exporter/exporter_ca65.py's `_build_song_bytecode` dur>32 split) --
+    ; by construction, the frame-by-frame source loop only ever starts a new
+    ; event when the note value actually changes, so two note bytes this
+    ; same on this channel are always one held event's own chunk boundary,
+    ; never two independent onsets that happen to share a pitch. Treat that
+    ; case as a tie/continuation: skip the macro reset and the phase-reset
+    ; sentinel below so a held pulse note doesn't audibly re-click every 32
+    ; frames and a live macro producer doesn't replay its first steps
+    ; (#439/EXP-2026-08-21-1). A genuinely new note (including the first
+    ; note after init/song-advance, whose current_note starts at 0 and a
+    ; real note is never 0) always differs and still gets the full reset.
+    cmp current_note, x
+    beq @is_note_tie
+
     sta current_note, x
 
     ; Reset all macro sequence steps to 0
@@ -459,11 +476,12 @@ audio_update:
     lda #$FF
     sta last_written_hi, x
 
+@is_note_tie:
     lda current_len, x
     sta frame_wait, x
     ; Wait length-1 frames since we process and play immediately on this frame
-    dec frame_wait, x 
-    
+    dec frame_wait, x
+
     ; Save the advanced pointer
     lda sequence_ptr
     sta stream_ptr_lo, x

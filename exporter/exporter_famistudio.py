@@ -97,9 +97,25 @@ def generate_famistudio_txt(frames_data, project_name="MIDI2NES", author="", cop
             # below (#313/EXP-11).
             continue
         current_pattern = []
+        # Per-channel pattern index (#440/EXP-2026-08-21-2): PATTERN keys and
+        # the SEQUENCE below must agree on the same numbering. Indexing by
+        # len(patterns) counted every channel's patterns emitted so far, not
+        # just this channel's -- only the first channel processed got
+        # correctly-numbered keys by coincidence (nothing had been emitted
+        # yet); every later channel's full-pattern keys landed on indices
+        # already claimed by earlier channels, while SEQUENCE always
+        # references this channel's own 0-based range, so channel 2+'s
+        # SEQUENCE pointed at undefined (or wrong) PATTERN names.
+        channel_pattern_count = 0
         for frame in range(max_frame + 1):
-            if str(frame) in events:
-                event = events[str(frame)]
+            # Accept int OR str frame keys, mirroring exporter_ca65.py's dual-
+            # key tolerance (`channel_frames.get(str(frame_idx),
+            # channel_frames.get(frame_idx))`): frames built in-memory carry
+            # int keys, JSON round-trips produce str keys. Checking only
+            # `str(frame) in events` silently exported nothing but rest rows
+            # for an int-keyed frames dict (#441/EXP-2026-08-21-3).
+            event = events.get(str(frame), events.get(frame))
+            if event is not None:
                 if channel in ['pulse1', 'pulse2', 'triangle']:
                     # .get() with the same defaults exporter_ca65.py uses
                     # (#370/EXP-2026-07-19-2) -- a frame dict missing 'note'
@@ -126,14 +142,16 @@ def generate_famistudio_txt(frames_data, project_name="MIDI2NES", author="", cop
                 current_pattern.append("... ..")
                 
             if len(current_pattern) == pattern_length:
-                pattern_key = f"{channel}_{len(patterns)}"
+                pattern_key = f"{channel}_{channel_pattern_count}"
                 patterns[pattern_key] = current_pattern
+                channel_pattern_count += 1
                 current_pattern = []
-        
+
         # Add any remaining pattern data
         if current_pattern:
-            pattern_key = f"{channel}_{len([k for k in patterns.keys() if k.startswith(channel)])}"
+            pattern_key = f"{channel}_{channel_pattern_count}"
             patterns[pattern_key] = current_pattern
+            channel_pattern_count += 1
     
     # Write patterns
     lines.append("PATTERNS")
@@ -142,7 +160,11 @@ def generate_famistudio_txt(frames_data, project_name="MIDI2NES", author="", cop
         lines.extend([
             f"  PATTERN \"{channel}_{index}\"",
             f"    CHANNEL {channel.upper()}",
-            "    LENGTH 64"
+            # The remainder pattern (song length not an even multiple of 64
+            # frames) is shorter than a full pattern -- declaring it LENGTH
+            # 64 regardless of its actual row count was cosmetically wrong
+            # (#440/EXP-2026-08-21-2).
+            f"    LENGTH {len(pattern_data)}"
         ])
         for i, note in enumerate(pattern_data):
             lines.append(f"    {i:02X} | {note}")

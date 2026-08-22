@@ -2,6 +2,7 @@
 
 import unittest
 import json
+import re
 from pathlib import Path
 from exporter.exporter_famistudio import generate_famistudio_txt, midi_note_to_famistudio
 
@@ -152,10 +153,13 @@ class TestFamiStudioGoldenBytes(unittest.TestCase):
         self.assertIn(expected, self.output)
 
     def test_pulse1_pattern_rows_exact(self):
+        # LENGTH 3, not the old hardcoded 64 (#440/EXP-2026-08-21-2): this
+        # song's only pattern is the 3-row remainder, so its declared
+        # LENGTH must match its actual row count.
         self._assert_block("\n".join([
             '  PATTERN "pulse1_0"',
             '    CHANNEL PULSE1',
-            '    LENGTH 64',
+            '    LENGTH 3',
             '    00 | C-4 15',
             '    01 | ... ..',
             '    02 | D-4 10',
@@ -166,7 +170,7 @@ class TestFamiStudioGoldenBytes(unittest.TestCase):
         self._assert_block("\n".join([
             '  PATTERN "triangle_0"',
             '    CHANNEL TRIANGLE',
-            '    LENGTH 64',
+            '    LENGTH 3',
             '    00 | ... ..',
             '    01 | C-3 15',
             '    02 | ... ..',
@@ -177,7 +181,7 @@ class TestFamiStudioGoldenBytes(unittest.TestCase):
         self._assert_block("\n".join([
             '  PATTERN "noise_0"',
             '    CHANNEL NOISE',
-            '    LENGTH 64',
+            '    LENGTH 3',
             '    00 | ... ..',
             '    01 | ... ..',
             '    02 | F#4 7',
@@ -189,9 +193,103 @@ class TestFamiStudioGoldenBytes(unittest.TestCase):
         self._assert_block("\n".join([
             '  PATTERN "dpcm_0"',
             '    CHANNEL DPCM',
-            '    LENGTH 64',
+            '    LENGTH 3',
             '    00 | C-4 3',
             '    01 | ... ..',
             '    02 | ... ..',
             '  END',
         ]))
+
+
+class TestFamiStudioSequenceReferencesResolveToPatterns(unittest.TestCase):
+    """Regression for #440/EXP-2026-08-21-2: full-pattern PATTERN keys used
+    to be numbered by a GLOBAL count of every channel's patterns emitted so
+    far (`len(patterns)`), while the remainder pattern and every SEQUENCE
+    reference used a PER-CHANNEL 0-based count. The first channel processed
+    happened to work (the two counts coincide before anything else has been
+    emitted), but every later channel's full patterns landed on the wrong
+    indices -- its SEQUENCE then pointed at undefined (or another channel's)
+    PATTERN names. Every SEQUENCE reference must resolve to a defined
+    PATTERN, for >=2 channels spanning >=64 frames (the minimum needed to
+    exercise a full, non-remainder pattern on more than one channel)."""
+
+    @staticmethod
+    def _defined_patterns(output):
+        return set(re.findall(r'PATTERN "([^"]+)"', output))
+
+    @staticmethod
+    def _sequence_references(output):
+        refs = set()
+        for seq_line in re.findall(r'SEQUENCE (.+)', output):
+            refs.update(re.findall(r'"([^"]+)"', seq_line))
+        return refs
+
+    def test_two_channels_multiple_patterns_all_sequence_refs_defined(self):
+        # 130 frames -> two full 64-row patterns plus a 2-row remainder per
+        # channel, on two channels -- exactly the shape the issue reproduced.
+        frames = {
+            'pulse1': {str(i): {'note': 60, 'volume': 10} for i in range(130)},
+            'pulse2': {str(i): {'note': 64, 'volume': 8} for i in range(130)},
+        }
+        output = generate_famistudio_txt(frames)
+
+        defined = self._defined_patterns(output)
+        refs = self._sequence_references(output)
+        self.assertTrue(refs, "expected at least one SEQUENCE reference")
+        missing = refs - defined
+        self.assertFalse(missing, f"SEQUENCE references undefined PATTERN(s): {missing}")
+
+        # pulse2 (the second channel) must have its own correctly-numbered
+        # patterns, not collide with or skip past pulse1's.
+        self.assertIn('pulse2_0', defined)
+        self.assertIn('pulse2_1', defined)
+        self.assertIn('pulse2_2', defined)
+
+    def test_three_channels_all_sequence_refs_defined(self):
+        frames = {
+            'pulse1': {str(i): {'note': 60, 'volume': 10} for i in range(200)},
+            'pulse2': {str(i): {'note': 64, 'volume': 8} for i in range(70)},
+            'triangle': {str(i): {'note': 48, 'volume': 15} for i in range(64)},
+        }
+        output = generate_famistudio_txt(frames)
+
+        defined = self._defined_patterns(output)
+        refs = self._sequence_references(output)
+        missing = refs - defined
+        self.assertFalse(missing, f"SEQUENCE references undefined PATTERN(s): {missing}")
+
+    def test_remainder_pattern_length_matches_actual_row_count(self):
+        # 130 frames = two full 64-row patterns + a 2-row remainder.
+        frames = {'pulse1': {str(i): {'note': 60, 'volume': 10} for i in range(130)}}
+        output = generate_famistudio_txt(frames)
+        self.assertIn('PATTERN "pulse1_2"\n    CHANNEL PULSE1\n    LENGTH 2', output)
+
+
+class TestFamiStudioAcceptsIntKeyedFrames(unittest.TestCase):
+    """Regression for #441/EXP-2026-08-21-3: both CA65 emitters accept int OR
+    str frame keys (in-memory frames carry int keys; JSON round-trips
+    produce str keys), but the FamiStudio path checked only `str(frame) in
+    events` -- an in-memory, int-keyed frames dict silently exported nothing
+    but "... .." rest rows, with no error or warning."""
+
+    def _non_rest_row_count(self, output):
+        rows = [line for line in output.splitlines() if '|' in line]
+        return sum(1 for row in rows if '... ..' not in row)
+
+    def test_int_keyed_pulse_frames_export_non_rest_rows(self):
+        frames = {'pulse1': {i: {'note': 60 + (i % 5), 'volume': 10} for i in range(10)}}
+        output = generate_famistudio_txt(frames)
+        self.assertEqual(self._non_rest_row_count(output), 10)
+        self.assertIn('C-4 10', output)
+
+    def test_int_keyed_and_str_keyed_frames_produce_identical_output(self):
+        """An int-keyed frames dict and its JSON-round-tripped (str-keyed)
+        equivalent must export byte-for-byte identical output."""
+        int_keyed = {'triangle': {i: {'note': 48, 'volume': 15} for i in range(5)}}
+        str_keyed = {'triangle': {str(i): {'note': 48, 'volume': 15} for i in range(5)}}
+        self.assertEqual(generate_famistudio_txt(int_keyed), generate_famistudio_txt(str_keyed))
+
+    def test_int_keyed_dpcm_frames_export_non_rest_rows(self):
+        frames = {'dpcm': {i: {'note': 4, 'volume': 15} for i in (0, 3, 6)}}
+        output = generate_famistudio_txt(frames)
+        self.assertEqual(self._non_rest_row_count(output), 3)
