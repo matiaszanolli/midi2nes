@@ -248,5 +248,33 @@ class TestSongBank(unittest.TestCase):
         self.assertEqual(reloaded.total_banks, self.bank.total_banks)
         self.assertEqual(reloaded.max_bank_size, self.bank.max_bank_size)
 
+    def test_export_bank_writes_atomically(self):
+        """Regression (#456/SAFE-2026-08-21-2): export_bank must use
+        core.io_utils.atomic_write_text (the same fix the CA65/FamiStudio
+        exporters already got, #385), not a direct Path.write_text -- a
+        failure mid-write must never truncate/overwrite a prior good bank."""
+        from unittest.mock import patch
+        self.bank.add_song('song1', self.test_song_data, {'tempo_base': 120})
+        self.bank.export_bank(str(self.test_bank_path))
+        original_content = self.test_bank_path.read_text()
+
+        self.bank.add_song('song2', self.test_song_data, {'tempo_base': 120})
+        with patch('os.replace', side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.bank.export_bank(str(self.test_bank_path))
+
+        # The prior good bank (with only song1) must survive intact --
+        # song2 must not appear in a truncated/partial file.
+        self.assertEqual(self.test_bank_path.read_text(), original_content)
+        self.assertNotIn('song2', original_content)
+
+    def test_export_bank_leaves_no_leftover_temp_file(self):
+        self.bank.add_song('song1', self.test_song_data, {'tempo_base': 120})
+        self.bank.export_bank(str(self.test_bank_path))
+
+        remaining = list(self.test_bank_path.parent.iterdir())
+        self.assertEqual(remaining, [self.test_bank_path])
+
+
 if __name__ == '__main__':
     unittest.main()

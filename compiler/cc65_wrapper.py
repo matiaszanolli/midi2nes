@@ -138,7 +138,11 @@ class CC65Wrapper:
         Raises:
             CompilationError: If assembly fails
         """
-        cmd = ["ca65", str(source_file), "-o", str(output_file)]
+        # Use the resolved path from check_toolchain(), not the bare command
+        # name, so we exercise the exact binary shutil.which found -- same
+        # TOCTOU/PATH-divergence rationale as check_toolchain()/get_version()
+        # (#14, #454/MAP-2026-08-21-2).
+        cmd = [self._ca65_path or "ca65", str(source_file), "-o", str(output_file)]
 
         if include_paths:
             for path in include_paths:
@@ -158,6 +162,12 @@ class CC65Wrapper:
                 tool="ca65",
                 exit_code=-1,
             )
+        except FileNotFoundError:
+            # The resolved binary vanished (or was never checked) between
+            # check_toolchain() and this call -- raise the same typed error
+            # every other missing-tool path produces instead of letting a
+            # raw FileNotFoundError escape as a generic message (#454).
+            raise ToolchainError("ca65")
 
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown error"
@@ -196,7 +206,9 @@ class CC65Wrapper:
         Raises:
             CompilationError: If linking fails
         """
-        cmd = ["ld65", "-C", str(config_file)]
+        # See assemble()'s comment -- use the resolved path, not the bare
+        # command name (#14, #454/MAP-2026-08-21-2).
+        cmd = [self._ld65_path or "ld65", "-C", str(config_file)]
 
         for obj in object_files:
             cmd.append(str(obj))
@@ -221,6 +233,10 @@ class CC65Wrapper:
                 tool="ld65",
                 exit_code=-1,
             )
+        except FileNotFoundError:
+            # See assemble()'s comment -- typed error instead of a raw
+            # FileNotFoundError escaping to compile_rom's broad except (#454).
+            raise ToolchainError("ld65")
 
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown error"

@@ -544,6 +544,18 @@ class TestJukeboxSongCount:
         )
         return path
 
+    @staticmethod
+    def _jukebox_music_asm(temp_dir):
+        # First line matches CA65Exporter.export_song_bank_bytecode's actual
+        # header exactly (exporter/exporter_ca65.py) -- the marker
+        # prepare_project's auto-detection looks for (#453/MAP-2026-08-21-1).
+        path = temp_dir / "music.asm"
+        path.write_text(
+            "; CA65 Assembly Export (MMC3 Macro Bytecode -- multi-song jukebox build)\n"
+            ".segment \"CODE\"\ninit_music:\n    rts\nupdate_music:\n    rts\n"
+        )
+        return path
+
     def test_song_count_none_leaves_output_unchanged(self, project_dir, temp_dir):
         """The default (song_count=None) must produce byte-identical main.asm
         to before this parameter existed -- no JUKEBOX_BUILD define, no
@@ -603,6 +615,50 @@ class TestJukeboxSongCount:
         # Must be inside the NMI handler, after update_music, not the reset routine.
         nmi_body = content.split("nmi:")[1]
         assert "audio_advance_song" in nmi_body
+
+    def test_jukebox_music_asm_without_song_count_still_defines_jukebox_build(
+            self, project_dir, temp_dir):
+        """Regression (#453/MAP-2026-08-21-1): the documented split
+        `prepare`/`compile` flow (and any library caller besides
+        run_song_build) never passes song_count. Without auto-detection, a
+        jukebox music.asm "succeeded" here -- capacity pre-flight passes,
+        all files written -- and only failed two steps later at ld65 with
+        unresolved externals (audio_init_song, the fixed sequence labels,
+        channel_start_banks, instrument_table), since JUKEBOX_BUILD was
+        never defined. song_count must now be auto-detected from
+        music.asm's own jukebox marker."""
+        music_asm = self._jukebox_music_asm(temp_dir)
+        builder = NESProjectBuilder(str(project_dir))
+        assert builder.prepare_project(str(music_asm))  # no song_count passed
+
+        content = (project_dir / "main.asm").read_text()
+        assert "JUKEBOX_BUILD = 1" in content
+        assert "jsr audio_advance_song" in content
+
+    def test_explicit_song_count_still_overrides_auto_detection(
+            self, project_dir, temp_dir):
+        """An explicit song_count (as run_song_build always passes) must
+        still work unchanged on jukebox content -- auto-detection is a
+        fallback for when the caller omits it, not a replacement."""
+        music_asm = self._jukebox_music_asm(temp_dir)
+        builder = NESProjectBuilder(str(project_dir))
+        assert builder.prepare_project(str(music_asm), song_count=5)
+
+        content = (project_dir / "main.asm").read_text()
+        assert "JUKEBOX_BUILD = 1" in content
+
+    def test_ordinary_bytecode_music_asm_is_not_misdetected_as_jukebox(
+            self, project_dir, temp_dir):
+        """A plain single-song bytecode build (no jukebox marker, no
+        song_count) must still leave output unchanged -- auto-detection
+        must not false-positive on ordinary bytecode-mode music.asm."""
+        music_asm = self._bytecode_music_asm(temp_dir)
+        builder = NESProjectBuilder(str(project_dir))
+        assert builder.prepare_project(str(music_asm))
+
+        content = (project_dir / "main.asm").read_text()
+        assert "JUKEBOX_BUILD" not in content
+        assert "audio_advance_song" not in content
 
 
 class TestMMC1Configuration:

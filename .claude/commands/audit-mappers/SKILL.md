@@ -283,16 +283,29 @@ chosen mapper:
   cannot link is at least HIGH.
 - **The `JUKEBOX_BUILD` gate (#30/F-13) — the one condition that decides whether a
   `song build` ROM links at all.** `prepare_project` writes `JUKEBOX_BUILD = 1` ahead of
-  the `.include` of `nes/audio_engine.asm` (`nes/project_builder.py:311-327`), and
-  `_generate_main_asm` sets `jukebox_mode` (`:354`), when **`song_count is not None`** —
-  deliberately *not* `song_count > 1`. `CA65Exporter.export_song_bank_bytecode` always
-  emits jukebox-format symbols (`song{i}_` prefixes, `song_table`, `jmp audio_init_song`)
-  regardless of song count, so a 1-song bank needs the gate too; the original `> 1` test
-  left a 1-song build with 8 unresolved externals (MAP-2026-08-07-1, fixed in `8ea7ac3`).
-  Verify-the-fix: the exporter's symbol format and the builder's gate must be driven by
-  the *same* condition. Any future "optimization" that makes the exporter emit single-song
-  symbols for a 1-song bank has to change both sides together — check both call sites, and
-  treat a one-sided change as HIGH (link failure on a whole bank size).
+  the `.include` of `nes/audio_engine.asm`, and `_generate_main_asm` sets `jukebox_mode`,
+  when **`song_count is not None`** — deliberately *not* `song_count > 1`.
+  `CA65Exporter.export_song_bank_bytecode` always emits jukebox-format symbols
+  (`song{i}_` prefixes, `song_table`, `jmp audio_init_song`) regardless of song count, so
+  a 1-song bank needs the gate too; the original `> 1` test left a 1-song build with 8
+  unresolved externals (MAP-2026-08-07-1, fixed in `8ea7ac3`). Verify-the-fix: the
+  exporter's symbol format and the builder's gate must be driven by the *same* condition.
+  Any future "optimization" that makes the exporter emit single-song symbols for a 1-song
+  bank has to change both sides together — check both call sites, and treat a one-sided
+  change as HIGH (link failure on a whole bank size).
+- **`song_count` itself is only ever passed by `run_song_build`** (`main.py`) — the
+  documented split `prepare`/`compile` flow (`main.py`'s `run_prepare`) and any library
+  caller of `prepare_project` never pass it. **Fixed (#453/MAP-2026-08-21-1, verify)**:
+  `prepare_project` now auto-detects jukebox mode from `music_content` itself (the
+  `"multi-song jukebox build"` marker `export_song_bank_bytecode` always stamps on line 1)
+  when `song_count is None`, treating that the same as an explicit `song_count`. Before
+  this fix, `prepare` on a jukebox `music.asm` "succeeded" (capacity pre-flight passes,
+  files written, "Ready for CC65 compilation!") and only failed two steps later at `ld65`
+  with 8 unresolved externals — a UX/defense-in-depth gap (`ld65` never produced a corrupt
+  ROM), not a correctness break, since the normal `song build` route already passed
+  `song_count` explicitly and was unaffected. Verify-the-fix: `prepare` (no `song_count`)
+  on a jukebox music.asm still defines `JUKEBOX_BUILD` and links; an ordinary single-song
+  bytecode music.asm (no jukebox marker) is not false-positive-detected as jukebox.
 - **Retired placeholders**: the old `prepare_multi_song_project` / `add_song_bank` stubs
   are gone now that `song build` is a real route. If either name reappears, it is dead
   code (`/audit-tech-debt`), not a feature.
@@ -304,16 +317,23 @@ chosen mapper:
 - `validate_project()` (`compiler/compiler.py:39-65`) requires `main.asm`, `music.asm`,
   `nes.cfg`. Confirm it actually runs before assembly and that the missing-file list is
   accurate.
-- `assemble()` (`compiler/cc65_wrapper.py:119-173`) and `link()` (lines 175-236) check
-  `result.returncode != 0` and raise `CompilationError` carrying `stderr`. This is
-  correct today — verify it stays that way.
-- `check_toolchain()` (`compiler/cc65_wrapper.py:34-81`) and `get_version()`
-  (lines 83-117) now resolve `ca65`/`ld65` via `shutil.which()` first and probe
-  `--version` on the **resolved path**, not the bare command name, with a
+- `assemble()` and `link()` check `result.returncode != 0` and raise `CompilationError`
+  carrying `stderr`. This is correct today — verify it stays that way.
+- `check_toolchain()` and `get_version()` resolve `ca65`/`ld65` via `shutil.which()` first
+  and probe `--version` on the **resolved path**, not the bare command name, with a
   `try/except (FileNotFoundError, subprocess.TimeoutExpired)` guard around each
   `subprocess.run` (fixed by #14, commit `48da1ea`) — verify a vanished/renamed binary
   between the `which()` check and the probe still raises `ToolchainError` cleanly rather
-  than an uncaught exception.
+  than an uncaught exception. **Fixed (#454/MAP-2026-08-21-2, verify)**: `assemble()`/
+  `link()` themselves used to build `cmd` from the bare `"ca65"`/`"ld65"` strings instead
+  of the stored `self._ca65_path`/`self._ld65_path` — undercutting #14's own TOCTOU/PATH-
+  divergence rationale one call later — and caught only `subprocess.TimeoutExpired` around
+  the real run, so a binary that vanished or was PATH-shadowed between `check_toolchain()`
+  and the real assemble/link raised a raw `FileNotFoundError` that escaped as a generic
+  message via `compile_rom`'s broad `except Exception`, instead of the typed
+  `ToolchainError` every other missing-tool path produces. Both now use
+  `self._ca65_path or "ca65"` / `self._ld65_path or "ld65"` and catch `FileNotFoundError`
+  alongside the timeout, mapping it to `ToolchainError`.
 - `compile_rom()`'s broad `except Exception` (`compiler/compiler.py:252-260`) prints
   `f"[ERROR] Compilation failed: {e}"`, returns `False`, and now calls
   `traceback.print_exc()` under `--verbose` (#32, fixed). Both callers thread the flag:

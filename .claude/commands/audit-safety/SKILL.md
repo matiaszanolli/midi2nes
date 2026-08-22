@@ -272,17 +272,27 @@ writers (`export_direct_frames`, `export_tables_with_patterns`) used to open the
 final output path directly (`with open(output_path, 'w') as f: f.write(...)`), so a
 failed write (disk full, killed process) could leave a truncated `.asm` at the user's
 output path, or overwrite a prior good file with a partial one on a re-export. Both
-now go through a shared `atomic_write_text(output_path, content)` helper
-(`exporter/base_exporter.py`): it writes to a sibling temp file in the same directory
-and `os.replace()`s it into place, so a reader only ever sees the old complete file or
-the new complete file, never a partial one; on failure the temp file is removed and
-`output_path` is left untouched. The sibling `exporter/exporter_famistudio.py`
-writers (`FamiStudioExporter.export`, `export_famistudio`) were switched to the same
-helper for consistency, even though that format is not currently reachable from the
-CLI (`--format` only accepts `ca65`, main.py). Verify-the-fix: flag any *new* writer
-that opens a final output path directly with `open(...)`/`Path(...).write_text(...)`
-instead of `atomic_write_text` — that's a regression of this exact pattern, not a new
-bug.
+now go through a shared `atomic_write_text(output_path, content)` helper — moved to
+`core/io_utils.py` by #456/SAFE-2026-08-21-2 (still re-exported from
+`exporter/base_exporter.py` for existing imports, so `from exporter.base_exporter
+import atomic_write_text` keeps working unchanged): it writes to a sibling temp file
+in the same directory and `os.replace()`s it into place, so a reader only ever sees
+the old complete file or the new complete file, never a partial one; on failure the
+temp file is removed and `output_path` is left untouched. The sibling
+`exporter/exporter_famistudio.py` writers (`FamiStudioExporter.export`,
+`export_famistudio`) were switched to the same helper for consistency, even though
+that format is not currently reachable from the CLI (`--format` only accepts `ca65`,
+main.py). **#456/SAFE-2026-08-21-2 is CLOSED**: this was exactly the gap the
+verify-the-fix note below already anticipated — `nes/song_bank.py`'s
+`SongBank.export_bank` (the *cumulative* `song_bank.json`, built up across many
+`song add`/`song remove` runs, unlike a regenerable intermediate JSON) was a direct
+`Path(output_path).write_text(...)`, left out of the original #385 sweep since it
+isn't in `exporter/`. It now uses the same `atomic_write_text` (imported from
+`core.io_utils` directly, avoiding a `nes` → `exporter` reverse dependency).
+Verify-the-fix: flag any *new* writer that opens a final output path directly with
+`open(...)`/`Path(...).write_text(...)` instead of `atomic_write_text` — that's a
+regression of this exact pattern, not a new bug. Cross-ref `run_song_add`/
+`run_song_remove` (`main.py`) as the two callers of `export_bank` that benefit.
 
 ## Cross-Dimension Dedup
 One root cause can surface across dimensions (the unguarded `json.loads` is both a

@@ -1597,6 +1597,86 @@ class TestSongBankCommands:
         with pytest.raises(SystemExit) as exc_info:
             run_song_list(args)
         assert exc_info.value.code == 1
+
+    @patch('builtins.print')
+    def test_run_song_add_invalid_midi_exits_cleanly(self, mock_print):
+        """Regression (#455/SAFE-2026-08-21-1): a corrupt (non-MIDI) input
+        file must exit(1) with a clean [ERROR] message -- InvalidMIDIError
+        from the parser used to escape as a raw traceback."""
+        self.test_midi.write_bytes(b"not a midi file")
+
+        args = Namespace(
+            input=str(self.test_midi), bank=str(self.test_bank),
+            name="Test Song", composer=None, loop_point=None,
+            tags=None, tempo=120,
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_song_add(args)
+        assert exc_info.value.code == 1
+        printed_text = " ".join(str(call[0][0]) for call in mock_print.call_args_list)
+        assert "[ERROR]" in printed_text
+
+    @patch('builtins.print')
+    def test_run_song_add_missing_midi_exits_cleanly(self, mock_print):
+        """Regression (#455/SAFE-2026-08-21-1): a nonexistent input path
+        must exit(1) with a clean [ERROR] message -- a bare
+        FileNotFoundError used to escape as a raw traceback."""
+        args = Namespace(
+            input=str(self.temp_dir / "does_not_exist.mid"),
+            bank=str(self.test_bank), name="Test Song", composer=None,
+            loop_point=None, tags=None, tempo=120,
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_song_add(args)
+        assert exc_info.value.code == 1
+        printed_text = " ".join(str(call[0][0]) for call in mock_print.call_args_list)
+        assert "[ERROR]" in printed_text
+
+    @patch('main.SongBank')
+    @patch('builtins.print')
+    def test_run_song_add_value_error_exits_cleanly(self, mock_print, mock_bank_class):
+        """Regression (#455/SAFE-2026-08-21-1): add_song's bare ValueError
+        (duplicate song name, or "Not enough bank space") must exit(1) with
+        a clean [ERROR] message, not a raw traceback."""
+        mock_bank = Mock()
+        mock_bank.add_song_from_midi.side_effect = ValueError(
+            "Song 'Test Song' already exists in the bank")
+        mock_bank_class.return_value = mock_bank
+
+        args = Namespace(
+            input=str(self.test_midi), bank=str(self.test_bank),
+            name="Test Song", composer=None, loop_point=None,
+            tags=None, tempo=120,
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_song_add(args)
+        assert exc_info.value.code == 1
+        printed_text = " ".join(str(call[0][0]) for call in mock_print.call_args_list)
+        assert "[ERROR]" in printed_text
+        assert "already exists" in printed_text
+
+    @patch('main.SongBank')
+    @patch('builtins.print')
+    def test_run_song_add_export_failure_also_exits_cleanly(self, mock_print, mock_bank_class):
+        """The save step (export_bank) is inside the same guard as
+        add_song_from_midi -- a failure there must exit cleanly too, not
+        just a failure in the add step."""
+        mock_bank = Mock()
+        mock_bank.export_bank.side_effect = ValueError("disk full")
+        mock_bank_class.return_value = mock_bank
+
+        args = Namespace(
+            input=str(self.test_midi), bank=str(self.test_bank),
+            name="Test Song", composer=None, loop_point=None,
+            tags=None, tempo=120,
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_song_add(args)
+        assert exc_info.value.code == 1
         printed_text = " ".join(str(call[0][0]) for call in mock_print.call_args_list)
         assert "[ERROR]" in printed_text
 

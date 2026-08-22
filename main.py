@@ -818,12 +818,21 @@ def run_song_add(args):
         'tempo_base': args.tempo
     }
     
-    # Add song to bank
-    bank.add_song_from_midi(args.input, args.name, metadata)
-    
-    # Save bank
-    output_path = args.bank or 'song_bank.json'
-    bank.export_bank(output_path)
+    # Add song to bank. A corrupt/missing MIDI (InvalidMIDIError/
+    # FileNotFoundError, tracker/parser_fast.py), a duplicate song name, or
+    # a full bank (both bare ValueError, nes/song_bank.py's add_song) used
+    # to escape as a raw traceback -- every sibling subcommand converts its
+    # documented failure modes to a clean [ERROR] + exit 1 (#455/
+    # SAFE-2026-08-21-1), matching the --bank load guard three lines above.
+    try:
+        bank.add_song_from_midi(args.input, args.name, metadata)
+
+        # Save bank
+        output_path = args.bank or 'song_bank.json'
+        bank.export_bank(output_path)
+    except (MIDI2NESError, FileNotFoundError, ValueError) as e:
+        print(f"[ERROR] {e}")
+        sys.exit(1)
     print(f"Song added to bank: {output_path}")
 
 def run_song_list(args):

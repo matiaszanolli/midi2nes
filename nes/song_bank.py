@@ -9,6 +9,7 @@ from pathlib import Path
 # code path that would render it, or note/event handling can silently drift
 # between the two (#33 / F-14).
 from tracker.parser_fast import parse_midi_to_frames
+from core.io_utils import atomic_write_text
 
 @dataclass
 class SongMetadata:
@@ -185,7 +186,16 @@ class SongBank:
         return self.songs.get(name)
 
     def export_bank(self, output_path: str) -> None:
-        """Export the entire song bank to a file"""
+        """Export the entire song bank to a file.
+
+        Unlike a music.asm or intermediate JSON stage (regenerable from the
+        source MIDI in one command), song_bank.json is cumulative state
+        built up across many `song add`/`song remove` runs -- a disk-full,
+        quota, or kill mid-write would leave a truncated file overwriting
+        the previous good bank, with no way to recover the lost entries
+        (#456/SAFE-2026-08-21-2). Write atomically, matching the exporters'
+        own #385 fix.
+        """
         bank_data = {
             'version': '0.3.0',
             'bank_info': {
@@ -194,8 +204,8 @@ class SongBank:
             },
             'songs': self.songs
         }
-        
-        Path(output_path).write_text(json.dumps(bank_data, indent=2))
+
+        atomic_write_text(output_path, json.dumps(bank_data, indent=2))
 
     def import_bank(self, input_path: str) -> None:
         """Import a song bank from a file.

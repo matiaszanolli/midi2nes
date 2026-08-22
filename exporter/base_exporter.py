@@ -1,7 +1,14 @@
 # New file: exporter/base_exporter.py
 
-import os
-import tempfile
+# Re-exported for existing `from exporter.base_exporter import
+# atomic_write_text` call sites -- the implementation moved to core/io_utils
+# (#456/SAFE-2026-08-21-2) so nes/song_bank.py (and any other module) can use
+# it without a reverse dependency on exporter/, which already imports from
+# nes/. Listed in __all__ (matching arranger/__init__.py's re-export
+# convention) so the repo-hygiene F401 check (#264) recognizes it as used.
+from core.io_utils import atomic_write_text
+
+__all__ = ["BaseExporter", "atomic_write_text"]
 
 
 class BaseExporter:
@@ -17,32 +24,3 @@ class BaseExporter:
     history if RLE/delta channel compression is ever revisited.
     """
     pass
-
-
-def atomic_write_text(output_path, content):
-    """Write `content` to `output_path` atomically (#385/SAFE-2026-07-19-3).
-
-    The full output is already assembled in memory before this is called, so
-    the only failure window is the write itself (disk full, killed process,
-    etc.). Writing straight to `output_path` leaves a truncated file on that
-    rare failure -- and for a re-export, overwrites a prior good file with a
-    partial one. Instead write to a sibling temp file in the same directory
-    and `os.replace()` it into place: `os.replace` is atomic on both POSIX
-    and Windows, so readers only ever see the old complete file or the new
-    complete file, never a partial one. On failure the temp file is removed
-    and `output_path` is left untouched.
-    """
-    output_path = str(output_path)
-    directory = os.path.dirname(output_path) or "."
-    fd, tmp_path = tempfile.mkstemp(
-        dir=directory, prefix=f".{os.path.basename(output_path)}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, 'w') as f:
-            f.write(content)
-        os.replace(tmp_path, output_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise

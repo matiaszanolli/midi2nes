@@ -95,7 +95,12 @@ class NESProjectBuilder:
                 before this parameter existed. Any other value (``>= 1``)
                 defines ``JUKEBOX_BUILD`` before including audio_engine.asm
                 and adds the Start-button skip-to-next-song polling in
-                ``_generate_main_asm``.
+                ``_generate_main_asm``. If omitted, jukebox mode is
+                auto-detected from ``music_asm_path``'s own content (the
+                exporter's distinguishing marker), so a jukebox music.asm
+                handed to `prepare` directly (bypassing `song build`) still
+                links instead of failing at ld65 with unresolved externals
+                (#453/MAP-2026-08-21-1).
 
         Returns:
             True on success
@@ -120,6 +125,21 @@ class NESProjectBuilder:
         # otherwise music.asm references engine-only symbols it never defines
         # (ptr1/temp1/instrument_table/ntsc_period_*) and won't assemble (issue #50).
         is_bytecode = "MMC3 Macro Bytecode" in music_content
+
+        # Auto-detect jukebox mode from music.asm itself when the caller
+        # didn't pass song_count. export_song_bank_bytecode always stamps
+        # this marker on its first line (exporter/exporter_ca65.py), so a
+        # jukebox music.asm handed to the documented `prepare`/`compile`
+        # split flow (or any library caller besides run_song_build) used to
+        # "succeed" here -- capacity pre-flight passes, all files written --
+        # and only fail two steps later at ld65 with unresolved externals,
+        # since JUKEBOX_BUILD was never defined (#453/MAP-2026-08-21-1).
+        # The exact count doesn't matter below: _generate_main_asm and the
+        # JUKEBOX_BUILD injection further down only ever check `is not
+        # None`; the ROM's actual runtime song_count comes from music.asm's
+        # own exported byte, not this parameter.
+        if song_count is None and "multi-song jukebox build" in music_content:
+            song_count = 1
 
         # Bytecode mode has no fallback definition of frame_counter (and other
         # engine zeropage vars): main.asm's reset routine writes to it

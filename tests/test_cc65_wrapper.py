@@ -153,6 +153,76 @@ class TestSubprocessTimeouts:
         assert "undefined symbol _music_data" in str(exc_info.value)
 
 
+class TestResolvedToolPathUsage:
+    """#454/MAP-2026-08-21-2: assemble()/link() must invoke the exact binary
+    check_toolchain() resolved (self._ca65_path/_ld65_path), not re-resolve
+    the bare command name through PATH at spawn time -- the same TOCTOU/
+    PATH-divergence rationale check_toolchain()/get_version() already follow
+    (#14) -- and a FileNotFoundError from the real run must surface as the
+    same typed ToolchainError every other missing-tool path produces."""
+
+    def setup_method(self):
+        self.wrapper = CC65Wrapper()
+        self.wrapper._ca65_path = "/opt/cc65/bin/ca65"
+        self.wrapper._ld65_path = "/opt/cc65/bin/ld65"
+
+    def test_assemble_invokes_the_resolved_ca65_path(self, tmp_path):
+        src = tmp_path / "music.asm"
+        src.write_text("; stub\n")
+        out = tmp_path / "music.o"
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=ok) as mock_run:
+            self.wrapper.assemble(src, out, working_dir=tmp_path)
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "/opt/cc65/bin/ca65"
+
+    def test_link_invokes_the_resolved_ld65_path(self, tmp_path):
+        obj = tmp_path / "music.o"
+        obj.write_bytes(b"")
+        out = tmp_path / "game.nes"
+        cfg = tmp_path / "nes.cfg"
+        cfg.write_text("; stub\n")
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=ok) as mock_run:
+            self.wrapper.link([obj], out, cfg, working_dir=tmp_path)
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "/opt/cc65/bin/ld65"
+
+    def test_assemble_falls_back_to_bare_name_when_path_unresolved(self, tmp_path):
+        """If check_toolchain() was never called (_ca65_path stays None),
+        the command must still fall back to the bare name rather than
+        passing None to subprocess.run."""
+        self.wrapper._ca65_path = None
+        src = tmp_path / "music.asm"
+        src.write_text("; stub\n")
+        out = tmp_path / "music.o"
+        ok = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=ok) as mock_run:
+            self.wrapper.assemble(src, out, working_dir=tmp_path)
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "ca65"
+
+    def test_assemble_file_not_found_raises_toolchain_error(self, tmp_path):
+        src = tmp_path / "music.asm"
+        src.write_text("; stub\n")
+        out = tmp_path / "music.o"
+        with patch("subprocess.run", side_effect=FileNotFoundError()):
+            with pytest.raises(ToolchainError) as exc_info:
+                self.wrapper.assemble(src, out, working_dir=tmp_path)
+        assert exc_info.value.tool == "ca65"
+
+    def test_link_file_not_found_raises_toolchain_error(self, tmp_path):
+        obj = tmp_path / "music.o"
+        obj.write_bytes(b"")
+        out = tmp_path / "game.nes"
+        cfg = tmp_path / "nes.cfg"
+        cfg.write_text("; stub\n")
+        with patch("subprocess.run", side_effect=FileNotFoundError()):
+            with pytest.raises(ToolchainError) as exc_info:
+                self.wrapper.link([obj], out, cfg, working_dir=tmp_path)
+        assert exc_info.value.tool == "ld65"
+
+
 class TestMissingToolDetection:
     """REG-09/#49: check_toolchain must raise a clear ToolchainError when
     ca65/ld65 aren't found on PATH, not fail some other way further down."""
