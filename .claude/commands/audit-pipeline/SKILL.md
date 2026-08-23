@@ -47,11 +47,18 @@ producer key matches each consumer's read. Concrete checks in `main.py`:
   `parse_midi_to_frames`). `run_map` reads it via `load_json_stage(args.input, ['events'],
   'parse')` (`main.py:106`), which now fails with a clean `[ERROR]` message and exit 1 —
   rather than a bare `KeyError`/`FileNotFoundError`/`JSONDecodeError` — on a missing/corrupt/
-  wrong-stage file (`load_json_stage`, `main.py:64-93`; SAFE-01/#120, closed). Verify: every
-  call site's `required_keys` list actually names what that stage's body indexes next —
-  `run_frames`/`run_export`/`run_detect_patterns` pass `[]` since they only iterate the
-  (all-optional) channel dict rather than a fixed key; confirm that's genuinely safe rather
-  than a gap in the guard.
+  wrong-stage file (`load_json_stage`, `main.py:64-93`; SAFE-01/#120, closed). **Fixed
+  (#485/PIPE-2026-08-22-1, closed; regression of #377/PIPE-2026-07-19-1)**:
+  `run_frames`/`run_export`/`run_detect_patterns` still pass `required_keys=[]` (their input's
+  channel keys are individually optional, so no single key can be required), but now also
+  pass `channel_shape=True` — `load_json_stage` rejects a non-empty JSON object that has none
+  of the five NES channel keys (`_PIPELINE_CHANNEL_KEYS`, a frozen copy of
+  `CA65Exporter.SEQUENCE_CHANNELS` captured at import time so a test's `@patch('main.CA65Exporter')`
+  can't silently empty it out), while still accepting a genuinely empty `{}` (an all-rest
+  song). This was previously a real gap — a parse-stage or detect-patterns-stage file fed to
+  the wrong subcommand silently produced an empty-but-exit-0 result at every stage
+  downstream — verify the guard still fires on a wrong-stage file and still passes a
+  legitimate empty frames dict.
 - `run_map` → `assign_tracks_to_nes_channels(midi_data["events"], dpcm_index_path)`
   (`tracker/track_mapper.py`). `run_frames` (`main.py:114-121`) feeds that JSON straight into
   `NESEmulatorCore.process_all_tracks`. No change observed here; verify the mapped shape the

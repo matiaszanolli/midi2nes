@@ -82,6 +82,43 @@ class TestSongBank(unittest.TestCase):
         self.assertGreaterEqual(song_data['bank'], 0)
         self.assertLess(song_data['bank'], self.bank.total_banks)
 
+    def test_order_survives_remove_then_add_without_colliding(self):
+        """Regression (#488/PIPE-2026-08-22-4): order used to be
+        len(self.songs), which reuses a just-freed slot's index -- add A,
+        B, C (order 0, 1, 2); remove B; add D used to give D order=2,
+        colliding with C. order must stay monotonic and never reused."""
+        self.bank.add_song('A', self.test_song_data, {})
+        self.bank.add_song('B', self.test_song_data, {})
+        self.bank.add_song('C', self.test_song_data, {})
+        self.assertEqual(
+            {n: s['metadata']['order'] for n, s in self.bank.songs.items()},
+            {'A': 0, 'B': 1, 'C': 2})
+
+        del self.bank.songs['B']  # mirrors run_song_remove's delete-without-renumber
+        self.bank.add_song('D', self.test_song_data, {})
+
+        orders = {n: s['metadata']['order'] for n, s in self.bank.songs.items()}
+        self.assertEqual(len(orders), len(set(orders.values())),
+                          f"order values must be unique after remove+add: {orders}")
+        self.assertNotEqual(orders['D'], orders['C'],
+                             "D must not reuse C's order after B was removed")
+
+    def test_order_starts_at_zero_for_an_empty_bank(self):
+        self.assertEqual(self.bank._next_order(), 0)
+
+    def test_add_song_from_midi_order_matches_add_song_authoritative_value(self):
+        """add_song_from_midi's own SongMetadata.order is informational only
+        -- add_song recomputes it via _next_order(). Both must agree, so a
+        future refactor that starts trusting the passed-through value
+        doesn't silently diverge from what's actually stored."""
+        import unittest.mock as mock
+        with mock.patch('nes.song_bank.parse_midi_to_frames',
+                         return_value={'events': [], 'patterns': {}, 'frames': []}):
+            self.bank.add_song_from_midi('fake.mid', name='first')
+            self.bank.add_song_from_midi('fake2.mid', name='second')
+        self.assertEqual(self.bank.songs['first']['metadata']['order'], 0)
+        self.assertEqual(self.bank.songs['second']['metadata']['order'], 1)
+
     def test_bank_size_limits(self):
         """Test bank size limitations"""
         # Create a song that will take about 1/4 of a bank

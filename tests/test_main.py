@@ -33,7 +33,7 @@ from main import (
     DETECTOR_MAX_EVENTS, resolve_mapper, get_mapper_choice,
     enforce_direct_export_dpcm_mapper, detect_patterns_or_direct_export,
 )
-from core.exceptions import ConfigurationError
+from core.exceptions import ConfigurationError, ExportError
 
 
 class TestMainArgumentParsing:
@@ -121,6 +121,39 @@ class TestMainArgumentParsing:
                 # Fails later on missing input file, not on flag parsing (exit 1),
                 # confirming --arranger was accepted and reached the pipeline.
                 assert exc.value.code != 2
+
+    def test_arranger_before_song_build_points_at_the_working_order(self):
+        """Regression (#487/PIPE-2026-08-22-3): `song build` has its own
+        --arranger (p_song_build), so 'midi2nes --arranger song build ...'
+        must not claim no step-by-step equivalent exists -- it must point
+        the user at the working order ('song build ... --arranger')
+        instead of denying the flag exists there at all."""
+        with patch('sys.argv', ['main.py', '--arranger', 'song', 'build', 'bank.json', 'out.nes']):
+            with patch('builtins.print') as mock_print:
+                with pytest.raises(SystemExit) as exc:
+                    main()
+                assert exc.value.code == 2
+                printed = ' '.join(
+                    str(call.args[0]) if call.args else ''
+                    for call in mock_print.call_args_list
+                )
+                assert "no step-by-step equivalent" not in printed, (
+                    "song build does have an --arranger equivalent -- must not deny it exists")
+                assert "song build" in printed and "--arranger" in printed
+
+    def test_other_subcommands_still_say_no_step_by_step_equivalent(self):
+        """Non-song-build subcommands genuinely have no --arranger equivalent
+        yet, so the original denial message is still accurate there."""
+        with patch('sys.argv', ['main.py', '--arranger', 'map', 'parsed.json', 'mapped.json']):
+            with patch('builtins.print') as mock_print:
+                with pytest.raises(SystemExit) as exc:
+                    main()
+                assert exc.value.code == 2
+                printed = ' '.join(
+                    str(call.args[0]) if call.args else ''
+                    for call in mock_print.call_args_list
+                )
+                assert "no step-by-step equivalent" in printed
 
     def test_default_path_config_flag_is_accepted_and_threaded(self):
         """Regression (#219): --config on the default (no-subcommand) pipeline
@@ -389,8 +422,11 @@ class TestRunFrames:
         self.test_input = self.temp_dir / "mapped.json"
         self.test_output = self.temp_dir / "frames.json"
         
-        # Create test input file
-        test_data = {"channel_0": [{"frame": 0, "note": 60}]}
+        # Create test input file. Uses a real channel name (not a
+        # placeholder like the old "channel_0") since run_frames now rejects
+        # non-empty input with no recognizable channel key (#485/
+        # PIPE-2026-08-22-1).
+        test_data = {"pulse1": [{"frame": 0, "note": 60}]}
         self.test_input.write_text(json.dumps(test_data))
     
     def teardown_method(self):
@@ -411,7 +447,7 @@ class TestRunFrames:
         run_frames(args)
         
         mock_emulator_class.assert_called_once()
-        mock_emulator.process_all_tracks.assert_called_once_with({"channel_0": [{"frame": 0, "note": 60}]})
+        mock_emulator.process_all_tracks.assert_called_once_with({"pulse1": [{"frame": 0, "note": 60}]})
         
         assert self.test_output.exists()
         content = json.loads(self.test_output.read_text())
@@ -435,6 +471,37 @@ class TestRunFrames:
         with pytest.raises(SystemExit) as exc:
             run_frames(args)
         assert exc.value.code == 1
+
+    def test_run_frames_wrong_stage_parse_file_errors(self):
+        """Regression (#485/PIPE-2026-08-22-1, a regression of #377): a
+        parse-stage file (top-level 'events'/'metadata', no channel keys)
+        fed to `frames` used to silently produce an empty {} frames dict
+        with exit 0. It must now fail loudly instead."""
+        parse_stage_file = self.temp_dir / "parsed.json"
+        parse_stage_file.write_text(json.dumps(
+            {"events": [{"frame": 0, "note": 60, "velocity": 100, "channel": 0}],
+             "metadata": {}}))
+        args = Namespace(input=str(parse_stage_file), output=str(self.test_output))
+        with pytest.raises(SystemExit) as exc:
+            run_frames(args)
+        assert exc.value.code == 1
+        assert not self.test_output.exists(), "no output file should be written on rejection"
+
+    @patch('main.NESEmulatorCore')
+    @patch('builtins.print')
+    def test_run_frames_genuinely_empty_input_still_accepted(self, mock_print, mock_emulator_class):
+        """A real all-rest song can legitimately produce an empty {} map
+        JSON -- the channel_shape guard must not reject that."""
+        empty_file = self.temp_dir / "empty_mapped.json"
+        empty_file.write_text("{}")
+        mock_emulator = Mock()
+        mock_emulator.process_all_tracks.return_value = {}
+        mock_emulator_class.return_value = mock_emulator
+
+        args = Namespace(input=str(empty_file), output=str(self.test_output))
+        run_frames(args)  # must not raise
+
+        assert self.test_output.exists()
 
 
 class TestRunPrepare:
@@ -834,8 +901,11 @@ class TestRunExport:
         self.test_patterns = self.temp_dir / "patterns.json"
         self.test_output = self.temp_dir / "output.asm"
         
-        # Create test input files
-        frames_data = {"channel_0": {"0": {"note": 60, "volume": 15}}}
+        # Create test input files. Uses a real channel name (not a
+        # placeholder like the old "channel_0") since run_export now rejects
+        # non-empty input with no recognizable channel key (#485/
+        # PIPE-2026-08-22-1).
+        frames_data = {"pulse1": {"0": {"note": 60, "volume": 15}}}
         self.test_input.write_text(json.dumps(frames_data))
         
         patterns_data = {
@@ -982,6 +1052,21 @@ class TestRunExport:
         with pytest.raises(SystemExit) as exc:
             run_export(args)
         assert exc.value.code == 1
+
+    def test_run_export_wrong_stage_parse_file_errors(self):
+        """Regression (#485/PIPE-2026-08-22-1, a regression of #377): a
+        parse-stage file fed to `export` used to silently write a
+        zero-channel music.asm with exit 0. It must now fail loudly."""
+        parse_stage_file = self.temp_dir / "parsed.json"
+        parse_stage_file.write_text(json.dumps(
+            {"events": [{"frame": 0, "note": 60, "velocity": 100, "channel": 0}],
+             "metadata": {}}))
+        args = Namespace(input=str(parse_stage_file), output=str(self.test_output),
+                          format="ca65", patterns=None)
+        with pytest.raises(SystemExit) as exc:
+            run_export(args)
+        assert exc.value.code == 1
+        assert not self.test_output.exists(), "no music.asm should be written on rejection"
 
     def test_run_export_missing_patterns_file(self):
         """Regression (#120): a missing --patterns file must fail with a clear
@@ -1256,21 +1341,38 @@ class TestRunDetectPatterns:
         self.test_input = self.temp_dir / "frames.json"
         self.test_output = self.temp_dir / "patterns.json"
         
-        # Create test input file
+        # Create test input file. Uses a real channel name (not a
+        # placeholder like the old "channel_0") since run_detect_patterns
+        # now rejects non-empty input with no recognizable channel key
+        # (#485/PIPE-2026-08-22-1).
         frames_data = {
-            "channel_0": {
+            "pulse1": {
                 "0": {"note": 60, "volume": 15},
                 "4": {"note": 62, "volume": 14},
                 "8": {"note": 64, "volume": 13}
             }
         }
         self.test_input.write_text(json.dumps(frames_data))
-    
+
     def teardown_method(self):
         """Clean up test fixtures."""
         import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
-    
+
+    def test_run_detect_patterns_wrong_stage_parse_file_errors(self):
+        """Regression (#485/PIPE-2026-08-22-1, a regression of #377): a
+        parse-stage file fed to `detect-patterns` used to silently produce
+        an empty patterns.json with exit 0. It must now fail loudly."""
+        parse_stage_file = self.temp_dir / "parsed.json"
+        parse_stage_file.write_text(json.dumps(
+            {"events": [{"frame": 0, "note": 60, "velocity": 100, "channel": 0}],
+             "metadata": {}}))
+        args = Namespace(input=str(parse_stage_file), output=str(self.test_output))
+        with pytest.raises(SystemExit) as exc:
+            run_detect_patterns(args)
+        assert exc.value.code == 1
+        assert not self.test_output.exists(), "no patterns.json should be written on rejection"
+
     @patch('main.EnhancedPatternDetector')
     @patch('main.EnhancedTempoMap')
     @patch('builtins.print')
@@ -1334,7 +1436,7 @@ class TestRunDetectPatterns:
         # printed coverage line must say so instead of reading like a
         # full-song measurement.
         large_frames = {
-            "channel_0": {
+            "pulse1": {
                 str(i): {"note": 60 + (i % 12), "volume": 15}
                 for i in range(DETECTOR_MAX_EVENTS + 500)
             }
@@ -1844,6 +1946,78 @@ class TestRunSongBuild:
 
         mock_compile.assert_called_once()
         mock_validate.assert_not_called()
+
+    @patch('main.validate_rom')
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    def test_validation_failure_restores_a_preexisting_good_rom(
+            self, mock_builder_class, mock_compile, mock_validate):
+        """Regression (#486/PIPE-2026-08-22-2): a re-build over a previously
+        good ROM that compiles but fails validate_rom must not leave the
+        broken ROM at output_rom -- the old good ROM must be restored."""
+        self.output_rom.write_bytes(b"GOOD ROM BYTES")
+        self._write_bank([('song_a', self.midi_a, 0)])
+        mock_builder_class.return_value = Mock()
+        mock_compile.side_effect = lambda project_path, output_rom, **kwargs: (
+            Path(output_rom).write_bytes(b"BROKEN ROM BYTES") or True)
+        mock_validate.return_value = False
+
+        with pytest.raises(SystemExit) as exc:
+            run_song_build(self._args())
+        assert exc.value.code == 1
+        assert self.output_rom.read_bytes() == b"GOOD ROM BYTES", (
+            "the last-known-good ROM must be restored, not left broken")
+
+    @patch('main.validate_rom')
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    def test_first_time_validation_failure_moves_broken_rom_aside(
+            self, mock_builder_class, mock_compile, mock_validate):
+        """No pre-existing ROM to restore -> the freshly-written unbootable
+        ROM must be moved to <name>.nes.failed, not left at output_rom
+        looking bootable."""
+        self._write_bank([('song_a', self.midi_a, 0)])
+        mock_builder_class.return_value = Mock()
+        mock_compile.side_effect = lambda project_path, output_rom, **kwargs: (
+            Path(output_rom).write_bytes(b"BROKEN ROM BYTES") or True)
+        mock_validate.return_value = False
+
+        with pytest.raises(SystemExit):
+            run_song_build(self._args())
+        assert not self.output_rom.exists(), "no unbootable ROM should be left at output_rom"
+        assert (self.temp_dir / "jukebox.nes.failed").exists()
+
+    @patch('main.NESProjectBuilder')
+    def test_prepare_project_exception_exits_cleanly_not_raw_traceback(
+            self, mock_builder_class):
+        """An exception out of prepare_project (ExportError, MapperError,
+        ...) must surface as a clean [ERROR] + exit 1, not an uncaught
+        traceback -- matching every other build path's contract."""
+        self._write_bank([('song_a', self.midi_a, 0)])
+        mock_builder = Mock()
+        mock_builder.prepare_project.side_effect = ExportError("boom")
+        mock_builder_class.return_value = mock_builder
+
+        with pytest.raises(SystemExit) as exc:
+            run_song_build(self._args())
+        assert exc.value.code == 1
+
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    def test_prepare_project_falsy_return_exits_with_prepare_error_not_compile(
+            self, mock_builder_class, mock_compile):
+        """prepare_project's boolean return must be checked -- a
+        falsy-but-non-raising failure must not silently proceed to
+        compile_rom and fail with a misleading 'Compilation failed'."""
+        self._write_bank([('song_a', self.midi_a, 0)])
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = False
+        mock_builder_class.return_value = mock_builder
+
+        with pytest.raises(SystemExit) as exc:
+            run_song_build(self._args())
+        assert exc.value.code == 1
+        mock_compile.assert_not_called()
 
     def test_missing_bank_file_exits(self):
         with pytest.raises(SystemExit):
@@ -2377,7 +2551,7 @@ class TestErrorHandling:
         mock_detector_class.return_value = mock_detector
         
         frames_file = self.temp_dir / "frames.json"
-        frames_file.write_text('{"channel_0": {"0": {"note": 60}}}')
+        frames_file.write_text('{"pulse1": {"0": {"note": 60}}}')
         
         args = Namespace(input=str(frames_file), output="patterns.json")
         
