@@ -13,6 +13,15 @@ from core.exceptions import ExportError
 class TestCA65Export(unittest.TestCase):
     def setUp(self):
         self.exporter = CA65Exporter()
+        # Regression (#475/REG-36): these tests used to write scratch .asm
+        # output to bare relative paths, which resolve against the process
+        # CWD (the repo root under `python -m pytest`). A hard kill between
+        # write and the per-test try/finally cleanup left files behind, two
+        # tests reusing a name could collide under parallel test runs, and a
+        # same-named checked-in file could be silently clobbered. A per-test
+        # TemporaryDirectory (fresh each setUp call, auto-removed in
+        # tearDown) keeps every scratch file out of the repo entirely.
+        self.temp_dir = tempfile.TemporaryDirectory()
         self.test_frames = {
             'pulse1': {
                 '0': {'note': 60, 'volume': 15},
@@ -31,7 +40,10 @@ class TestCA65Export(unittest.TestCase):
             '0': ('pattern_1', 0),
             '32': ('pattern_1', 1)
         }
-        
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
     def test_midi_note_to_timer_value(self):
         # Test valid notes
         self.assertGreater(self.exporter.midi_note_to_timer_value(60), 0)  # Middle C
@@ -287,7 +299,7 @@ class TestCA65Export(unittest.TestCase):
                                for f in range(4)}}
         patterns = {'p0': {'events': [{'note': note, 'volume': 15}]}}
         refs = {'0': ('p0', 0)}  # non-empty -> macro bytecode path
-        test_output = Path("test_tri_tune.asm")
+        test_output = Path(self.temp_dir.name) / "test_tri_tune.asm"
         try:
             self.exporter.export_tables_with_patterns(frames, patterns, refs, test_output)
             output = test_output.read_text()
@@ -442,7 +454,7 @@ class TestCA65Export(unittest.TestCase):
         }}
         patterns = {'p0': {'events': [{'note': note, 'volume': 15}]}}
         refs = {'0': ('p0', 0)}  # non-empty -> macro bytecode path
-        out = Path("test_pitch_ctrl.asm")
+        out = Path(self.temp_dir.name) / "test_pitch_ctrl.asm"
         try:
             self.exporter.export_tables_with_patterns(frames, patterns, refs, out)
             output = out.read_text()
@@ -478,7 +490,7 @@ class TestCA65Export(unittest.TestCase):
             'dpcm': {'0': {'note': 1, 'volume': 15}},
         }
         patterns = {'p0': {'events': [{'note': 60, 'volume': 15}]}}  # non-empty -> bytecode path
-        out = Path("test_startbanks.asm")
+        out = Path(self.temp_dir.name) / "test_startbanks.asm"
         try:
             self.exporter.export_tables_with_patterns(frames, patterns, {}, str(out))
             asm = out.read_text()
@@ -528,7 +540,7 @@ class TestCA65Export(unittest.TestCase):
         frames = {'pulse1': {str(i): {'note': 60 + (i % 24), 'volume': 8 + (i % 7)}
                              for i in range(6000)}}
         patterns = {'p0': {'events': [{'note': 60, 'volume': 15}]}}
-        out = Path("test_bankcap.asm")
+        out = Path(self.temp_dir.name) / "test_bankcap.asm"
         try:
             with patch.object(MMC3Mapper, 'SWAP_BANK_COUNT', 1):
                 with self.assertRaises(ValueError) as ctx:
@@ -546,7 +558,7 @@ class TestCA65Export(unittest.TestCase):
         # DPCM actually packed ("Symbol ... is already an import").
         frames = {'pulse1': {'0': {'note': 60, 'volume': 15}},
                   'dpcm': {'0': {'note': 1, 'volume': 15}}}
-        out = Path("test_dpcm_noimport.asm")
+        out = Path(self.temp_dir.name) / "test_dpcm_noimport.asm"
         try:
             self.exporter.export_direct_frames(frames, str(out), standalone=False)
             content = out.read_text()
@@ -567,7 +579,7 @@ class TestCA65Export(unittest.TestCase):
         # when it's zero, mirroring nes/audio_engine.asm's @write_dpcm.
         frames = {'pulse1': {'0': {'note': 60, 'volume': 15}},
                   'dpcm': {'0': {'note': 1, 'volume': 15}}}
-        out = Path("test_dpcm_unpacked_guard.asm")
+        out = Path(self.temp_dir.name) / "test_dpcm_unpacked_guard.asm"
         try:
             self.exporter.export_direct_frames(frames, str(out), standalone=False)
             content = out.read_text()
@@ -595,7 +607,7 @@ class TestCA65Export(unittest.TestCase):
                            '1': {'note': 1, 'volume': 15}}}
         patterns = {'p0': {'events': [{'note': 1, 'volume': 15}]}}
         refs = {'0': ('p0', 0)}  # non-empty patterns -> macro bytecode path
-        test_output = Path("test_dmc_removed.asm")
+        test_output = Path(self.temp_dir.name) / "test_dmc_removed.asm"
         try:
             self.exporter.export_tables_with_patterns(frames, patterns, refs, test_output)
             output = test_output.read_text()
@@ -608,7 +620,7 @@ class TestCA65Export(unittest.TestCase):
                 test_output.unlink()
 
     def test_export_tables_with_patterns(self):
-        test_output = Path("test_output.asm")
+        test_output = Path(self.temp_dir.name) / "test_output.asm"
         try:
             self.exporter.export_tables_with_patterns(
                 self.test_frames,
@@ -652,8 +664,8 @@ class TestCA65Export(unittest.TestCase):
         # Regression (F-01 / #4): export_tables_with_patterns never consumes
         # `references` — output bytes derive only from frames+patterns. Two very
         # different references dicts must produce byte-identical assembly.
-        out_a = Path("test_ref_a.asm")
-        out_b = Path("test_ref_b.asm")
+        out_a = Path(self.temp_dir.name) / "test_ref_a.asm"
+        out_b = Path(self.temp_dir.name) / "test_ref_b.asm"
         try:
             self.exporter.export_tables_with_patterns(
                 self.test_frames, self.test_patterns,
@@ -673,7 +685,7 @@ class TestCA65Export(unittest.TestCase):
         # pulse sweep units ($4001/$4005). Standalone emits a reset proc;
         # non-standalone emits init_music for the project builder.
         for standalone in (True, False):
-            out = Path(f"test_sweep_{int(standalone)}.asm")
+            out = Path(self.temp_dir.name) / f"test_sweep_{int(standalone)}.asm"
             try:
                 self.exporter.export_tables_with_patterns(
                     self.test_frames, {}, {}, out, standalone=standalone)
@@ -693,7 +705,7 @@ class TestCA65Export(unittest.TestCase):
         # mixer (docs/APU_DMC_REFERENCE.md §5). Standalone emits a reset
         # proc; non-standalone emits init_music for the project builder.
         for standalone in (True, False):
-            out = Path(f"test_dmc_dac_{int(standalone)}.asm")
+            out = Path(self.temp_dir.name) / f"test_dmc_dac_{int(standalone)}.asm"
             try:
                 self.exporter.export_tables_with_patterns(
                     self.test_frames, {}, {}, out, standalone=standalone)
@@ -705,7 +717,7 @@ class TestCA65Export(unittest.TestCase):
                     out.unlink()
 
     def test_empty_patterns(self):
-        test_output = Path("test_empty.asm")
+        test_output = Path(self.temp_dir.name) / "test_empty.asm"
         try:
             self.exporter.export_tables_with_patterns({}, {}, {}, test_output)
             with open(test_output, 'r') as f:
@@ -911,6 +923,12 @@ class TestExportSongBankBytecode(unittest.TestCase):
 
     def setUp(self):
         self.exporter = CA65Exporter()
+        # See TestCA65Export.setUp (#475/REG-36): keep scratch .asm output
+        # out of the repo root instead of a bare CWD-relative path.
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
 
     @staticmethod
     def _song(base_note, n_events=6):
@@ -936,7 +954,7 @@ class TestExportSongBankBytecode(unittest.TestCase):
         # Boundary: 51 songs is the last index (50) that still fits the
         # engine's 8-bit song_index*5+channel indexing (50*5+4 == 254).
         songs = [self._song(60, n_events=1) for _ in range(51)]
-        out = Path("test_jukebox_51songs.asm")
+        out = Path(self.temp_dir.name) / "test_jukebox_51songs.asm"
         try:
             self.exporter.export_song_bank_bytecode(songs, str(out))
             self.assertTrue(out.exists())
@@ -946,7 +964,7 @@ class TestExportSongBankBytecode(unittest.TestCase):
 
     def test_symbols_are_prefixed_per_song_no_collisions(self):
         songs = [self._song(60), self._song(67), self._song(72)]
-        out = Path("test_jukebox_symbols.asm")
+        out = Path(self.temp_dir.name) / "test_jukebox_symbols.asm"
         try:
             self.exporter.export_song_bank_bytecode(songs, str(out))
             asm = out.read_text()
@@ -968,7 +986,7 @@ class TestExportSongBankBytecode(unittest.TestCase):
         # ntsc_period_low/high and triangle_period_low/high are pure hardware
         # constants, identical for every song -- emitted once, not per song.
         songs = [self._song(60), self._song(67)]
-        out = Path("test_jukebox_periods.asm")
+        out = Path(self.temp_dir.name) / "test_jukebox_periods.asm"
         try:
             self.exporter.export_song_bank_bytecode(songs, str(out))
             asm = out.read_text()
@@ -989,7 +1007,7 @@ class TestExportSongBankBytecode(unittest.TestCase):
             for i in range(5000)
         }}}
         songs = [big_song, self._song(60)]
-        out = Path("test_jukebox_freshbank.asm")
+        out = Path(self.temp_dir.name) / "test_jukebox_freshbank.asm"
         try:
             self.exporter.export_song_bank_bytecode(songs, str(out))
             asm = out.read_text()
@@ -1027,7 +1045,7 @@ class TestExportSongBankBytecode(unittest.TestCase):
             for i in range(5000)
         }}}
         songs = [big_song, self._song(60), self._song(67)]
-        out = Path("test_jukebox_instrument_segment.asm")
+        out = Path(self.temp_dir.name) / "test_jukebox_instrument_segment.asm"
         try:
             self.exporter.export_song_bank_bytecode(songs, str(out))
             asm = out.read_text()
@@ -1056,7 +1074,7 @@ class TestExportSongBankBytecode(unittest.TestCase):
 
     def test_song_table_matches_song_and_channel_count(self):
         songs = [self._song(60), self._song(67)]
-        out = Path("test_jukebox_songtable.asm")
+        out = Path(self.temp_dir.name) / "test_jukebox_songtable.asm"
         try:
             self.exporter.export_song_bank_bytecode(songs, str(out))
             asm = out.read_text()
@@ -1079,7 +1097,7 @@ class TestExportSongBankBytecode(unittest.TestCase):
         # songs, not just report whichever song exported last.
         hi_song = {'frames': {'pulse1': {'0': {'note': 200, 'volume': 10}}}}
         lo_song = {'frames': {'pulse1': {'0': {'note': 5, 'volume': 10}}}}
-        out = Path("test_jukebox_clamp.asm")
+        out = Path(self.temp_dir.name) / "test_jukebox_clamp.asm"
         try:
             self.exporter.export_song_bank_bytecode([hi_song, lo_song], str(out))
         finally:
@@ -1518,6 +1536,38 @@ class TestJukeboxCompilationIntegration(unittest.TestCase):
         main_asm = (self.project_path / "main.asm").read_text()
         self.assertIn("JUKEBOX_BUILD = 1", main_asm)
         self.assertIn("jsr audio_advance_song", main_asm)
+
+    def test_split_prepare_compile_route_links_jukebox_asm_without_song_count(self):
+        """Regression (#474/REG-35, #453/MAP-2026-08-21-1): the documented
+        step-by-step `main.py prepare` / `main.py compile` route (and any
+        library caller besides run_song_build) never passes song_count --
+        main.run_prepare calls builder.prepare_project(args.input) with no
+        second argument. Before #453, that produced a main.asm missing
+        JUKEBOX_BUILD entirely, which "succeeded" here (all files written,
+        no exception) and only failed two steps later at ld65 with
+        unresolved externals (audio_init_song, the fixed sequence labels,
+        channel_start_banks, instrument_table). prepare_project must
+        auto-detect the jukebox marker export_song_bank_bytecode embeds in
+        music.asm and link successfully even with no song_count passed --
+        this is the real-cc65 companion to
+        TestJukeboxSongCount.test_jukebox_music_asm_without_song_count_still_defines_jukebox_build
+        (tests/test_nes_project_builder.py), which only checks main.asm
+        content, not that the result actually links."""
+        songs = [self._song_frames(60), self._song_frames(67)]
+        music_asm = Path(self.temp_dir) / "music.asm"
+        self.exporter.export_song_bank_bytecode(songs, str(music_asm))
+
+        # Mirrors main.run_prepare exactly: no song_count argument.
+        self.assertTrue(self.builder.prepare_project(str(music_asm)))
+
+        main_asm = (self.project_path / "main.asm").read_text()
+        self.assertIn("JUKEBOX_BUILD = 1", main_asm)
+
+        rom_path = Path(self.temp_dir) / "jukebox_split.nes"
+        from compiler import compile_rom
+        success = compile_rom(self.project_path, rom_path, mapper=MMC3Mapper())
+        self.assertTrue(success, "split prepare/compile route failed to link a jukebox music.asm")
+        self.assertTrue(rom_path.exists())
 
     def test_one_song_jukebox_bank_compiles_and_links(self):
         # Regression (#30/F-13, MAP-2026-08-07-2/NH-HW-2026-08-07-1/
