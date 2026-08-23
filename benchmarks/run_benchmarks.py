@@ -207,7 +207,7 @@ def run_custom_benchmark(files: List[str], output_dir: str = "benchmark_results"
     benchmark = PerformanceBenchmark(output_dir=output_dir)
     log_memory_usage("Pre-benchmark")
     
-    results = benchmark.run_batch_benchmarks(valid_files)
+    benchmark.run_batch_benchmarks(valid_files)
     
     log_memory_usage("Post-benchmark")
     

@@ -34,7 +34,7 @@ from main import (
     enforce_direct_export_dpcm_mapper, detect_patterns_or_direct_export,
     _reject_debug_visualizer_combo,
 )
-from core.exceptions import ConfigurationError, ExportError
+from core.exceptions import ConfigurationError, ExportError, MapperError
 
 
 class TestMainArgumentParsing:
@@ -2095,6 +2095,42 @@ class TestRunSongBuild:
             run_song_build(self._args())
         assert exc.value.code == 1
         mock_compile.assert_not_called()
+
+    @patch('main.check_mapper_capacity')
+    @patch('main.NESProjectBuilder')
+    def test_capacity_failure_exits_cleanly_not_raw_traceback(
+            self, mock_builder_class, mock_check_capacity):
+        """#467/TD-32: run_song_build goes through the same
+        build_and_validate_rom helper as run_full_pipeline/run_compile, so a
+        capacity pre-flight failure (MapperError, raised before prepare/
+        compile ever run) must surface as a clean [ERROR] + exit 1, not an
+        uncaught traceback -- the same contract every other failure mode in
+        this class already has."""
+        self._write_bank([('song_a', self.midi_a, 0)])
+        mock_check_capacity.side_effect = MapperError("song data does not fit MMC3")
+
+        with pytest.raises(SystemExit) as exc:
+            run_song_build(self._args())
+        assert exc.value.code == 1
+        mock_builder_class.assert_not_called()
+
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    def test_compile_failure_exits_cleanly_not_raw_traceback(
+            self, mock_builder_class, mock_compile):
+        """#467/TD-32 sibling to the capacity/prepare/validate failure
+        tests above: build_and_validate_rom raises CompilationError when
+        compile_rom returns False, and that must surface the same clean
+        [ERROR] + exit 1 contract through run_song_build."""
+        self._write_bank([('song_a', self.midi_a, 0)])
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+        mock_compile.return_value = False
+
+        with pytest.raises(SystemExit) as exc:
+            run_song_build(self._args())
+        assert exc.value.code == 1
 
     def test_missing_bank_file_exits(self):
         with pytest.raises(SystemExit):
