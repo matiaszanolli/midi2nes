@@ -941,5 +941,129 @@ class TestInertArpeggioPlumbingPruned(unittest.TestCase):
         self.assertEqual(export(injected), baseline)
 
 
+class TestSamePitchRetrigger(unittest.TestCase):
+    """Regression (#481/NH-HW-2026-08-22-1): a genuine MIDI note-on retrigger
+    at the SAME pitch, with no rest between the previous note-off and it,
+    used to produce adjacent frames carrying an identical `note` value —
+    indistinguishable from one long sustain to both exporters' note-changed
+    logic, so the second attack was silently absorbed with no phase reset
+    and (when velocities matched) no volume step either."""
+
+    def setUp(self):
+        self.core = NESEmulatorCore()
+
+    def _retrigger_events(self, note=60, velocity=100):
+        return [
+            {'frame': 0, 'note': note, 'velocity': velocity},
+            {'frame': 10, 'note': note, 'velocity': 0},   # note-off, event 1
+            {'frame': 10, 'note': note, 'velocity': velocity},  # note-on, event 2
+            {'frame': 20, 'note': note, 'velocity': 0},
+        ]
+
+    def test_same_pitch_same_velocity_retrigger_gets_a_rest_frame(self):
+        frames = self.core.compile_channel_to_frames(
+            self._retrigger_events(), channel_type='pulse1', default_duty=2)
+        # The join frame is stolen from the front of the second note to
+        # render a genuine 1-frame rest, so both note bytes read as real
+        # boundaries downstream.
+        self.assertIn(9, frames)
+        self.assertNotIn(10, frames)
+        self.assertIn(11, frames)
+        self.assertEqual(frames[11]['note'], 60)
+
+    def test_bytecode_stream_emits_two_note_events_not_one(self):
+        frames = self.core.compile_channel_to_frames(
+            self._retrigger_events(), channel_type='pulse1', default_duty=2)
+        fdict = {'pulse1': {str(k): v for k, v in frames.items()}}
+        lines, _next_bank, _start_banks, _clamped = (
+            CA65Exporter()._build_song_bytecode(fdict))
+        text = '\n'.join(lines)
+        seq = text[text.index('pulse1_sequence:'):]
+        # Two distinct "Note 60" onsets, separated by a rest byte -- not one
+        # merged Length-20 event.
+        self.assertEqual(seq.count('Note 60'), 2,
+                          "retrigger must emit two note-on events, not one merged sustain")
+        self.assertIn('Note 0', seq, "the join must be a real rest, not a value-preserving tie")
+
+    def test_different_pitch_adjacency_unaffected(self):
+        # SIBLING: only a same-pitch join steals a frame; a normal
+        # note-to-different-note transition must keep every frame.
+        events = [
+            {'frame': 0, 'note': 60, 'velocity': 100},
+            {'frame': 10, 'note': 60, 'velocity': 0},
+            {'frame': 10, 'note': 64, 'velocity': 100},
+            {'frame': 20, 'note': 64, 'velocity': 0},
+        ]
+        frames = self.core.compile_channel_to_frames(
+            events, channel_type='triangle', default_duty=None)
+        self.assertEqual(len(frames), 20)
+        self.assertIn(10, frames)
+
+    def test_short_note_retrigger_not_dropped(self):
+        # A 1-frame note can't spare a frame for the rest gap -- the old
+        # merge behaviour is the lesser evil (no note is silently deleted).
+        events = [
+            {'frame': 0, 'note': 60, 'velocity': 100},
+            {'frame': 1, 'note': 60, 'velocity': 0},
+            {'frame': 1, 'note': 60, 'velocity': 100},
+            {'frame': 2, 'note': 60, 'velocity': 0},
+        ]
+        frames = self.core.compile_channel_to_frames(
+            events, channel_type='pulse1', default_duty=2)
+        self.assertEqual(sorted(frames.keys()), [0, 1])
+
+
+class TestDpcmLastNoteSentinel(unittest.TestCase):
+    """Regression (#482/NH-HW-2026-08-22-2): last_dpcm_note's power-on seed
+    must be $00 (DPCM's own rest sentinel), not the $FF used for the tone
+    channels -- DPCM notes are min(255, dense_id+1), so $FF (255) is a real,
+    reachable first-trigger value in direct-export and would collide with
+    the seed exactly like the uninitialized-RAM bug #432 fixed."""
+
+    def test_standalone_reset_seeds_dpcm_note_zero_not_ff(self):
+        exp = CA65Exporter()
+        frames = {'pulse1': {'0': {'note': 60, 'pitch': 500, 'control': 0x30, 'volume': 10}}}
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            exp.export_direct_frames(frames, out, standalone=True)
+            asm = Path(out).read_text()
+        finally:
+            if os.path.exists(out):
+                os.remove(out)
+        reset_start = asm.index('.proc reset')
+        reset_body = asm[reset_start:asm.index('.endproc', reset_start)]
+        # The tone channels still use the $FF impossible-MIDI-note sentinel...
+        for tone_var in ('last_pulse1_note', 'last_pulse2_note', 'last_triangle_note'):
+            idx = reset_body.index(f'sta {tone_var}')
+            preceding = reset_body[:idx]
+            last_lda = preceding.rfind('lda #')
+            self.assertIn('$FF', preceding[last_lda:idx])
+        # ...but last_dpcm_note must not be seeded via the same $FF load.
+        dpcm_idx = reset_body.index('sta last_dpcm_note')
+        preceding = reset_body[:dpcm_idx]
+        last_lda = preceding.rfind('lda #')
+        self.assertIn('$00', preceding[last_lda:dpcm_idx],
+                       "last_dpcm_note must seed $00 (DPCM rest sentinel), "
+                       "not $FF (a real, reachable DPCM note value)")
+
+    def test_init_music_seeds_dpcm_note_zero_not_ff(self):
+        exp = CA65Exporter()
+        frames = {'pulse1': {'0': {'note': 60, 'pitch': 500, 'control': 0x30, 'volume': 10}}}
+        out = tempfile.mktemp(suffix='.asm')
+        try:
+            exp.export_direct_frames(frames, out, standalone=False)
+            asm = Path(out).read_text()
+        finally:
+            if os.path.exists(out):
+                os.remove(out)
+        init_start = asm.index('init_music:')
+        init_body = asm[init_start:asm.index('rts', init_start)]
+        dpcm_idx = init_body.index('sta last_dpcm_note')
+        preceding = init_body[:dpcm_idx]
+        last_lda = preceding.rfind('lda #')
+        self.assertIn('$00', preceding[last_lda:dpcm_idx],
+                       "last_dpcm_note must seed $00 in init_music too")
+
+
 if __name__ == '__main__':
     unittest.main()
