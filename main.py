@@ -20,6 +20,15 @@ from arranger import arrange_for_nes
 from nes.project_builder import NESProjectBuilder, NES_CFG_MAPPER_MARKER
 from nes.song_bank import SongBank
 from exporter.exporter_ca65 import CA65Exporter
+
+# Frozen copy of CA65Exporter.SEQUENCE_CHANNELS, captured at import time
+# rather than read live off the class -- several tests patch
+# `main.CA65Exporter` with a Mock() for unrelated reasons (asserting export
+# call args, etc.), which would silently turn a live
+# `CA65Exporter.SEQUENCE_CHANNELS` read inside load_json_stage's
+# channel_shape guard into an empty MagicMock iterator, making the guard
+# reject every input regardless of its actual channel keys.
+_PIPELINE_CHANNEL_KEYS = tuple(CA65Exporter.SEQUENCE_CHANNELS)
 from tracker.pattern_detector import (
     EnhancedPatternDetector, sample_events_for_detection, DETECTOR_MAX_EVENTS, MAX_PATTERN_EVENTS
 )
@@ -76,7 +85,7 @@ def get_pattern_detection_caps(config_path: Optional[str] = None):
             "processing.pattern_detection.large_file_threshold", LARGE_FILE_THRESHOLD_DEFAULT)
     return max_events, max_pattern_events, large_file_threshold
 
-def load_json_stage(path, required_keys, stage_name):
+def load_json_stage(path, required_keys, stage_name, channel_shape=False):
     """Load an inter-stage JSON artifact with an existence/parse/key guard.
 
     Every step-by-step subcommand did `json.loads(Path(input).read_text())`
@@ -87,6 +96,21 @@ def load_json_stage(path, required_keys, stage_name):
     clear message (#120). Exits with a clean [ERROR] message and code 1,
     matching every other subcommand guard in this file (#110, #13, #15)
     rather than raising, since main.py has no outer caller to catch it.
+
+    `channel_shape=True` is for the `frames`/`export`/`detect-patterns`
+    subcommands, whose input (map-stage or frames-stage JSON) is a dict
+    keyed by the five NES channel names, every one of them optional -- so
+    `required_keys` alone can't express "this must be the right stage's
+    shape" the way `run_map`'s `['events']` or `run_export`'s
+    `['patterns', 'references']` can. Without this, a non-empty JSON object
+    that happens to have none of those five keys (most commonly a
+    parse-stage file, `{"events": [...], "metadata": {...}}`, or a
+    detect-patterns file fed to the wrong subcommand) passed the guard
+    silently and produced an empty-but-exit-0 result at every stage
+    downstream (#485/PIPE-2026-08-22-1, a regression of #377/PIPE-2026-07-19-1
+    whose fix commit was never merged to master). A genuinely empty `{}`
+    (a real all-rest song) is still accepted -- only non-empty JSON with no
+    recognizable channel key is rejected.
     """
     p = Path(path)
     if not p.exists():
@@ -104,6 +128,12 @@ def load_json_stage(path, required_keys, stage_name):
     if missing:
         print(f"[ERROR] {stage_name} input missing expected key(s) {missing}: {p} "
               f"(is this the right stage's JSON?)")
+        sys.exit(1)
+    if channel_shape and data and not any(k in data for k in _PIPELINE_CHANNEL_KEYS):
+        print(f"[ERROR] {stage_name} input has none of the expected channel keys "
+              f"({', '.join(_PIPELINE_CHANNEL_KEYS)}): {p} "
+              f"(is this the right stage's JSON? a 'parse' stage file has "
+              f"'events'/'metadata' instead, and needs 'map' run on it first)")
         sys.exit(1)
     return data
 
@@ -247,8 +277,10 @@ def run_map(args):
 
 def run_frames(args):
     # Guard against a missing/corrupt file (#120); the mapped JSON's channel
-    # keys are all optional, so there is no fixed required key to validate.
-    mapped = load_json_stage(args.input, [], 'map')
+    # keys are all optional, so there is no fixed required key to validate
+    # -- channel_shape=True instead rejects a non-empty file with none of
+    # them at all, e.g. a parse-stage file (#485/PIPE-2026-08-22-1).
+    mapped = load_json_stage(args.input, [], 'map', channel_shape=True)
     emulator = NESEmulatorCore()
     frames = emulator.process_all_tracks(mapped)
     Path(args.output).write_text(json.dumps(frames, separators=(',', ':')))
@@ -645,8 +677,10 @@ def run_prepare(args):
 def run_export(args):
     """Export function supporting multiple formats with pattern compression"""
     # Guard against a missing/corrupt file (#120); the frames JSON's channel
-    # keys are all optional, so there is no fixed required key to validate.
-    frames = load_json_stage(args.input, [], 'frames')
+    # keys are all optional, so there is no fixed required key to validate
+    # -- channel_shape=True instead rejects a non-empty file with none of
+    # them at all, e.g. a wrong-stage file (#485/PIPE-2026-08-22-1).
+    frames = load_json_stage(args.input, [], 'frames', channel_shape=True)
 
     # Check if we have pattern data
     pattern_data = None
@@ -731,8 +765,10 @@ def run_export(args):
 
 def run_detect_patterns(args):
     # Guard against a missing/corrupt file (#120); the frames JSON's channel
-    # keys are all optional, so there is no fixed required key to validate.
-    frames = load_json_stage(args.input, [], 'frames')
+    # keys are all optional, so there is no fixed required key to validate
+    # -- channel_shape=True instead rejects a non-empty file with none of
+    # them at all, e.g. a wrong-stage file (#485/PIPE-2026-08-22-1).
+    frames = load_json_stage(args.input, [], 'frames', channel_shape=True)
 
     # Sequential detector's event cap, optionally overridden by --config (#219).
     max_events, _, _ = get_pattern_detection_caps(getattr(args, 'config', None))
@@ -1001,42 +1037,59 @@ def run_song_build(args):
     output_rom = Path(args.output)
     skip_validation = getattr(args, 'skip_validation', False)
 
-    with tempfile.TemporaryDirectory(prefix="midi2nes_") as temp_dir:
-        temp_path = Path(temp_dir)
-        music_asm = temp_path / "music.asm"
+    # Backup/restore + typed-exception contract (#486/PIPE-2026-08-22-2,
+    # #467/TD-32): this build used to re-implement the capacity->prepare->
+    # compile->validate sequence with its own per-step sys.exit(1) calls and
+    # no backup of a pre-existing ROM -- a re-build that compiled but failed
+    # validation left the broken ROM at output_rom with no way back, and any
+    # exception out of prepare_project surfaced as a raw traceback instead of
+    # a clean [ERROR]. Reusing build_and_validate_rom (the same helper
+    # run_full_pipeline calls) gives this path the exact contract the other
+    # two ROM-build entry points (run_full_pipeline, run_compile) already
+    # have, instead of a third, drifted copy.
+    backup_path = _backup_existing_rom(output_rom)
+    build_succeeded = False
+    try:
+        with tempfile.TemporaryDirectory(prefix="midi2nes_") as temp_dir:
+            temp_path = Path(temp_dir)
+            music_asm = temp_path / "music.asm"
 
-        exporter = CA65Exporter()
-        try:
-            exporter.export_song_bank_bytecode(songs, str(music_asm))
-        except ValueError as e:
-            print(f"[ERROR] {e}")
-            sys.exit(1)
-
-        from mappers.factory import MapperFactory
-        mapper = MapperFactory.get_mapper('mmc3')
-
-        try:
-            check_mapper_capacity(str(music_asm), mapper)
-        except ValueError as e:
-            print(f"[ERROR] {e}")
-            sys.exit(1)
-
-        project_path = temp_path / "nes_project"
-        builder = NESProjectBuilder(str(project_path), debug_mode=False, mapper=mapper)
-        builder.prepare_project(str(music_asm), song_count=len(songs))
-
-        print(f"🔨 Compiling {len(songs)}-song jukebox ROM...")
-        success = compile_rom(project_path, output_rom, verbose=verbose, mapper=mapper)
-        if not success:
-            print("[ERROR] Compilation failed")
-            sys.exit(1)
-
-        if not skip_validation:
-            if not validate_rom(output_rom):
-                print("[ERROR] ROM validation failed")
+            exporter = CA65Exporter()
+            try:
+                exporter.export_song_bank_bytecode(songs, str(music_asm))
+            except ValueError as e:
+                print(f"[ERROR] {e}")
                 sys.exit(1)
 
-    print(f"✅ Jukebox ROM built: {output_rom} ({len(songs)} songs)")
+            from mappers.factory import MapperFactory
+            mapper = MapperFactory.get_mapper('mmc3')
+
+            project_path = temp_path / "nes_project"
+            print(f"🔨 Compiling {len(songs)}-song jukebox ROM...")
+            build_and_validate_rom(
+                mapper, music_asm, project_path, output_rom,
+                debug_mode=False, skip_validation=skip_validation, args=args,
+                song_count=len(songs))
+
+        build_succeeded = True
+        print(f"✅ Jukebox ROM built: {output_rom} ({len(songs)} songs)")
+    except MIDI2NESError as e:
+        print(f"[ERROR] {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] Unexpected failure building jukebox ROM: {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+    finally:
+        if not build_succeeded:
+            _restore_backup(output_rom, backup_path)
+        elif backup_path:
+            backup_path.unlink(missing_ok=True)
 
 
 def load_config(config_path: Optional[str] = None) -> DrumMapperConfig:
@@ -1275,17 +1328,23 @@ def export_frames_and_resolve_mapper(frames, pattern_result, music_asm, use_patt
 
 
 def build_and_validate_rom(mapper, music_asm, project_path, output_rom,
-                            debug_mode, skip_validation, args):
+                            debug_mode, skip_validation, args, song_count=None):
     """Steps 6-8: PRG capacity pre-flight, NES project prep, ROM compile,
     and (unless skipped) ROM validation.
 
     Raises MapperError (capacity -- also a ValueError, #457/
     SAFE-2026-08-21-3), ExportError (prepare), CompilationError (compile), or
     ValidationError (validate) on failure -- all MIDI2NESError subclasses, so
-    run_full_pipeline's single try/except/finally still decides how to report
-    it and whether to restore a backup (#26) via one `except MIDI2NESError`
-    clause instead of missing these as "unexpected" (bare RuntimeError used
-    to fall through to that branch).
+    a caller's single try/except/finally can decide how to report it and
+    whether to restore a backup (#26) via one `except MIDI2NESError` clause
+    instead of missing these as "unexpected" (bare RuntimeError used to fall
+    through to that branch). Shared by run_full_pipeline and run_song_build
+    (#486/PIPE-2026-08-22-2, #467/TD-32) -- both get the same backup/restore
+    and typed-exception contract instead of each re-implementing it.
+
+    `song_count` is forwarded to `prepare_project` unchanged (None for a
+    single-song build, matching prior behavior; an int for a jukebox build,
+    which defines JUKEBOX_BUILD -- nes/project_builder.py).
 
     Returns the music.asm data size in bytes (post capacity check).
     """
@@ -1296,7 +1355,7 @@ def build_and_validate_rom(mapper, music_asm, project_path, output_rom,
 
     print("[6/7] Preparing NES project...")
     builder = NESProjectBuilder(str(project_path), debug_mode=debug_mode, mapper=mapper)
-    if not builder.prepare_project(str(music_asm)):
+    if not builder.prepare_project(str(music_asm), song_count=song_count):
         # Matches prepare_project's own ExportError type for its other
         # failure mode (missing audio_engine.asm, nes/project_builder.py).
         raise ExportError("Failed to prepare NES project")
@@ -1665,10 +1724,22 @@ def main():
         # produce the legacy (non-arranger) song with zero diagnostics (#174).
         pre_subcommand_args = sys.argv[1:sys.argv.index(first_arg)]
         if '--arranger' in pre_subcommand_args or '-a' in pre_subcommand_args:
-            print("Error: --arranger only applies to the default MIDI-to-ROM pipeline; "
-                  "there is no step-by-step equivalent yet.", file=sys.stderr)
-            print(f"Run 'midi2nes --arranger song.mid' instead, or drop --arranger before '{first_arg}'.",
-                  file=sys.stderr)
+            # `song build` has its own --arranger (p_song_build, read at
+            # run_song_build's use_arranger), so it isn't true that no
+            # step-by-step equivalent exists there -- the fix is to place the
+            # flag after `build`, not to drop it (#487/PIPE-2026-08-22-3, a
+            # message-accuracy regression from #174/PL-01, filed before
+            # `song build --arranger` existed).
+            if first_arg == 'song':
+                print("Error: --arranger must come after 'song build', not before 'song' "
+                      "-- e.g. 'midi2nes song build bank.json out.nes --arranger'.",
+                      file=sys.stderr)
+            else:
+                print("Error: --arranger only applies to the default MIDI-to-ROM pipeline "
+                      f"or 'song build'; there is no step-by-step equivalent for '{first_arg}' yet.",
+                      file=sys.stderr)
+                print(f"Run 'midi2nes --arranger song.mid' instead, or drop --arranger before '{first_arg}'.",
+                      file=sys.stderr)
             sys.exit(2)
         # It's a subcommand, parse normally
         args = parser.parse_args()

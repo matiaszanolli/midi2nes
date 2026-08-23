@@ -54,6 +54,22 @@ class SongBank:
         self.max_bank_size = 16384  # 16KB per bank
         self.total_banks = 8  # Default to 8 banks (128KB total)
 
+    def _next_order(self) -> int:
+        """Next monotonic `metadata['order']` value for a newly-added song.
+
+        `order` is the sort key `run_song_build` uses for jukebox playback
+        order (main.py). The old `len(self.songs)` reused the index a
+        removed song's slot freed up: add A, B, C (order 0, 1, 2); remove B;
+        add D -> D got order=len(self.songs)==2, colliding with C's order=2
+        (#488/PIPE-2026-08-22-4). Deriving the next value from the current
+        max instead is never reused, even across remove+add cycles.
+        """
+        if not self.songs:
+            return 0
+        return max(
+            (s.get('metadata') or {}).get('order', 0) for s in self.songs.values()
+        ) + 1
+
     def calculate_bank_usage(self) -> Dict[int, int]:
         """Calculate current usage of banks in bytes"""
         usage = {}
@@ -85,11 +101,14 @@ class SongBank:
         parsed_data = parse_midi_to_frames(midi_path)
         song_name = name or Path(midi_path).stem
 
-        # Create metadata object
+        # Create metadata object. `order` here is informational only --
+        # add_song (below) is the call that actually stores a song and
+        # computes its own authoritative order via _next_order(), ignoring
+        # whatever value is in the `metadata` dict this builds.
         meta = SongMetadata(
             title=song_name,
             composer=metadata.get('composer') if metadata else None,
-            order=len(self.songs),
+            order=self._next_order(),
             loop_point=metadata.get('loop_point') if metadata else None,
             tags=metadata.get('tags', []) if metadata else [],
             tempo_base=metadata.get('tempo_base', 120) if metadata else 120
@@ -124,11 +143,13 @@ class SongBank:
         if name in self.songs:
             raise ValueError(f"Song '{name}' already exists in the bank")
 
-        # Validate metadata
+        # Validate metadata. order comes from _next_order(), not
+        # len(self.songs) -- see that method's docstring for why (#488/
+        # PIPE-2026-08-22-4).
         meta = SongMetadata(
             title=name,
             composer=metadata.get('composer') if metadata else None,
-            order=len(self.songs),
+            order=self._next_order(),
             loop_point=metadata.get('loop_point') if metadata else None,
             tags=metadata.get('tags', []) if metadata else [],
             tempo_base=metadata.get('tempo_base', 120) if metadata else 120
