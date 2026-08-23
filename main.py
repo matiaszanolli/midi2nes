@@ -156,7 +156,7 @@ class DpcmPackResult:
     traceback_text: Optional[str] = None
 
 
-def pack_dpcm_into_asm(frames, asm_path, *, verbose=False) -> DpcmPackResult:
+def pack_dpcm_into_asm(frames, asm_path, *, verbose=False, start_bank=0) -> DpcmPackResult:
     """Pack this song's referenced DPCM samples and append the generated
     lookup tables + binary includes to `asm_path`.
 
@@ -170,6 +170,17 @@ def pack_dpcm_into_asm(frames, asm_path, *, verbose=False) -> DpcmPackResult:
     no-samples/no-index status lines) -- a fix to one path could silently
     miss the other. Presentation (step banners, status lines) stays at the
     call sites; only the pack logic and the broad-except handling live here.
+
+    `start_bank`: the first physical DPCM_NN bank this song's samples may
+    use (#519/DP-2026-08-23-1). DPCM_NN and the bytecode exporter's own
+    BANK_NN sequence segments share the same physical PRG_BANK_NN pool
+    (mappers/mmc3.py), so packing DPCM always starting at bank 0 -- with no
+    regard for how much of bank 0 the song's bytecode already consumed --
+    could collide the two in the same 8KB window even when dozens of swap
+    banks sat empty. Callers pass the bytecode exporter's `next_bank`
+    (CA65Exporter.next_bank) so DPCM packing starts right after the song's
+    own bytecode banks; direct-frame exports (no BANK_NN segments) default
+    to 0.
     """
     from dpcm_sampler.dpcm_packer import DpcmPacker
     from dpcm_sampler.generate_dpcm_index import (
@@ -180,7 +191,7 @@ def pack_dpcm_into_asm(frames, asm_path, *, verbose=False) -> DpcmPackResult:
     if not dpcm_index_path.exists():
         return DpcmPackResult(index_found=False)
 
-    packer = DpcmPacker()
+    packer = DpcmPacker(start_bank=start_bank)
     try:
         with open(dpcm_index_path, 'r') as f:
             dpcm_index = json.load(f)
@@ -760,9 +771,14 @@ def run_export(args):
 
         # Pack DPCM samples for exported ASM (#380/TD-28: extracted helper
         # shared with run_full_pipeline, so a fix to one path can't
-        # silently miss the other).
+        # silently miss the other). start_bank continues after the
+        # bytecode exporter's own BANK_NN segments (getattr covers the
+        # direct-export branch, which never sets next_bank) so DPCM_NN and
+        # BANK_NN don't collide in the same physical PRG bank
+        # (#519/DP-2026-08-23-1).
         pack_result = pack_dpcm_into_asm(
-            frames, args.output, verbose=getattr(args, 'verbose', False))
+            frames, args.output, verbose=getattr(args, 'verbose', False),
+            start_bank=getattr(exporter, 'next_bank', 0))
         dpcm_pack_warning = pack_result.warning
 
         print(f" Exported CA65 ASM -> {args.output}")
@@ -1328,9 +1344,15 @@ def export_frames_and_resolve_mapper(frames, pattern_result, music_asm, use_patt
     )
 
     # Pack DPCM samples (#380/TD-28: extracted helper shared with run_export,
-    # so a fix to one path can't silently miss the other).
+    # so a fix to one path can't silently miss the other). start_bank
+    # continues after the bytecode exporter's own BANK_NN segments (getattr
+    # covers the direct-export branch, which never sets next_bank) so
+    # DPCM_NN and BANK_NN don't collide in the same physical PRG bank
+    # (#519/DP-2026-08-23-1).
     print("[5.5/7] Packing DPCM samples...")
-    pack_result = pack_dpcm_into_asm(frames, music_asm, verbose=args.verbose)
+    pack_result = pack_dpcm_into_asm(
+        frames, music_asm, verbose=args.verbose,
+        start_bank=getattr(exporter, 'next_bank', 0))
 
     if not pack_result.index_found:
         print("  ℹ️ No dpcm_index.json found, skipping DPCM packing.")

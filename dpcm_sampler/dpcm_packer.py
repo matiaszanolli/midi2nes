@@ -5,7 +5,18 @@ class DpcmPacker:
     BANK_SIZE = 8192
     START_ADDR = 0xC000
 
-    def __init__(self):
+    def __init__(self, start_bank: int = 0):
+        """`start_bank`: the first physical `DPCM_NN`/`PRG_BANK_NN` index this
+        packer may use (#519/DP-2026-08-23-1). DPCM_NN and the song's own
+        BANK_NN sequence bytecode are deliberately linked into the same
+        physical PRG_BANK_NN pool (mappers/mmc3.py), so packing always
+        starting at bank 0 collided with a song whose bytecode already fills
+        (or nearly fills) BANK_00 -- the two independently-sized blobs got
+        summed against one 8KB window even though 59 other swap banks sat
+        empty. Callers pass the bytecode exporter's own next-free-bank index
+        (CA65Exporter.next_bank) so DPCM packing starts right after it.
+        """
+        self.start_bank = start_bank
         self.banks = []
         self.sample_metadata = {}
         self.pending_samples = []
@@ -98,15 +109,18 @@ class DpcmPacker:
                     break
             
             if not placed:
-                if len(self.banks) >= 60:
+                if self.start_bank + len(self.banks) >= 60:
                     raise OverflowError("Exceeded maximum allocated DPCM MMC3 banks (60 banks).")
-                
+
                 bank_id = len(self.banks)
                 self.banks.append([(sample['id'], sample['path'])])
                 bank_sizes.append(sample['aligned_size'])
                 self._place_sample(sample, bank_id, self.START_ADDR)
 
     def _place_sample(self, sample: dict, bank_id: int, start_address: int):
+        # bank_id is local to self.banks (0-based); offset by start_bank for
+        # the physical PRG_BANK_NN index actually recorded/emitted.
+        bank_id = self.start_bank + bank_id
         dpcm_address_val = (start_address - 0xC000) // 64
         # See _length_reg for the (length_reg*16)+1 read-length formula and
         # the floor-at-1 rationale. size is already bounded to 4081 by the
@@ -132,8 +146,8 @@ class DpcmPacker:
         
         asm_lines = ["; --- DPCM Sample Data ---"]
         
-        for bank_id, samples in enumerate(self.banks):
-            asm_lines.append(f'\n.segment "DPCM_{bank_id:02d}"')
+        for local_bank_id, samples in enumerate(self.banks):
+            asm_lines.append(f'\n.segment "DPCM_{self.start_bank + local_bank_id:02d}"')
             for sample_id, path in samples:
                 asm_lines.append(f'    .align 64')
                 asm_lines.append(f'    dpcm_sample_{sample_id}:')

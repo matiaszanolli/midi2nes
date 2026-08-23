@@ -1223,6 +1223,13 @@ class TestRunExport:
         song that still has drums, just fewer than it referenced."""
         import shutil
         mock_exporter_class.return_value = Mock()
+        # Real CA65Exporter always carries a real int next_bank (0 by
+        # default -- see its __init__), which pack_dpcm_into_asm's caller
+        # reads via getattr to pick DpcmPacker's start_bank
+        # (#519/DP-2026-08-23-1). A bare Mock() auto-vivifies `.next_bank`
+        # as a child Mock instead, which isn't an int and breaks packing --
+        # set it explicitly to mirror the real contract.
+        mock_exporter_class.return_value.next_bank = 0
         cwd = os.getcwd()
         tmp = Path(tempfile.mkdtemp())
         try:

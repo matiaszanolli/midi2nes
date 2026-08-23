@@ -71,7 +71,17 @@ def song_has_dpcm_events(frames):
 class CA65Exporter(BaseExporter):
     def __init__(self):
         super().__init__()
-        
+        # First PRG bank not already claimed by this song's own BANK_NN
+        # sequence bytecode; defaults to 0 (no bytecode banks used yet) so
+        # it's always a real int a caller can read straight off a fresh
+        # instance -- export_tables_with_patterns overwrites it once the
+        # bytecode branch actually runs (#519/DP-2026-08-23-1). A caller
+        # packing DPCM samples afterward (main.py's pack_dpcm_into_asm)
+        # reads this to start DPCM_NN numbering after the song's own banks,
+        # since DPCM_NN and BANK_NN share the same physical PRG_BANK_NN
+        # pool (mappers/mmc3.py).
+        self.next_bank = 0
+
     def midi_note_to_timer_value(self, midi_note, channel=None):
         # Clamp instead of returning 0: a 0 base combined with the encoder's
         # +127-clamped pitch offset overflows the 11-bit timer at runtime
@@ -1688,9 +1698,15 @@ class CA65Exporter(BaseExporter):
 
         self._emit_period_tables(lines)
 
-        body_lines, _next_bank, channel_start_banks, notes_clamped = self._build_song_bytecode(
+        body_lines, next_bank, channel_start_banks, notes_clamped = self._build_song_bytecode(
             frames, label_prefix='', start_bank=0)
         lines.extend(body_lines)
+        # Exposed so a caller packing DPCM samples afterward (main.py's
+        # pack_dpcm_into_asm) can start DPCM_NN numbering at the first bank
+        # this song's own BANK_NN sequence bytecode didn't use, instead of
+        # both independently starting at bank 0 and colliding in the same
+        # physical PRG_BANK_00 region (#519/DP-2026-08-23-1).
+        self.next_bank = next_bank
 
         # Per-channel starting-bank table (#328/EXP-13). Emitted into the fixed
         # CODE_8000 bank (always mapped) so audio_init can read it via absolute
