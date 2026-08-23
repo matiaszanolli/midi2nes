@@ -334,7 +334,7 @@ def profile_memory_simple(func: Callable) -> Callable:
         try:
             result = func(*args, **kwargs)
             success = True
-        except Exception as e:
+        except Exception:
             success = False
             raise
         finally:

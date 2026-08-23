@@ -1597,6 +1597,34 @@ class CA65Exporter(BaseExporter):
         # safe with this function's per-call byte accounting.
         return lines, current_bank + 1, channel_start_banks, notes_clamped
 
+    def _emit_bytecode_preamble(self, lines):
+        """Shared header block for both bytecode exporters
+        (export_tables_with_patterns and export_song_bank_bytecode,
+        #466/TD-31): the `.importzp`, DPCM segment banner, and CODE_8000
+        segment banner are byte-identical between a single-song and a
+        jukebox build -- extracted so a future change to this preamble
+        (e.g. a new `.importzp` symbol) can't apply to one path and silently
+        skew the other."""
+        lines.append('.importzp ptr1, temp1, temp2, frame_counter')
+        lines.append('')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('; DPCM Sample Bank (Mapped to $C000)')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('.segment "DPCM"')
+        lines.append('.align 64')
+        # Deliberately left empty (#137/TD-08). DPCM sample data and lookup
+        # tables are packed and appended to this music.asm by DpcmPacker
+        # (dpcm_sampler/dpcm_packer.py) into the swappable DPCM_NN bank
+        # segments -- not this fixed "DPCM" segment (mapped to the $C000/R6
+        # window's default bank, `optional = yes` in the mapper's linker
+        # config, mappers/mmc3.py) -- so there is nothing to .incbin here.
+        lines.append('')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('; Macro & Sequence Data (Mapped to fixed $8000 bank)')
+        lines.append('; ---------------------------------------------------------------------------')
+        lines.append('.segment "CODE_8000"')
+        lines.append('')
+
     def export_tables_with_patterns(self, frames, patterns, references, output_path, standalone=True,
                                      mapper=None, visualizer=False):
         """Export NES audio assembly from per-frame channel data.
@@ -1624,25 +1652,7 @@ class CA65Exporter(BaseExporter):
         lines = []
         lines.append('; CA65 Assembly Export (MMC3 Macro Bytecode)')
         lines.append('')
-        lines.append('.importzp ptr1, temp1, temp2, frame_counter')
-        lines.append('')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('; DPCM Sample Bank (Mapped to $C000)')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('.segment "DPCM"')
-        lines.append('.align 64')
-        # Deliberately left empty (#137/TD-08). DPCM sample data and lookup
-        # tables are packed and appended to this music.asm by DpcmPacker
-        # (dpcm_sampler/dpcm_packer.py) into the swappable DPCM_NN bank
-        # segments -- not this fixed "DPCM" segment (mapped to the $C000/R6
-        # window's default bank, `optional = yes` in the mapper's linker
-        # config, mappers/mmc3.py) -- so there is nothing to .incbin here.
-        lines.append('')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('; Macro & Sequence Data (Mapped to fixed $8000 bank)')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('.segment "CODE_8000"')
-        lines.append('')
+        self._emit_bytecode_preamble(lines)
         # The DPCM lookup tables (dpcm_bank_table/pitch/addr/len) are owned by the
         # DPCM packer when real samples exist, and stubbed by the project builder
         # otherwise. Defining them here too would be a duplicate-symbol error once
@@ -1756,19 +1766,7 @@ class CA65Exporter(BaseExporter):
         lines = []
         lines.append('; CA65 Assembly Export (MMC3 Macro Bytecode -- multi-song jukebox build)')
         lines.append('')
-        lines.append('.importzp ptr1, temp1, temp2, frame_counter')
-        lines.append('')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('; DPCM Sample Bank (Mapped to $C000)')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('.segment "DPCM"')
-        lines.append('.align 64')
-        lines.append('')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('; Macro & Sequence Data (Mapped to fixed $8000 bank)')
-        lines.append('; ---------------------------------------------------------------------------')
-        lines.append('.segment "CODE_8000"')
-        lines.append('')
+        self._emit_bytecode_preamble(lines)
 
         song_labels = [f'song{i}_' for i in range(len(songs))]
         for prefix in song_labels:
