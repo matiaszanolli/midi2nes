@@ -379,44 +379,13 @@ class PatternDetector:
         
         return matches
 
-    def _optimize_patterns(self, patterns: Dict) -> Dict:
-        """
-        Optimize pattern selection considering variations and exact matches
-        """
-        if not patterns:
-            return {}
-
-        optimized = {}
-        used_positions = set()
-        
-        # Score patterns based on exact matches and variations
-        def pattern_score(pattern_info):
-            exact_count = len(pattern_info['exact_matches'])
-            variation_count = len(pattern_info['variations'])
-            pattern_length = pattern_info['length']
-            return (exact_count + variation_count * 0.8) * pattern_length
-        
-        # Sort patterns by score
-        sorted_patterns = sorted(
-            patterns.items(),
-            key=lambda x: pattern_score(x[1]),
-            reverse=True
-        )
-        
-        for pattern_id, pattern_info in sorted_patterns:
-            # Check positions from both exact matches and variations
-            positions = set()
-            for pos in pattern_info['exact_matches']:
-                positions.update(range(pos, pos + pattern_info['length']))
-            for var in pattern_info['variations']:
-                positions.update(range(var['position'], 
-                                     var['position'] + pattern_info['length']))
-            
-            if not positions.intersection(used_positions):
-                optimized[pattern_id] = pattern_info
-                used_positions.update(positions)
-        
-        return optimized
+    # NOTE: an `_optimize_patterns` overlap-selection helper used to live here.
+    # It was never called by `detect_patterns` (which does its own inline
+    # non-overlap selection above, using the shared `score_pattern` and the
+    # #365/PAT-A exact-occurrence gate) or by any other live code path, and
+    # its private scoring formula had drifted from both of those. Removed as
+    # dead code (#495/PAT-2026-08-23-2) rather than fixed, since nothing
+    # depended on it.
 
 
 class EnhancedPatternDetector(PatternDetector):

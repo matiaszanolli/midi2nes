@@ -1464,7 +1464,8 @@ class TestRunDetectPatterns:
             'patterns': {'pattern_0': [{'frame': 0, 'note': 60}]},
             'references': {'channel_0': ['pattern_0']},
             'stats': {'compression_ratio': 2.5, 'total_events': 40,
-                      'coverage_ratio': 30.0}
+                      'coverage_ratio': 30.0},
+            'variations': {'pattern_0': {'variation_count': 0}}
         }
         mock_detector_class.return_value = mock_detector
         
@@ -1490,6 +1491,10 @@ class TestRunDetectPatterns:
         assert 'patterns' in content
         assert 'references' in content
         assert 'stats' in content
+        # Regression (#498/PAT-2026-08-23-1): the on-disk detect-patterns
+        # artifact must carry the full 4-key envelope, matching the
+        # documented contract and the in-memory --no-patterns stub (#258).
+        assert content['variations'] == {'pattern_0': {'variation_count': 0}}
         assert content['stats']['compression_ratio'] == 2.5
         
         # Verify print calls
@@ -1526,7 +1531,8 @@ class TestRunDetectPatterns:
             'patterns': {},
             'references': {},
             'stats': {'compression_ratio': 1.0, 'total_events': DETECTOR_MAX_EVENTS,
-                      'coverage_ratio': 1.0}
+                      'coverage_ratio': 1.0},
+            'variations': {}
         }
         mock_detector_class.return_value = mock_detector
 
@@ -1549,7 +1555,8 @@ class TestRunDetectPatterns:
                     'patterns': {},
                     'references': {},
                     'stats': {'compression_ratio': 1.0, 'total_events': 0,
-                              'coverage_ratio': 0}
+                              'coverage_ratio': 0},
+                    'variations': {}
                 }
                 mock_detector_class.return_value = mock_detector
                 
