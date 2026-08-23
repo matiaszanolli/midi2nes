@@ -168,11 +168,20 @@ labels. Hunt for values that can exceed a byte without clamping in
   volume producer bypasses it.
 - The `CMD_DMC_LEVEL` ($87) emitter was removed as a dead path (#72/D-09): no stage
   produces `dmc_level`, and grepping `exporter_ca65.py` for `$87`/`CMD_DMC_LEVEL` now
-  turns up nothing. Note the engine (`nes/audio_engine.asm`) still contains an unreachable
-  `@cmd_dmc_level` handler for it (and an unreachable `@cmd_dpcm_play` for `$85`) — that's
-  dead-code tech debt on the engine side (see `/audit-tech-debt`), not an exporter bug; if
-  DMC-level control is ever reintroduced here, confirm the emitted level is range-checked
-  to the 7-bit $4011 domain (`docs/APU_DMC_REFERENCE.md`, 0–127).
+  turns up nothing. **The engine's `@cmd_dmc_level` handler was itself later deleted too**
+  (`#309`, 2026-07-17, filed as its own dead-code finding) -- it does NOT still exist,
+  reachable or not; `nes/audio_engine.asm`'s dispatcher falls through any `$87` byte to
+  `@unknown_command` today. `docs/AUDIO_BYTECODE_SPEC.md` §3 went stale for two audit
+  cycles after `#309` (it kept saying `$87` was real/working, since `#83` had fixed it to
+  say exactly that *before* `#309` removed the handler) until `#508/EXP-2026-08-23-1`
+  corrected it -- see Dimension 5 below for the full timeline; don't re-report this as a
+  fresh "engine still has dead code" finding, the code is gone, not dead-but-present. The
+  `@cmd_dpcm_play` handler for `$85` is a different case and is genuinely live/reachable
+  (the dispatcher branches to it correctly) -- it's just that no exporter path currently
+  emits `$85` (DPCM triggers ride as note bytes instead), which is a "no producer" gap, not
+  dead code on the engine side. If DMC-level control is ever reintroduced, confirm the
+  emitted level is range-checked to the 7-bit $4011 domain (`docs/APU_DMC_REFERENCE.md`,
+  0–127), and update both the spec row and this bullet together this time.
 - **Verify fix (nes-hardware #158, closed, touches this file)**: `note` is now clamped on
   *both* ends before it's baked into the bytecode stream and fed back into
   `midi_note_to_timer_value`: `elif note > 95: note = 95` (`:1082-1083`) and, for tone
@@ -217,9 +226,20 @@ Cross-check the bytes `export_tables_with_patterns` emits against
   the in-macro `$FE, <offset>` loop control byte (§2.3, now marked reserved/not-
   implemented). Exporter (`:1239`) and engine (`nes/audio_engine.asm:416` `@cmd_bank_jump`)
   agree on the sequence-level meaning, so there is no runtime bug. The `$85 CMD_DPCM_PLAY`
-  and `$87 CMD_DMC_LEVEL` rows still exist in §3, but each now notes the Python exporter
-  does not emit them (DPCM triggers ride as note bytes; the `$87` emitter was removed, #72;
-  see Dimension 4). Confirm the doc stays in sync rather than re-reporting the `$FE` gap.
+  row still exists in §3 and notes the Python exporter does not emit it (DPCM triggers ride
+  as note bytes; see Dimension 4) -- the engine's `@cmd_dpcm_play` handler is real, this is
+  purely "no producer." Confirm the doc stays in sync rather than re-reporting the `$FE` gap.
+  **`$87 CMD_DMC_LEVEL` is a separate, DIFFERENT story than `$85` -- don't conflate them.**
+  `#83` (2026-07-04) was right that `$87` was real and working *at the time*, but `#309`
+  (2026-07-17) later deleted the `@cmd_dmc_level` handler as dead code (no producer had
+  ever emitted `$87` since `#72`), leaving the doc's "$87 = real, working" claim false
+  again -- undetected for two full audit cycles until `#508/EXP-2026-08-23-1` fixed it.
+  The spec's `$87` row (and the intro paragraph just above the command table) now
+  correctly say **not implemented** (falls through to `@unknown_command`, halts the
+  sequence). If `nes/audio_engine.asm` is ever touched again in a way that restores or
+  re-removes a command handler, re-diff it against every spec row claiming that opcode
+  works -- that's exactly the silent-drift class `#508` closed, and nothing currently
+  guards against it recurring for a different opcode.
 - **Fixed (#163/NH-21, closed)**: NH-21 (nes-hardware audit) covered a macro-*runtime*
   `$FE` hazard — the old `_compress_macro` could emit loop-compressed macros (`$FE,
   loop_start`) that the shipped `EVAL_MACRO` routine (which only checks `$FF`) would
@@ -387,8 +407,38 @@ found a defect that corrupted every song after the first (EXP-2026-08-07-1, fixe
   `bytes_in_current_bank` accounting is per-call). Verify the `MAX_SEQUENCE_BANK` guard
   fires on the cumulative count, and that the per-song rounding waste is accounted for by
   the `check_mapper_capacity` pre-flight in `main.py:run_song_build`.
-- **Empty input.** `songs == []` raises `ValueError` (`:1571-1572`) rather than emitting a
-  degenerate `song_count: .byte $00`. Verify the caller surfaces it as a clean CLI error.
+- **Empty input.** `songs == []` raises `ValueError` (`export_song_bank_bytecode`, line
+  number has drifted since this was written -- grep `requires at least one song`) rather
+  than emitting a degenerate `song_count: .byte $00`. Verify the caller surfaces it as a
+  clean CLI error.
+- **Verify fix (#509/EXP-2026-08-23-2, closed)**: for three audit cycles this method had
+  no self-contained DPCM guard -- only `main.py`'s caller-side `_song_has_dpcm_events`
+  protected the CLI path, leaving any direct API consumer free to feed it a DPCM-bearing
+  song and get a silently out-of-bounds `dpcm_*_table` read. The check moved into the
+  exporter itself as a new module-level `song_has_dpcm_events` helper in
+  `exporter/exporter_ca65.py` (the old `main.py`-private copy was deleted, not
+  duplicated -- `main.py` now imports the shared one), called per-song inside
+  `export_song_bank_bytecode`'s loop before `_build_song_bytecode` runs, so a lazy
+  `songs` generator never even gets its next item pulled once an earlier song trips this.
+  Verify-the-fix: confirm both `main.py` and `exporter_ca65.py` still resolve to the
+  *same* function (grep `song_has_dpcm_events` -- one definition, two import sites) rather
+  than re-diverging into two copies.
+- **Verify fix (#511/EXP-2026-08-23-4, closed)**: the bank-budget-overflow `ValueError`
+  used to name only the channel/bank, forcing a bisect to find the offending song in a
+  multi-song bank. The per-song loop now wraps the `_build_song_bytecode` call in a
+  `try/except ValueError` and re-raises with `song index N ('song{i}')` prepended. Verify
+  the wrap didn't accidentally swallow or double-wrap the DPCM guard's own `ValueError`
+  (it shouldn't, since that check now runs and raises *before* the try block, not inside
+  it) or `_build_song_bytecode`'s per-note DPCM-range guard (which SHOULD get the song
+  prefix, being inside `_build_song_bytecode`).
+- **Verify fix (#512/EXP-2026-08-23-5, closed)**: the `songs_consumed != song_count`
+  guard (added by #505/#506) only ever caught a lazy `songs` iterable yielding FEWER
+  items than declared -- `zip`'s early-stop behavior meant a generator with MORE items
+  than `song_count` silently truncated with no error. The loop now iterates
+  `iter(songs)` manually (not `zip`) and, after consuming exactly `song_count` items,
+  pulls one more to detect a leftover and raise if one exists. Verify both directions
+  still raise (a scoped regression test covers each) and that the happy path (exact
+  count, list or generator) is unaffected.
 
 ## Cross-Dimension Dedup
 A single root cause can surface across dimensions (an out-of-range `.byte` is both a

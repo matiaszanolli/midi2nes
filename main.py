@@ -19,7 +19,7 @@ from nes.emulator_core import NESEmulatorCore, frames_to_events
 from arranger import arrange_for_nes
 from nes.project_builder import NESProjectBuilder, NES_CFG_MAPPER_MARKER
 from nes.song_bank import SongBank
-from exporter.exporter_ca65 import CA65Exporter
+from exporter.exporter_ca65 import CA65Exporter, song_has_dpcm_events
 
 # Frozen copy of CA65Exporter.SEQUENCE_CHANNELS, captured at import time
 # rather than read live off the class -- several tests patch
@@ -981,21 +981,6 @@ def midi_to_frames_for_song(midi_path, use_arranger, dpcm_index_path='dpcm_index
     return emulator.process_all_tracks(mapped)
 
 
-def _song_has_dpcm_events(frames):
-    """True if `frames['dpcm']` contains a real (non-silent) drum hit.
-
-    `song build` doesn't support DPCM in v1 (#30/F-13, see docs/ROADMAP.md),
-    so callers use this to reject a song with a clear error instead of
-    silently producing a ROM with a broken/colliding DPCM bank pool (each
-    song's sequence bytecode already claims its own fresh bank range, but
-    DPCM sample packing -- excluded here -- would need the same treatment
-    and doesn't have it yet).
-    """
-    dpcm_frames = frames.get('dpcm') or {}
-    return any(
-        (frame_data or {}).get('note', 0) and (frame_data or {}).get('volume', 0)
-        for frame_data in dpcm_frames.values()
-    )
 
 
 def run_song_build(args):
@@ -1067,7 +1052,7 @@ def run_song_build(args):
                 print(f"[ERROR] {e}")
                 sys.exit(1)
 
-            if _song_has_dpcm_events(frames):
+            if song_has_dpcm_events(frames):
                 print(f"[ERROR] Song '{name}' contains DPCM drum samples -- "
                       f"'song build' does not support DPCM in multi-song ROMs yet "
                       f"(see docs/ROADMAP.md). Remove drums or build this song "

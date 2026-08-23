@@ -78,6 +78,62 @@ Macros are lists of offsets or absolute values evaluated frame-by-frame.
     pitch these are period-unit deltas, so the ≤1-unit nudge is sub-cent and
     inaudible. (#77)
 
+### 2.4 Multi-Song Jukebox Tables
+
+A `song build` (#30/F-13) ROM replaces the single-song `channel_start_banks`
+table (§2.1) with a lookup keyed by song index, since a jukebox has more than
+one set of five channel streams and instrument tables. The single-song and
+jukebox tables are mutually exclusive — `nes/project_builder.py` selects
+between them at build time via the `JUKEBOX_BUILD` symbol
+(`song_count is not None`).
+
+`CA65Exporter.export_song_bank_bytecode` (`exporter/exporter_ca65.py`) emits
+one set of instrument/macro tables and sequence streams per song, with every
+symbol a song defines prefixed `song{i}_` (`song0_instrument_table`,
+`song0_pulse1_sequence`, etc. — no cross-song dedup). Two lookup tables tie
+the per-song labels to a runtime song index:
+
+**`song_table_ptr_lo` / `song_table_ptr_hi` / `song_table_bank`** — three
+parallel byte arrays, one entry per `(song, channel)` pair, indexed
+`song_index * 5 + channel` (channel order fixed by `SEQUENCE_CHANNELS`:
+pulse1, pulse2, triangle, noise, dpcm). Emitted into the fixed `CODE_8000`
+bank so they're readable without a bank swap regardless of which `BANK_NN`
+each song's sequence data physically landed in.
+```ca65
+song_table_ptr_lo:
+    .byte <song0_pulse1_sequence, <song0_pulse2_sequence, <song0_triangle_sequence, <song0_noise_sequence, <song0_dpcm_sequence, <song1_pulse1_sequence, ...
+song_table_ptr_hi:
+    .byte >song0_pulse1_sequence, >song0_pulse2_sequence, ...
+song_table_bank:
+    .byte $00, $00, $00, $00, $00, $01, ...  ; the BANK_NN each label landed in
+song_count:
+    .byte $02  ; total songs in this ROM
+```
+`song_count` is capped at **51** (`(255 - 4) // 5 + 1`): the engine's
+`load_song_streams_indexed` computes `song_index * 5` on an 8-bit
+accumulator with no native multiply (`current_song*4 + current_song`), so a
+52nd song's index would silently wrap. `export_song_bank_bytecode` raises
+`ValueError` before emitting a bank over this limit (#426).
+
+**`song_instrument_ptr_lo` / `song_instrument_ptr_hi`** — one entry **per
+song**, not per channel (unlike the three arrays above) — since
+`EVAL_MACRO` indirects through a single `instrument_table_ptr` variable
+rather than a fixed `instrument_table` label, and each song's instrument
+table needs its own pointer regardless of channel.
+```ca65
+song_instrument_ptr_lo:
+    .byte <song0_instrument_table, <song1_instrument_table
+song_instrument_ptr_hi:
+    .byte >song0_instrument_table, >song1_instrument_table
+```
+
+**Consumer**: `nes/audio_engine.asm`'s `load_song_streams_indexed`, called
+from `audio_init_song` (cold boot, always song 0) and `audio_advance_song`
+(end-of-song transition) whenever `current_song` changes. It seeds
+`instrument_table_ptr` from `song_instrument_ptr_*` at index `current_song`
+alone, then copies all five channels' `stream_ptr_lo/hi`/`stream_bank` from
+`song_table_ptr_*`/`song_table_bank` starting at index `current_song * 5`.
+
 ---
 
 ## 3. Bytecode Specification (The Sequencer Stream)
@@ -103,14 +159,19 @@ This table lists only what `nes/audio_engine.asm`'s sequencer dispatch actually
 decodes (any other byte in this range falls through to `@unknown_command`,
 which halts the sequence) — it previously listed several commands
 (`CMD_TEMPO`, `CMD_CALL_PATTERN`, `CMD_RETURN`, `CMD_JUMP`, `CMD_SET_VOLUME`)
-the engine never implemented, and omitted `$87`/`$FE`, both real, working
-opcodes (#83/EXP-07).
+the engine never implemented, and once omitted `$FE`, a real, working opcode
+(#83/EXP-07). `$87`/`CMD_DMC_LEVEL` was also real and working when #83 wrote
+this table (2026-07-04) — its `@cmd_dmc_level` handler was later deleted as
+unreachable dead code (#309, 2026-07-17; no producer had emitted `$87` since
+#72 removed its only source), which silently made this table wrong again
+until now (#508/EXP-2026-08-23-1). The row below reflects the current,
+**not implemented** state.
 
 | Byte | Command | Parameter(s) | Description |
 | :--- | :--- | :--- | :--- |
 | **$80** | `CMD_INSTRUMENT` | `[id]` | Sets the current instrument to `id`. |
 | **$85** | `CMD_DPCM_PLAY` | `[sample_id]` | Triggers a DPCM sample from the index. Implemented in the engine; the Python exporter does not currently emit it (DPCM sample triggers are encoded as regular note bytes instead — see `arranger/pipeline_integration.py`'s DPCM frame conversion). |
-| **$87** | `CMD_DMC_LEVEL` | `[level]` | Writes a 7-bit DMC output level (`level & $7F`) directly to `$4011`. |
+| **$87** | `CMD_DMC_LEVEL` | `[level]` | **Not implemented.** Falls through to `@unknown_command` and halts the sequence like any other undecoded byte — the `@cmd_dmc_level` handler that once wrote a 7-bit DMC output level (`level & $7F`) to `$4011` was removed as dead code (#309); no exporter path emits `$87`. Restore the handler before ever emitting this byte, or continue treating it as reserved/unimplemented like the in-macro `$FE` loop byte (§2.3). |
 | **$FE** | `CMD_BANK_JUMP` | `[bank, ptr_lo, ptr_hi]` | *Sequence-level*: switches the MMC3 swappable PRG bank and continues reading from the given pointer, for songs whose bytecode outgrows one 8KB bank. **Distinct from the in-macro `$FE, <offset>` loop control byte (§2.3)** — the two share a byte value but live in separate streams (sequence vs. macro), so there is no decoding ambiguity at runtime. |
 
 ---

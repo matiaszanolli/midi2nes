@@ -48,6 +48,26 @@ TRIANGLE_CONTROL_ON = TRIANGLE_LINEAR_COUNTER_CONTROL | TRIANGLE_LINEAR_COUNTER_
 # corrupts the played note (#16).
 
 
+def song_has_dpcm_events(frames):
+    """True if `frames['dpcm']` contains a real (non-silent) drum hit.
+
+    Multi-song `song build` (#30/F-13) doesn't support DPCM in v1 (see
+    docs/ROADMAP.md): no `DpcmPacker` runs for a jukebox build, so a DPCM
+    trigger byte would index the project builder's 1-byte stub
+    `dpcm_*_table`s past their end, feeding garbage into a live DMC DMA
+    trigger. `export_song_bank_bytecode` uses this to raise a clear error
+    itself (#509/EXP-2026-08-23-2) rather than depending solely on a
+    caller-side check -- this used to be a private copy in `main.py`
+    (`_song_has_dpcm_events`), which only protected `run_song_build`'s own
+    CLI path and left every other caller of this module unguarded.
+    """
+    dpcm_frames = frames.get('dpcm') or {}
+    return any(
+        (frame_data or {}).get('note', 0) and (frame_data or {}).get('volume', 0)
+        for frame_data in dpcm_frames.values()
+    )
+
+
 class CA65Exporter(BaseExporter):
     def __init__(self):
         super().__init__()
@@ -1807,10 +1827,54 @@ class CA65Exporter(BaseExporter):
         # frames dict has no remaining reference once this loop moves on and
         # is freed by CPython's refcounting rather than surviving until the
         # whole bank is built (#505/PERF-B-02).
+        #
+        # Iterated manually via `iter(songs)` rather than `zip(song_labels,
+        # songs)` (#512/EXP-2026-08-23-5): `zip` silently stops at the
+        # shorter of the two, which caught `songs` yielding FEWER items than
+        # `song_count` declares (the mismatch check below) but not MORE --
+        # a `songs` iterable with leftover items past `song_count` would
+        # have zip'd cleanly and silently dropped them. Pulling one extra
+        # item after the loop (further below) surfaces that case too.
+        songs_iter = iter(songs)
         songs_consumed = 0
-        for prefix, song in zip(song_labels, songs):
-            body_lines, next_bank, channel_start_banks, notes_clamped = self._build_song_bytecode(
-                song['frames'], label_prefix=prefix, start_bank=next_bank)
+        for prefix in song_labels:
+            try:
+                song = next(songs_iter)
+            except StopIteration:
+                break
+            frames = song['frames']
+            # Every other hard invariant this method enforces (instrument
+            # count, DPCM note range, bank budget, song_count) raises from
+            # inside the exporter itself; DPCM-channel presence used to be
+            # the one exception -- enforced only by main.py's
+            # `_song_has_dpcm_events`, so a caller that skipped `main.py`
+            # entirely (a library consumer, a future CLI path) could feed a
+            # DPCM-bearing song straight through. No `DpcmPacker` ever runs
+            # for a jukebox build, so the emitted `song{i}_dpcm_sequence`'s
+            # trigger bytes would index the project builder's 1-byte stub
+            # `dpcm_*_table`s past their end, feeding garbage bank/addr/len
+            # into a live DMC DMA trigger (#509/EXP-2026-08-23-2).
+            if song_has_dpcm_events(frames):
+                raise ValueError(
+                    f"export_song_bank_bytecode: song index {songs_consumed} "
+                    f"('{prefix.rstrip('_')}') contains DPCM drum samples -- "
+                    f"multi-song jukebox builds don't support DPCM yet (see "
+                    f"docs/ROADMAP.md). Remove drums or build this song "
+                    f"individually with the normal pipeline."
+                )
+            try:
+                body_lines, next_bank, channel_start_banks, notes_clamped = self._build_song_bytecode(
+                    frames, label_prefix=prefix, start_bank=next_bank)
+            except ValueError as e:
+                # Re-raise with the song identified (#511/EXP-2026-08-23-4):
+                # _build_song_bytecode's own errors (bank-budget overflow,
+                # DPCM note range) name the channel/bank but not which song
+                # in a multi-song bank tipped it over, forcing the caller to
+                # bisect the bank to find it.
+                raise ValueError(
+                    f"export_song_bank_bytecode: song index {songs_consumed} "
+                    f"('{prefix.rstrip('_')}'): {e}"
+                ) from e
             lines.extend(body_lines)
             all_notes_clamped['high'] += notes_clamped['high']
             all_notes_clamped['low'] += notes_clamped['low']
@@ -1820,9 +1884,8 @@ class CA65Exporter(BaseExporter):
             })
             songs_consumed += 1
 
-        # `zip` silently stops at the shorter of `song_labels`/`songs` -- if
-        # a lazy `songs` iterable yields fewer items than the `song_count` it
-        # was declared with, every table built above (song_labels length,
+        # If a lazy `songs` iterable yields fewer items than the `song_count`
+        # it was declared with, every table built above (song_labels length,
         # the .export lines) would already assume the declared count. Fail
         # loudly instead of emitting a `song_table` shorter than `song_count`
         # claims, which the engine would read past the end of.
@@ -1830,6 +1893,18 @@ class CA65Exporter(BaseExporter):
             raise ValueError(
                 f"export_song_bank_bytecode: declared song_count={song_count} but "
                 f"`songs` yielded only {songs_consumed} song(s)."
+            )
+
+        # The reverse mismatch (#512/EXP-2026-08-23-5): `songs` yielding MORE
+        # than `song_count` declares. The loop above only ever pulls exactly
+        # `song_count` items (one per `song_labels` entry), so a leftover
+        # item here means the caller under-declared `song_count` -- the
+        # extra song(s) would otherwise vanish from the ROM with no signal.
+        _NO_MORE_SONGS = object()
+        if next(songs_iter, _NO_MORE_SONGS) is not _NO_MORE_SONGS:
+            raise ValueError(
+                f"export_song_bank_bytecode: declared song_count={song_count} but "
+                f"`songs` has at least one more song beyond that."
             )
 
         # song_table: 3 parallel arrays (addr-lo/addr-hi/bank), indexed
