@@ -1126,36 +1126,45 @@ class TestExportSongBankBytecode(unittest.TestCase):
                     out.unlink()
 
     def test_generator_songs_are_pulled_one_at_a_time_not_materialized_upfront(self):
-        """#505/PERF-B-02: the defining property of the fix -- the exporter
-        must not force the whole `songs` iterable into memory before
-        processing. A generator that records how many items it has yielded
-        so far must show that count advancing incrementally, never jumping
-        straight to the full song_count before any song is processed."""
-        yielded_so_far = []
+        """#505/PERF-B-02, strengthened per #515/REG-38: the defining
+        property of the fix -- the exporter must not force the whole
+        `songs` iterable into memory before processing. A prior version of
+        this test only recorded the final yielded-count, which is
+        identical whether songs are pulled lazily or the generator is
+        drained upfront -- it could not actually distinguish the two. This
+        version tracks the INTERLEAVED order of "yield a song" vs "build
+        that song's bytecode" events and asserts they alternate
+        yield/build/yield/build/..., not yield*4 followed by build*4 (what
+        an eager `list(songs)` at the top of export_song_bank_bytecode
+        would produce)."""
+        from unittest.mock import patch
+
+        events = []
 
         def _songs():
             for i in range(4):
-                yielded_so_far.append(i + 1)
+                events.append(f'yield{i}')
                 yield self._song(60 + i, n_events=1)
+
+        real_build = self.exporter._build_song_bytecode
+
+        def _tracking_build(frames, **kwargs):
+            events.append('build')
+            return real_build(frames, **kwargs)
 
         out = Path(self.temp_dir.name) / "test_jukebox_lazy.asm"
         try:
-            self.exporter.export_song_bank_bytecode(
-                _songs(), str(out), song_count=4)
+            with patch.object(self.exporter, '_build_song_bytecode',
+                               side_effect=_tracking_build):
+                self.exporter.export_song_bank_bytecode(
+                    _songs(), str(out), song_count=4)
         finally:
             if out.exists():
                 out.unlink()
 
-        # If the exporter had materialized `songs` into a list upfront
-        # (e.g. via list(songs)), yielded_so_far would already read
-        # [1, 2, 3, 4] the instant export_song_bank_bytecode was entered,
-        # indistinguishable from this post-hoc check. What this actually
-        # pins is the loop shape: exactly one yield per _build_song_bytecode
-        # call, growing by one each iteration -- proven by the multi-song
-        # generator producing the correct final asm output above and this
-        # generator being fully drained (4 songs) only because the export
-        # loop pulled all 4, not because something forced it eagerly.
-        self.assertEqual(yielded_so_far, [1, 2, 3, 4])
+        self.assertEqual(events, [
+            'yield0', 'build', 'yield1', 'build', 'yield2', 'build', 'yield3', 'build',
+        ])
 
     def test_bank_overflow_on_generator_input_stops_before_later_songs_are_pulled(self):
         """#506/PERF-B-04: when `songs` is a lazy generator, a bank-budget
