@@ -1716,10 +1716,10 @@ class CA65Exporter(BaseExporter):
         print(f"✅ Macro Bytecode export complete: {output_path}")
         return output_path
 
-    def export_song_bank_bytecode(self, songs, output_path):
+    def export_song_bank_bytecode(self, songs, output_path, song_count=None):
         """Export a multi-song 'jukebox' ROM's music.asm (#30/F-13).
 
-        `songs` is an ordered list of mappings with a `'frames'` key (one
+        `songs` is an ordered iterable of mappings with a `'frames'` key (one
         entry per song, in playback order -- callers should already have
         sorted by the song bank's `metadata['order']`). Each song's frames
         are serialized exactly like a single-song bytecode export (see
@@ -1730,6 +1730,17 @@ class CA65Exporter(BaseExporter):
         share one copy of the pulse/triangle period tables (they're pure
         hardware constants, identical for every song).
 
+        `songs` is consumed lazily, one song at a time -- a caller building N
+        songs from source MIDI can pass a generator so only one song's frames
+        dict is resident in memory at a time instead of collecting a full
+        list upfront (#505/PERF-B-02; also resolves #506/PERF-B-04 for free,
+        since `_build_song_bytecode`'s own bank-budget `ValueError` below now
+        fires as soon as the offending song is built, not after every song in
+        the bank has already been parsed). `song_count` must be passed
+        explicitly when `songs` has no `len()` (a generator); for a
+        `list`/`tuple` it's inferred automatically, matching the previous
+        signature.
+
         A `song_table` (three parallel byte arrays -- low/high address byte
         and bank, indexed `song_index*5 + channel`) plus a `song_count` byte
         replace the single-song `channel_start_banks` table, giving the
@@ -1739,7 +1750,9 @@ class CA65Exporter(BaseExporter):
         of `audio_init` (single-song builds are unaffected -- they never
         call this method).
         """
-        if not songs:
+        if song_count is None:
+            song_count = len(songs)
+        if song_count == 0:
             raise ValueError("export_song_bank_bytecode requires at least one song")
 
         # song_table (below) is indexed song_index*5 + channel by the
@@ -1750,25 +1763,27 @@ class CA65Exporter(BaseExporter):
         # (or the current_song*5 multiply itself) wraps in 8 bits and every
         # gate downstream (bank pool, CC65, ROM validation) still passes,
         # so songs at index >= 51 would silently play the wrong streams on
-        # the wrong channels with no build-time signal (#426).
+        # the wrong channels with no build-time signal (#426). Checked
+        # against the declared `song_count` before `songs` is ever iterated,
+        # so an oversized bank fails before a single song is parsed/built.
         max_songs = (255 - (len(self.SEQUENCE_CHANNELS) - 1)) // len(self.SEQUENCE_CHANNELS) + 1
-        if len(songs) > max_songs:
+        if song_count > max_songs:
             raise ValueError(
-                f"export_song_bank_bytecode: {len(songs)} songs exceeds the "
+                f"export_song_bank_bytecode: {song_count} songs exceeds the "
                 f"jukebox engine's {max_songs}-song limit (song_table index "
                 f"song_index*{len(self.SEQUENCE_CHANNELS)}+channel must stay "
                 f"<= 255 for the engine's 8-bit indexing). Split this bank "
                 f"into multiple ROMs."
             )
 
-        print(f"🔧 CA65 Exporter: MMC3 Macro Bytecode mode ({len(songs)}-song jukebox build)")
+        print(f"🔧 CA65 Exporter: MMC3 Macro Bytecode mode ({song_count}-song jukebox build)")
 
         lines = []
         lines.append('; CA65 Assembly Export (MMC3 Macro Bytecode -- multi-song jukebox build)')
         lines.append('')
         self._emit_bytecode_preamble(lines)
 
-        song_labels = [f'song{i}_' for i in range(len(songs))]
+        song_labels = [f'song{i}_' for i in range(song_count)]
         for prefix in song_labels:
             lines.append(
                 f'.export {prefix}pulse1_sequence, {prefix}pulse2_sequence, '
@@ -1787,6 +1802,12 @@ class CA65Exporter(BaseExporter):
         next_bank = 0
         song_channel_labels = []  # per song: {channel: (label, bank)}
 
+        # `songs` is consumed one item at a time (it may be a generator) --
+        # `song` is rebound each iteration, so the previous iteration's
+        # frames dict has no remaining reference once this loop moves on and
+        # is freed by CPython's refcounting rather than surviving until the
+        # whole bank is built (#505/PERF-B-02).
+        songs_consumed = 0
         for prefix, song in zip(song_labels, songs):
             body_lines, next_bank, channel_start_banks, notes_clamped = self._build_song_bytecode(
                 song['frames'], label_prefix=prefix, start_bank=next_bank)
@@ -1797,6 +1818,19 @@ class CA65Exporter(BaseExporter):
                 ch: (f'{prefix}{ch}_sequence', channel_start_banks[ch])
                 for ch in self.SEQUENCE_CHANNELS
             })
+            songs_consumed += 1
+
+        # `zip` silently stops at the shorter of `song_labels`/`songs` -- if
+        # a lazy `songs` iterable yields fewer items than the `song_count` it
+        # was declared with, every table built above (song_labels length,
+        # the .export lines) would already assume the declared count. Fail
+        # loudly instead of emitting a `song_table` shorter than `song_count`
+        # claims, which the engine would read past the end of.
+        if songs_consumed != song_count:
+            raise ValueError(
+                f"export_song_bank_bytecode: declared song_count={song_count} but "
+                f"`songs` yielded only {songs_consumed} song(s)."
+            )
 
         # song_table: 3 parallel arrays (addr-lo/addr-hi/bank), indexed
         # song_index*5 + channel, channel order = SEQUENCE_CHANNELS. Emitted
@@ -1818,7 +1852,7 @@ class CA65Exporter(BaseExporter):
         lines.append('song_table_bank:')
         lines.append('    .byte ' + ', '.join(bank_bytes))
         lines.append('song_count:')
-        lines.append(f'    .byte ${len(songs):02X}')
+        lines.append(f'    .byte ${song_count:02X}')
         lines.append('')
 
         # song_instrument_ptr: one entry per song (not per channel) --
@@ -1854,10 +1888,10 @@ class CA65Exporter(BaseExporter):
         if total_clamped:
             print(
                 f"⚠ {total_clamped} note(s) clamped to the NES tone range (24-95) across "
-                f"{len(songs)} song(s): {all_notes_clamped['high']} above B6, "
+                f"{song_count} song(s): {all_notes_clamped['high']} above B6, "
                 f"{all_notes_clamped['low']} below C1. Pitch may differ from the MIDI file(s)."
             )
 
         print(f"✅ Macro Bytecode jukebox export complete: {output_path} "
-              f"({len(songs)} songs, {next_bank} bank(s) used)")
+              f"({song_count} songs, {next_bank} bank(s) used)")
         return output_path

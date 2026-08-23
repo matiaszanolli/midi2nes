@@ -353,6 +353,38 @@ class TestSongBank(unittest.TestCase):
         self.assertEqual(reloaded.total_banks, self.bank.total_banks)
         self.assertEqual(reloaded.max_bank_size, self.bank.max_bank_size)
 
+    def test_import_bank_keep_segments_false_drops_segments_payload(self):
+        """#504/PERF-B-01: a caller that never reads `segments` (e.g. `song
+        build`, `song list`) can opt out of retaining it in memory after
+        import -- confirms the entry survives with everything else intact
+        but `segments` itself is gone."""
+        self.bank.add_song('test_song', self.test_song_data, {'tempo_base': 120})
+        self.bank.export_bank(str(self.test_bank_path))
+
+        reloaded = SongBank()
+        reloaded.import_bank(str(self.test_bank_path), keep_segments=False)
+        self.assertIn('test_song', reloaded.songs)
+        entry = reloaded.songs['test_song']
+        self.assertNotIn('segments', entry)
+        # Everything else a consumer (run_song_build/run_song_list) actually
+        # reads must still be present.
+        self.assertIn('metadata', entry)
+        self.assertIn('bank', entry)
+        self.assertIn('midi_path', entry)
+
+    def test_import_bank_default_keeps_segments_payload(self):
+        """The default (keep_segments=True) must be unchanged -- callers
+        that re-export the bank (`song add`/`song remove`) need every
+        entry's `segments` intact or export_bank would silently drop it."""
+        self.bank.add_song('test_song', self.test_song_data, {'tempo_base': 120})
+        self.bank.export_bank(str(self.test_bank_path))
+
+        reloaded = SongBank()
+        reloaded.import_bank(str(self.test_bank_path))
+        self.assertIn('segments', reloaded.songs['test_song'])
+        self.assertEqual(
+            reloaded.songs['test_song']['segments'], self.test_song_data)
+
     def test_export_bank_writes_atomically(self):
         """Regression (#456/SAFE-2026-08-21-2): export_bank must use
         core.io_utils.atomic_write_text (the same fix the CA65/FamiStudio

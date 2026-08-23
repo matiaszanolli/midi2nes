@@ -1731,9 +1731,11 @@ class TestSongBankCommands:
         args = Namespace(bank=str(self.test_bank))
         
         run_song_list(args)
-        
-        mock_bank.import_bank.assert_called_once_with(str(self.test_bank))
-        
+
+        # keep_segments=False (#504/PERF-B-01): run_song_list only ever
+        # reads metadata/bank, never the stored segments payload.
+        mock_bank.import_bank.assert_called_once_with(str(self.test_bank), keep_segments=False)
+
         # Check print calls for song listing
         print_calls = mock_print.call_args_list
         assert len(print_calls) >= 6  # Header + songs + separators
@@ -2201,6 +2203,40 @@ class TestRunSongBuild:
         missing_index = str(self.temp_dir / "no_such_index.json")
         with pytest.raises(SystemExit):
             run_song_build(self._args(arranger=False, dpcm_index=missing_index))
+        mock_builder_class.assert_not_called()
+
+    @patch('main.NESProjectBuilder')
+    def test_songs_are_parsed_lazily_not_all_upfront(self, mock_builder_class):
+        """#505/PERF-B-02 at the run_song_build level: a bank-budget
+        overflow on the first song must raise before the second song's
+        MIDI is ever parsed -- proving the per-song parse loop is
+        interleaved with bytecode building, not run to completion for
+        every song before export starts."""
+        from mappers.mmc3 import MMC3Mapper
+        self._write_bank([
+            ('song_a', self.midi_a, 0),
+            ('song_b', self.midi_b, 1),
+        ])
+        big_frames = {'pulse1': {
+            str(i): {'note': 60 + (i % 24), 'volume': 8 + (i % 7)}
+            for i in range(6000)
+        }}
+        parsed = []
+
+        def _fake_parse(midi_path, *a, **kw):
+            parsed.append(midi_path)
+            if str(midi_path) == str(self.midi_a):
+                return big_frames
+            return {'pulse1': {'0': {'note': 60, 'volume': 10}}}
+
+        with patch('main.midi_to_frames_for_song', side_effect=_fake_parse):
+            with patch.object(MMC3Mapper, 'SWAP_BANK_COUNT', 1):
+                with pytest.raises(SystemExit) as exc:
+                    run_song_build(self._args())
+        assert exc.value.code == 1
+        assert parsed == [str(self.midi_a)], (
+            "song_b must never be parsed once song_a's own bytecode "
+            "already overflowed the bank budget")
         mock_builder_class.assert_not_called()
 
 
