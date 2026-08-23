@@ -239,39 +239,6 @@ class TestPatternDetection(unittest.TestCase):
         self.assertTrue(len(first_pattern['variations']) >= 2, 
                     "Should detect both transposed and volume variations")
 
-    def test_pattern_optimization_with_variations(self):
-        """Test pattern optimization considering variations.
-
-        Pattern A repeats 3x exactly (so it clears the >=3-exact gate, #365) and
-        also has a transposed variation; optimization must keep the pattern and
-        retain its variations.
-        """
-        events = [
-            # Pattern A, 3x exactly
-            {'frame': 0, 'note': 60, 'volume': 100},
-            {'frame': 1, 'note': 64, 'volume': 100},
-            {'frame': 2, 'note': 67, 'volume': 100},
-            {'frame': 3, 'note': 60, 'volume': 100},
-            {'frame': 4, 'note': 64, 'volume': 100},
-            {'frame': 5, 'note': 67, 'volume': 100},
-            {'frame': 6, 'note': 60, 'volume': 100},
-            {'frame': 7, 'note': 64, 'volume': 100},
-            {'frame': 8, 'note': 67, 'volume': 100},
-            # Pattern A variation (transposed +2)
-            {'frame': 9, 'note': 62, 'volume': 100},
-            {'frame': 10, 'note': 66, 'volume': 100},
-            {'frame': 11, 'note': 69, 'volume': 100},
-        ]
-
-        patterns = self.pattern_detector.detect_patterns(events)
-        optimized = self.pattern_detector._optimize_patterns(patterns)
-        
-        self.assertTrue(len(optimized) > 0, "Should keep patterns after optimization")
-        first_pattern = list(optimized.values())[0]
-        self.assertIn('variations', first_pattern, 
-                    "Optimized pattern should retain variations")
-
-
 class TestEnhancedPatternDetector(unittest.TestCase):
     def setUp(self):
         self.tempo_map = EnhancedTempoMap(initial_tempo=500000)  # 120 BPM

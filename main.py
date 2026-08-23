@@ -830,11 +830,17 @@ def run_detect_patterns(args):
     # Detect patterns
     pattern_result = detector.detect_patterns(events)
     
-    # Save compressed patterns
+    # Save compressed patterns. Persist the full 4-key envelope the detector
+    # returns (patterns/references/stats/variations) so the on-disk artifact
+    # matches the documented detect-patterns contract -- the in-memory
+    # --no-patterns stub already does this (#258/PAT-09); this subcommand's
+    # file was the one remaining place `variations` was silently dropped
+    # (#498/PAT-2026-08-23-1).
     output = {
         'patterns': pattern_result['patterns'],
         'references': pattern_result['references'],
-        'stats': pattern_result['stats']
+        'stats': pattern_result['stats'],
+        'variations': pattern_result['variations']
     }
     Path(args.output).write_text(json.dumps(output, separators=(',', ':')))
     print(f" Detected patterns -> {args.output}")
