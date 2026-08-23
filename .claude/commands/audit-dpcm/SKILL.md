@@ -281,32 +281,39 @@ orphaned (nothing in the pipeline calls it; `generate_dpcm_index` scans pre-made
   cycle budget.
 
 ### Dimension 6: Config robustness (`DrumMapperConfig`)
-`dpcm_sampler/enhanced_drum_mapper.py` defines `DrumPatternConfig` (line 12),
-`SampleManagerConfig` (line 53), `DrumMapperConfig` (line 95) with `validate()` /
-`to_file` / `from_file` (line 163):
-- **Still open (#76/D-13)**: `from_file` (lines 163-191) does
-  `DrumPatternConfig(**config_data.get('pattern_detection', {}))` (line 170) and the
-  equivalent for `SampleManagerConfig` (line 172) — an unexpected/renamed key in the
-  JSON raises `TypeError` (not caught; only `FileNotFoundError` and
-  `json.JSONDecodeError` are handled, lines 188-191). No commit in the recent sprint
-  touched this. Note the current blast radius: the CLI `--config` flag that used to
-  feed `main.py:load_config` (`main.py:462-466`) into this path was intentionally
-  removed (`main.py:772-774`, #13) because nothing wired it to
-  `assign_tracks_to_nes_channels` — so today `from_file` is reachable only via
-  direct API use (and is exercised by `tests/test_drum_mapper_config.py`), not the
-  CLI. Still worth fixing/hardening since it's public API surface.
-- `validate()` (`DrumMapperConfig.validate`, line 110) enforces weight sums ≈ 1 and
-  ranges. `EnhancedDrumMapper.__init__` (line 196) calls `self.config.validate()`
-  unconditionally on whatever config object it holds, so a config passed in after
-  `DrumMapperConfig.from_file(...)` **is** validated before use, so long as it's
+`dpcm_sampler/enhanced_drum_mapper.py` defines `DrumPatternConfig` (line 13),
+`SampleManagerConfig` (line 54), `DrumMapperConfig` (line 96) with `validate()` /
+`to_file` / `from_file` (line 164):
+- **Fixed (#76/D-13, verify)**: `from_file` (lines 164-196) does
+  `DrumPatternConfig(**config_data.get('pattern_detection', {}))` (line 171) and the
+  equivalent for `SampleManagerConfig` (line 174) — an unexpected/renamed key in the
+  JSON used to raise an uncaught `TypeError` (only `FileNotFoundError` and
+  `json.JSONDecodeError` were handled). It now also catches `TypeError` and re-raises
+  a clear `ValueError` (`except TypeError as e: raise ValueError(f"Invalid
+  configuration key in {config_path}: {e}")`, lines 195-196), and `result.validate()`
+  still runs before the constructed config is returned (line 189) — fixed in `3b905fc`
+  (2026-07-18), covered by
+  `tests/test_drum_mapper_config.py::test_stray_key_raises_clear_error`. Verify-the-fix:
+  confirm the `except TypeError` clause is still present and still wraps the same
+  `TypeError` a stray/renamed key raises (not narrowed to catch less), and that
+  `result.validate()` hasn't been reordered to run before construction can fail. Note
+  the current blast radius: the CLI `--config` flag that used to feed
+  `main.py:load_config` into this path was intentionally removed (#13) because nothing
+  wired it to `assign_tracks_to_nes_channels` — so today `from_file` is reachable only
+  via direct API use (and is exercised by `tests/test_drum_mapper_config.py`), not the
+  CLI.
+- `validate()` (`DrumMapperConfig.validate`, line 111) enforces weight sums ≈ 1 and
+  ranges. `EnhancedDrumMapper.__init__` (line 207) calls `self.config.validate()`
+  unconditionally on whatever config object it holds (line 209), so a config passed in
+  after `DrumMapperConfig.from_file(...)` **is** validated before use, so long as it's
   routed through `EnhancedDrumMapper.__init__` — confirm there's no path that uses
   a `from_file`-loaded config directly without going through that constructor.
 - `SampleManagerConfig.memory_limit` is bounded 1KB–16KB and `max_samples` 1–64
-  (lines 77-80), but `DPCMSampleManager.__init__` defaults
+  (lines 78-81), but `DPCMSampleManager.__init__` defaults
   (`max_samples=16, memory_limit=4096`) are declared independently
   (`dpcm_sampler/dpcm_sample_manager.py:5`). In the current codebase the only
   production instantiation site is `EnhancedDrumMapper.__init__`
-  (`enhanced_drum_mapper.py:203-206`), which always passes the validated config
+  (`enhanced_drum_mapper.py:216-219`), which always passes the validated config
   values through — direct unvalidated construction only happens in
   `tests/test_dpcm_sample_manager.py`. Low residual risk; flag only if a new
   production call site constructs `DPCMSampleManager` directly.
