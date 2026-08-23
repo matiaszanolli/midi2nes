@@ -2239,6 +2239,77 @@ class TestRunSongBuild:
             "already overflowed the bank budget")
         mock_builder_class.assert_not_called()
 
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    def test_verbose_prints_traceback_on_failure(
+            self, mock_builder_class, mock_compile):
+        """#514/REG-37: `verbose=True` must trigger `traceback.print_exc()`
+        on a build failure, not just the clean [ERROR] message -- sibling to
+        `test_compile_failure_exits_cleanly_not_raw_traceback`, which only
+        ever runs with the fixture default `verbose=False` and so never
+        exercised this branch."""
+        self._write_bank([('song_a', self.midi_a, 0)])
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+        mock_compile.return_value = False
+
+        with patch('traceback.print_exc') as mock_print_exc:
+            with pytest.raises(SystemExit) as exc:
+                run_song_build(self._args(verbose=True))
+        assert exc.value.code == 1
+        mock_print_exc.assert_called_once()
+
+    @patch('main.build_and_validate_rom')
+    def test_unexpected_non_midi2nes_exception_is_caught_cleanly(
+            self, mock_build_and_validate):
+        """#514/REG-37: the generic `except Exception` catch-all -- the
+        backstop for an exception type nobody anticipated -- must actually
+        catch a plain (non-MIDI2NESError) exception and print the
+        'Unexpected failure' message, not let it escape as a raw
+        traceback. Every other failure test in this class raises a typed
+        MIDI2NESError subclass, which never reaches this branch. Also runs
+        with verbose=True to cover that branch's own traceback.print_exc()
+        call, distinct from the MIDI2NESError branch's copy covered by
+        test_verbose_prints_traceback_on_failure above."""
+        self._write_bank([('song_a', self.midi_a, 0)])
+        mock_build_and_validate.side_effect = RuntimeError("boom")
+
+        with patch('traceback.print_exc') as mock_print_exc:
+            with patch('builtins.print') as mock_print:
+                with pytest.raises(SystemExit) as exc:
+                    run_song_build(self._args(verbose=True))
+        assert exc.value.code == 1
+        printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        assert "[ERROR] Unexpected failure building jukebox ROM: boom" in printed
+        mock_print_exc.assert_called_once()
+
+    @patch('main.validate_rom')
+    @patch('main.compile_rom')
+    @patch('main.NESProjectBuilder')
+    def test_successful_rebuild_removes_the_backup_it_made(
+            self, mock_builder_class, mock_compile, mock_validate):
+        """#514/REG-37: a rebuild over a pre-existing ROM that SUCCEEDS must
+        clean up the backup it took (`_backup_existing_rom`) rather than
+        leaving a stale `.nes.backup` behind forever -- the `finally`
+        block's `elif backup_path: backup_path.unlink()` branch, which
+        every other test in this class never reaches because they either
+        have no pre-existing ROM or the build fails (taking the sibling
+        `_restore_backup` branch instead, pinned by
+        `test_validation_failure_restores_a_preexisting_good_rom`)."""
+        self.output_rom.write_bytes(b"OLD GOOD ROM BYTES")
+        self._write_bank([('song_a', self.midi_a, 0)])
+        mock_builder_class.return_value = Mock()
+        mock_compile.return_value = True
+        mock_validate.return_value = True
+
+        run_song_build(self._args())
+
+        backup_path = self.output_rom.with_suffix('.nes.backup')
+        assert not backup_path.exists(), (
+            "a successful rebuild must remove the backup it made, not "
+            "leave a stale .nes.backup behind")
+
 
 class TestConfigCommands:
     """Test configuration management commands."""
