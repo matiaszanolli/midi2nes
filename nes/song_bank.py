@@ -228,7 +228,7 @@ class SongBank:
 
         atomic_write_text(output_path, json.dumps(bank_data, indent=2))
 
-    def import_bank(self, input_path: str) -> None:
+    def import_bank(self, input_path: str, keep_segments: bool = True) -> None:
         """Import a song bank from a file.
 
         Guards existence/parse/key errors with a clear message instead of a
@@ -236,6 +236,21 @@ class SongBank:
         fixed for the pipeline subcommands via `main.py`'s `load_json_stage`,
         which doesn't apply here since this is a library method, not a CLI
         subcommand (its callers own the process-exit decision).
+
+        ``keep_segments=False`` drops each song's raw ``segments`` payload
+        (the full parsed-MIDI event list `song add` stored, per the class
+        docstring) right after validation instead of retaining it in
+        ``self.songs`` for this instance's lifetime (#504/PERF-B-01). Pass
+        it from a caller that never reads ``segments`` -- ``song build``
+        re-parses each song from its recorded ``midi_path`` instead, and
+        ``song list`` only prints ``metadata``/``bank``. This does not
+        avoid the initial JSON parse (there is no cheap way to skip a
+        field mid-``json.loads`` without a streaming parser dependency),
+        but it does mean the parsed segments data doesn't survive past this
+        call. Callers that later call :meth:`export_bank` (``song
+        add``/``song remove``) MUST keep the default ``True`` --
+        ``export_bank`` writes ``self.songs`` back out, so a stripped entry
+        would silently drop that song's stored segments from the file.
         """
         path = Path(input_path)
         if not path.exists():
@@ -285,6 +300,14 @@ class SongBank:
                         f"song bank file's entry for song '{name}' is missing "
                         f"expected key '{key}': {path}"
                     )
+            if not keep_segments:
+                # `entry` is the same dict object stored in `songs` (and thus
+                # `data['songs']`) -- popping here means `self.songs` below
+                # never retains it, freeing the JSON-parsed segments payload
+                # as soon as `data` itself goes out of scope at return
+                # (#504/PERF-B-01), rather than for this SongBank's whole
+                # lifetime.
+                entry.pop('segments', None)
         self.total_banks = bank_info['total_banks']
         self.max_bank_size = bank_info['bank_size']
         self.songs = songs

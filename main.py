@@ -906,7 +906,9 @@ def run_song_list(args):
 
     bank = SongBank()
     try:
-        bank.import_bank(args.bank)
+        # keep_segments=False (#504/PERF-B-01): only metadata/bank below are
+        # ever read here.
+        bank.import_bank(args.bank, keep_segments=False)
     except Exception as e:
         print(f"[ERROR] Failed to load song bank: {e}")
         sys.exit(1)
@@ -1011,7 +1013,10 @@ def run_song_build(args):
 
     bank = SongBank()
     try:
-        bank.import_bank(str(bank_path))
+        # keep_segments=False (#504/PERF-B-01): this command re-parses every
+        # song from its recorded midi_path (below) and never reads the
+        # bank's stored raw-event `segments` payload.
+        bank.import_bank(str(bank_path), keep_segments=False)
     except Exception as e:
         print(f"[ERROR] Failed to load song bank: {e}")
         sys.exit(1)
@@ -1029,35 +1034,49 @@ def run_song_build(args):
     dpcm_index_path = getattr(args, 'dpcm_index', None) or 'dpcm_index.json'
     verbose = getattr(args, 'verbose', False)
 
-    songs = []
-    for name in ordered_names:
-        song_data = bank.songs[name]
-        midi_path = song_data.get('midi_path')
-        if not midi_path:
-            print(f"[ERROR] Song '{name}' has no recorded source MIDI -- "
-                  f"re-add it with 'song add' to build it.")
-            sys.exit(1)
-        if not Path(midi_path).exists():
-            print(f"[ERROR] Song '{name}' source MIDI not found: {midi_path}")
-            sys.exit(1)
+    def _songs_for_build():
+        """Parse each song's frames lazily, one at a time, as the exporter
+        consumes them (#505/PERF-B-02): yielding instead of building a full
+        `songs` list upfront means only one song's frames dict is ever
+        resident in memory (the previous song's is freed by refcounting once
+        `export_song_bank_bytecode`'s loop moves past it), instead of all N
+        songs' frames coexisting for a bank's whole parse phase --
+        ~12-13 MB/song, ~250 MB for a 20-song jukebox, by the 2026-08-07
+        audit's `tracemalloc` measurement. This also gives PERF-B-04's
+        bank-budget overflow check the earliest possible failure point: it
+        now fires as soon as the offending song's own bytecode is built
+        (inside `_build_song_bytecode`, via `export_song_bank_bytecode`),
+        not after every song in the bank has already been parsed.
+        """
+        for name in ordered_names:
+            song_data = bank.songs[name]
+            midi_path = song_data.get('midi_path')
+            if not midi_path:
+                print(f"[ERROR] Song '{name}' has no recorded source MIDI -- "
+                      f"re-add it with 'song add' to build it.")
+                sys.exit(1)
+            if not Path(midi_path).exists():
+                print(f"[ERROR] Song '{name}' source MIDI not found: {midi_path}")
+                sys.exit(1)
 
-        print(f"  Parsing '{name}' ({midi_path})...")
-        try:
-            frames = midi_to_frames_for_song(
-                midi_path, use_arranger, dpcm_index_path=dpcm_index_path, verbose=verbose)
-        except FileNotFoundError as e:
-            print(f"[ERROR] {e}")
-            sys.exit(1)
+            print(f"  Parsing '{name}' ({midi_path})...")
+            try:
+                frames = midi_to_frames_for_song(
+                    midi_path, use_arranger, dpcm_index_path=dpcm_index_path, verbose=verbose)
+            except FileNotFoundError as e:
+                print(f"[ERROR] {e}")
+                sys.exit(1)
 
-        if _song_has_dpcm_events(frames):
-            print(f"[ERROR] Song '{name}' contains DPCM drum samples -- "
-                  f"'song build' does not support DPCM in multi-song ROMs yet "
-                  f"(see docs/ROADMAP.md). Remove drums or build this song "
-                  f"individually with the normal pipeline.")
-            sys.exit(1)
+            if _song_has_dpcm_events(frames):
+                print(f"[ERROR] Song '{name}' contains DPCM drum samples -- "
+                      f"'song build' does not support DPCM in multi-song ROMs yet "
+                      f"(see docs/ROADMAP.md). Remove drums or build this song "
+                      f"individually with the normal pipeline.")
+                sys.exit(1)
 
-        songs.append({'frames': frames})
+            yield {'frames': frames}
 
+    song_count = len(ordered_names)
     output_rom = Path(args.output)
     skip_validation = getattr(args, 'skip_validation', False)
 
@@ -1080,7 +1099,8 @@ def run_song_build(args):
 
             exporter = CA65Exporter()
             try:
-                exporter.export_song_bank_bytecode(songs, str(music_asm))
+                exporter.export_song_bank_bytecode(
+                    _songs_for_build(), str(music_asm), song_count=song_count)
             except ValueError as e:
                 print(f"[ERROR] {e}")
                 sys.exit(1)
@@ -1089,14 +1109,14 @@ def run_song_build(args):
             mapper = MapperFactory.get_mapper('mmc3')
 
             project_path = temp_path / "nes_project"
-            print(f"🔨 Compiling {len(songs)}-song jukebox ROM...")
+            print(f"🔨 Compiling {song_count}-song jukebox ROM...")
             build_and_validate_rom(
                 mapper, music_asm, project_path, output_rom,
                 debug_mode=False, skip_validation=skip_validation, args=args,
-                song_count=len(songs))
+                song_count=song_count)
 
         build_succeeded = True
-        print(f"✅ Jukebox ROM built: {output_rom} ({len(songs)} songs)")
+        print(f"✅ Jukebox ROM built: {output_rom} ({song_count} songs)")
     except MIDI2NESError as e:
         print(f"[ERROR] {e}")
         if verbose:

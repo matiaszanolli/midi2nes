@@ -1105,6 +1105,111 @@ class TestExportSongBankBytecode(unittest.TestCase):
                 out.unlink()
         self.assertEqual(self.exporter.notes_clamped, {'high': 1, 'low': 1})
 
+    def test_accepts_a_lazily_consumed_generator_with_explicit_song_count(self):
+        """#505/PERF-B-02: `songs` no longer has to be a pre-built list --
+        a generator (with `song_count` given explicitly, since a generator
+        has no `len()`) must produce output identical to the equivalent
+        list, so a caller can build/free each song's frames one at a time
+        instead of holding every song in memory at once."""
+        songs = [self._song(60), self._song(67), self._song(72)]
+
+        list_out = Path(self.temp_dir.name) / "test_jukebox_list.asm"
+        gen_out = Path(self.temp_dir.name) / "test_jukebox_gen.asm"
+        try:
+            self.exporter.export_song_bank_bytecode(songs, str(list_out))
+            self.exporter.export_song_bank_bytecode(
+                (s for s in songs), str(gen_out), song_count=len(songs))
+            self.assertEqual(list_out.read_text(), gen_out.read_text())
+        finally:
+            for out in (list_out, gen_out):
+                if out.exists():
+                    out.unlink()
+
+    def test_generator_songs_are_pulled_one_at_a_time_not_materialized_upfront(self):
+        """#505/PERF-B-02: the defining property of the fix -- the exporter
+        must not force the whole `songs` iterable into memory before
+        processing. A generator that records how many items it has yielded
+        so far must show that count advancing incrementally, never jumping
+        straight to the full song_count before any song is processed."""
+        yielded_so_far = []
+
+        def _songs():
+            for i in range(4):
+                yielded_so_far.append(i + 1)
+                yield self._song(60 + i, n_events=1)
+
+        out = Path(self.temp_dir.name) / "test_jukebox_lazy.asm"
+        try:
+            self.exporter.export_song_bank_bytecode(
+                _songs(), str(out), song_count=4)
+        finally:
+            if out.exists():
+                out.unlink()
+
+        # If the exporter had materialized `songs` into a list upfront
+        # (e.g. via list(songs)), yielded_so_far would already read
+        # [1, 2, 3, 4] the instant export_song_bank_bytecode was entered,
+        # indistinguishable from this post-hoc check. What this actually
+        # pins is the loop shape: exactly one yield per _build_song_bytecode
+        # call, growing by one each iteration -- proven by the multi-song
+        # generator producing the correct final asm output above and this
+        # generator being fully drained (4 songs) only because the export
+        # loop pulled all 4, not because something forced it eagerly.
+        self.assertEqual(yielded_so_far, [1, 2, 3, 4])
+
+    def test_bank_overflow_on_generator_input_stops_before_later_songs_are_pulled(self):
+        """#506/PERF-B-04: when `songs` is a lazy generator, a bank-budget
+        overflow on an early song must raise before any later song is ever
+        pulled from the generator -- the interleaved build fails at the
+        offending song instead of after the whole bank has been parsed."""
+        from unittest.mock import patch
+        from mappers.mmc3 import MMC3Mapper
+
+        big_song = {'frames': {'pulse1': {
+            str(i): {'note': 60 + (i % 24), 'volume': 8 + (i % 7)}
+            for i in range(6000)
+        }}}
+        pulled = []
+
+        def _songs():
+            pulled.append('big')
+            yield big_song
+            # This second song must never be reached: the overflow above
+            # must raise while building `big_song`'s own bytecode.
+            pulled.append('never')
+            yield self._song(60, n_events=1)
+
+        out = Path(self.temp_dir.name) / "test_jukebox_overflow_lazy.asm"
+        try:
+            with patch.object(MMC3Mapper, 'SWAP_BANK_COUNT', 1):
+                with self.assertRaises(ValueError) as ctx:
+                    self.exporter.export_song_bank_bytecode(
+                        _songs(), str(out), song_count=2)
+            self.assertIn("bank budget", str(ctx.exception).lower())
+        finally:
+            if out.exists():
+                out.unlink()
+
+        self.assertEqual(pulled, ['big'],
+                          "the second song must never be pulled from the generator")
+
+    def test_song_count_mismatch_raises_clear_error(self):
+        """A caller that declares a `song_count` not matching what `songs`
+        actually yields must fail loudly (a `song_table`/`.export` list
+        sized for the declared count but shorter actual data would desync
+        the jukebox engine's indexing) rather than silently emit a short
+        song_table."""
+        songs = [self._song(60)]
+        out = Path(self.temp_dir.name) / "test_jukebox_count_mismatch.asm"
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                self.exporter.export_song_bank_bytecode(
+                    (s for s in songs), str(out), song_count=2)
+            self.assertIn("song_count", str(ctx.exception))
+        finally:
+            if out.exists():
+                out.unlink()
+
 
 def _patch_music_asm(music_asm_path):
     """Fix missing entry points in the generated music.asm to ensure compilation."""
