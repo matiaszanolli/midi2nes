@@ -324,6 +324,31 @@ class TestParseMidiToFrames:
         events = next(iter(result['events'].values()))
         assert all(e['program'] == 0 for e in events)
 
+    def test_program_change_on_one_track_reaches_another_track_sharing_its_channel(self):
+        """Regression (#492): GM program is channel-scoped per the MIDI spec,
+        not track-scoped -- a real GM/Type-1 convention has a dedicated
+        "conductor" track issue program changes for channels whose notes live
+        on other tracks. `channel_programs` used to be reset to {} inside the
+        per-track loop, so a program change on track 0 was invisible to track
+        1's notes on the same channel even though track 0 is processed first;
+        they silently defaulted to program 0 instead of the real instrument."""
+        tracks = [
+            [
+                mido.MetaMessage('track_name', name='Conductor', time=0),
+                mido.Message('program_change', channel=5, program=40, time=0),  # Violin
+                mido.MetaMessage('end_of_track', time=0),
+            ],
+            [
+                mido.MetaMessage('track_name', name='Violin', time=0),
+                mido.Message('note_on', channel=5, note=60, velocity=100, time=0),
+                mido.Message('note_off', channel=5, note=60, velocity=0, time=480),
+            ],
+        ]
+        midi_path = self.create_test_midi("cross_track_program_test.mid", tracks)
+        result = parse_midi_to_frames(midi_path)
+        violin_events = result['events']['Violin']
+        assert all(e['program'] == 40 for e in violin_events)
+
     def test_event_error_handling(self):
         """Regression (#124/SAFE-07): a problematic event must not crash the
         parser, but it also must not vanish without a trace -- it has to be

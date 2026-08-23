@@ -30,10 +30,11 @@ duplicate: GM drum routing with `/audit-dpcm`, and hardware-range/triangle limit
 > `tests/test_arranger_drum_detection.py`, `tests/test_arranger_frame_contract.py`,
 > `tests/test_voice_allocator.py`) — the "zero test coverage" gap previously tracked as REG-04
 > is resolved for the paths those tests cover. Treat the corresponding dimensions below as
-> **verify-the-fix / find edge cases**, not as live bugs. Only #88 and #91 (ARR-05, ARR-08)
-> remain open; #92 (ARR-09) was fixed — verify it still holds. Confirm against current line
-> numbers before filing, since fixes
-> upstream in the same files can drift them.
+> **verify-the-fix / find edge cases**, not as live bugs. #88 and #91 (ARR-05, ARR-08) are now
+> also CLOSED (as of 2026-08-22/2026-08-23) — every issue this file names is CLOSED as of
+> AUDIT_ARRANGER_2026-08-23.md. Confirm against `gh issue list` and current line numbers before
+> filing regardless — this file itself has gone stale relative to code before (#493), since
+> fixes upstream in the same files can drift both the line numbers and the open/closed status.
 
 ## Parameters (from $ARGUMENTS)
 - `--focus <dims>` — comma-separated dimension numbers (e.g. `--focus 1,5`). Default: all.
@@ -197,13 +198,14 @@ Checklist:
 - `DutyCycle.DUTY_75 = 3` is commented "Same as 25% (inverted)" — confirm no mapping relies on
   75% being audibly distinct from 25% (it is not on real hardware; see
   `docs/APU_PULSE_REFERENCE.md`).
-- **STILL OPEN — #88 (ARR-05)**: `get_role_priority()` (`arranger/gm_instruments.py:1303-1312`)
-  is re-exported via `arranger/__init__.py` but has no call site anywhere in `arranger/` — the
-  actual drop-order decision uses `TrackAnalysis.priority` (an int set per-instrument in
+- **#88 (ARR-05) is CLOSED and the fix went further than "dead code"**: the old
+  `get_role_priority()` role→rank helper (BASS=1…SFX=6) has been **removed entirely** from
+  `arranger/gm_instruments.py` (only an explanatory `# NOTE (#88/ARR-05)` comment remains,
+  `:1326`), and it is no longer re-exported via `arranger/__init__.py`. The actual drop-order
+  decision uses `TrackAnalysis.priority` (an int set per-instrument in
   `GM_INSTRUMENT_MAP`/`GM_DRUM_MAP` and adjusted in `_determine_role`,
-  `arranger/role_analyzer.py:204-283`), not the BASS=1…SFX=6 ordering `get_role_priority`
-  returns. Confirm it is genuinely dead (grep for callers) and, if so, flag it as dead/misleading
-  code — a maintainer could reasonably assume it governs drop order and be wrong.
+  `arranger/role_analyzer.py:204-283`). Verify-the-fix: grep for `get_role_priority` anywhere
+  in the repo — it should find only that one comment, no definition and no caller.
 
 ### Dimension 5: Arpeggiation Correctness
 `docs/arpeggio.md` documents the pattern semantics; `VoiceAllocator._allocate_pulse` /
@@ -219,16 +221,16 @@ Checklist:
   (`:174`) but no longer gates the arp step. Verify the per-chord counter keeps note changes on
   the 60Hz frame grid (no float drift; this is integer, good).
   `tests/test_arranger.py::test_arpeggio_step_is_frame_aligned_at_arp_speed` covers the normal
-  case at `arp_speed=3`, but does not cover `arp_speed=0`.
-- **STILL OPEN — #91 (ARR-08)**: `arp_speed` is never validated. `arp_speed=0` makes
-  `state.arp_frame % self.arp_speed` raise `ZeroDivisionError` (`arranger/voice_allocator.py:254`).
-  Post-#252 the crash is on the **second** frame a multi-pitch chord persists on a pulse channel
-  (the `else` branch), not the first — the first frame of a chord resets index/frame and never
-  hits the modulo. Nothing in
-  `arrange_for_nes` / `allocate_with_arpeggiation` / `VoiceAllocator.__init__` guards against
-  0 (or negative) values. Confirm still unguarded and unclamped; a `--arranger` CLI flag or
-  config surface that lets a user pass `arp_speed=0` (or a future one) would crash the whole
-  pipeline. HIGH-leaning given "fails on common input" once any caller exposes the parameter.
+  case at `arp_speed=3`.
+- **#91 (ARR-08) is CLOSED**: `arp_speed` is now a property with a clamping setter
+  (`arranger/voice_allocator.py:104-115`, `self._arp_speed = max(1, int(value))`), covering
+  every entry point that sets it — `__init__` (`self.arp_speed = arp_speed`) and
+  `allocate_with_arpeggiation`'s direct reassignment alike — so `arp_speed=0` or negative can
+  no longer reach the `state.arp_frame % self.arp_speed` modulo unclamped.
+  `tests/test_voice_allocator.py::TestArpSpeedValidation` exercises `arp_speed=0`/`-5` at the
+  constructor, direct reassignment, and a full `arrange_for_nes(events, arp_speed=0)` run with
+  no crash. Verify-the-fix: confirm the setter is still the sole assignment path for
+  `self._arp_speed` (grep for any other direct write that could bypass the clamp).
 - In-range cycling: `state.arp_index = (state.arp_index + 1) % len(state.arp_notes)`
   (`:255`), and when the chord changes (`arp_notes != state.arp_notes`) the index is reset to 0
   outright (`:248-251`) rather than left to run off the end of a now-shorter list. Confirm the
@@ -295,9 +297,12 @@ out-of-range timers are **HIGH** per `_audit-severity.md`.
 
 Checklist:
 - Triangle: `FrameByFrameAllocator.process_song` emits triangle `volume = 15 if vel > 0 else 0`
-  (no real volume), and `arrange_for_nes` writes triangle `control = 0x81` with **no duty
-  bits** — good. Verify nothing downstream re-injects a duty/volume for triangle (triangle has
-  no volume control / no duty — `docs/APU_TRIANGLE_REFERENCE.md`).
+  (no real volume). **#434 is CLOSED**: `arrange_for_nes`'s triangle conversion
+  (`arranger/pipeline_integration.py:361-365`) used to also write a hardcoded, dead
+  `control = 0x81` key; that key has been removed entirely — the emitted dict now carries only
+  `note`/`pitch`/`volume`, matching `nes/emulator_core.py`'s triangle contract (which never had
+  a `control` key either — see Dimension 1). Verify nothing downstream re-injects a duty/volume
+  for triangle (triangle has no volume control / no duty — `docs/APU_TRIANGLE_REFERENCE.md`).
 - **#89 (ARR-06) is CLOSED**: Pitch/timer range: `midi_note_to_nes_pitch`
   (`arranger/pipeline_integration.py:291-316`) no longer hand-rolls a `440.0 * 2**((note-69)/12)`
   formula. It clamps `midi_note` to 0–127 and delegates to the canonical `nes/pitch_table.py`
@@ -391,15 +396,23 @@ Checklist:
 - `program` is no longer hardcoded (#86 fixed) — instead verify it is *correctly* non-zero on
   realistic MIDI: does `tracker/parser_fast.py` attach `program` to every event, and does a
   program change that arrives mid-track (not before the first note) get picked up (see
-  Dimension 2)? If the parser's program-change handling has its own gap, that's a new finding,
-  not a reopening of #86.
+  Dimension 2)? **#492 is CLOSED**: this same suspicion, followed one level further, found a
+  real gap — `channel_programs` (`tracker/parser_fast.py`) used to be scoped *per track*, not
+  per file, so a program change on one track was invisible to a *different* track sharing the
+  same MIDI channel (a real GM/Type-1 "conductor track" convention), silently defaulting those
+  notes to program 0. Fixed by building `channel_programs` once across the whole file. Distinct
+  root cause from #308 (which was purely within-track event ordering).
 - `arrange_for_nes` no longer bakes an unread key into noise/DPCM frames (#84 fixed) — spot
   check by diffing the arranger's frame keys against what `CA65Exporter` actually reads for
   each of the 5 channels, per Dimension 1.
 - Re-read each call path before reporting; attempt to disprove (per `_audit-common.md`
-  Methodology). Run the dedup step (`gh issue list` + scan `docs/audits/`) — #84-#87 and
-  #89-#90 are CLOSED (as are #205-#207, #230-#232, #251-#253, #268, and now #92); only #88 and #91
-  remain OPEN as of this writing; re-verify current state, don't trust this file.
+  Methodology). Run the dedup step (`gh issue list` + scan `docs/audits/`) — every issue this
+  file names (#84-#92, #205-#207, #230-#232, #251-#253, #268, #330, #359, #391, #409, #434,
+  #450-#452, #460, #492) is CLOSED as of `AUDIT_ARRANGER_2026-08-23.md`. Don't infer "still
+  open" from this file's own prose without checking `gh issue list` first — `git log --
+  arranger/` had already moved a day ahead of the 2026-08-21 report by the time the
+  2026-08-23 audit started, and this file itself had drifted from CLOSED issues #88/#91/#434
+  (fixed by #493) before that.
 
 ## Output
 Write to: **`docs/audits/AUDIT_ARRANGER_<TODAY>.md`** (YYYY-MM-DD). Structure:
