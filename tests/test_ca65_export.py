@@ -1210,6 +1210,106 @@ class TestExportSongBankBytecode(unittest.TestCase):
             if out.exists():
                 out.unlink()
 
+    def test_song_count_undercount_raises_clear_error(self):
+        """#512/EXP-2026-08-23-5: the reverse of the mismatch above -- a
+        `songs` iterable with MORE items than the declared `song_count`
+        must also fail loudly, not silently drop the extra song(s) with a
+        song_table sized for only the declared count."""
+        songs = [self._song(60), self._song(67)]
+        out = Path(self.temp_dir.name) / "test_jukebox_undercount.asm"
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                self.exporter.export_song_bank_bytecode(
+                    (s for s in songs), str(out), song_count=1)
+            self.assertIn("song_count", str(ctx.exception))
+        finally:
+            if out.exists():
+                out.unlink()
+
+    def test_dpcm_bearing_song_is_rejected(self):
+        """#509/EXP-2026-08-23-2: export_song_bank_bytecode must reject a
+        DPCM-bearing song itself, not rely solely on main.py's caller-side
+        check -- a direct API consumer (bypassing run_song_build) used to
+        get a silently corrupt dpcm_*_table indexed past its 1-byte stub."""
+        dpcm_song = {'frames': {
+            'pulse1': {'0': {'note': 60, 'volume': 10}},
+            'dpcm': {'0': {'note': 5, 'volume': 15}},
+        }}
+        out = Path(self.temp_dir.name) / "test_jukebox_dpcm_rejected.asm"
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                self.exporter.export_song_bank_bytecode([dpcm_song], str(out))
+            self.assertIn("DPCM", str(ctx.exception))
+            self.assertFalse(out.exists(), "no partial music.asm should be written")
+        finally:
+            if out.exists():
+                out.unlink()
+
+    def test_dpcm_bearing_song_stops_before_later_songs_are_pulled(self):
+        """The DPCM guard must fire per-song, before a later song in a lazy
+        `songs` iterable is ever pulled -- mirrors the bank-overflow
+        early-fail behavior (#506/PERF-B-04)."""
+        dpcm_song = {'frames': {'dpcm': {'0': {'note': 5, 'volume': 15}}}}
+        pulled = []
+
+        def _songs():
+            pulled.append('dpcm')
+            yield dpcm_song
+            pulled.append('never')
+            yield self._song(60, n_events=1)
+
+        out = Path(self.temp_dir.name) / "test_jukebox_dpcm_lazy.asm"
+        try:
+            with self.assertRaises(ValueError):
+                self.exporter.export_song_bank_bytecode(
+                    _songs(), str(out), song_count=2)
+        finally:
+            if out.exists():
+                out.unlink()
+        self.assertEqual(pulled, ['dpcm'])
+
+    def test_silent_dpcm_song_is_not_rejected(self):
+        """A `dpcm` channel present but with no real (non-silent) trigger
+        must NOT be rejected -- matches song_has_dpcm_events's semantics
+        (note=0 or volume=0 frames are rests, not drum hits)."""
+        song = {'frames': {
+            'pulse1': {'0': {'note': 60, 'volume': 10}},
+            'dpcm': {'0': {'note': 0, 'volume': 0}},
+        }}
+        out = Path(self.temp_dir.name) / "test_jukebox_silent_dpcm.asm"
+        try:
+            self.exporter.export_song_bank_bytecode([song], str(out))
+            self.assertTrue(out.exists())
+        finally:
+            if out.exists():
+                out.unlink()
+
+    def test_bank_overflow_error_names_the_offending_song(self):
+        """#511/EXP-2026-08-23-4: a bank-budget overflow on the Nth song in
+        a multi-song bank must identify that song in the error, not just
+        the channel -- previously the caller had to bisect the bank."""
+        from unittest.mock import patch
+        from mappers.mmc3 import MMC3Mapper
+
+        small_song = self._song(60, n_events=1)
+        big_song = {'frames': {'pulse1': {
+            str(i): {'note': 60 + (i % 24), 'volume': 8 + (i % 7)}
+            for i in range(6000)
+        }}}
+        songs = [small_song, big_song]
+        out = Path(self.temp_dir.name) / "test_jukebox_overflow_named.asm"
+        try:
+            with patch.object(MMC3Mapper, 'SWAP_BANK_COUNT', 1):
+                with self.assertRaises(ValueError) as ctx:
+                    self.exporter.export_song_bank_bytecode(songs, str(out))
+            message = str(ctx.exception)
+            self.assertIn("song index 1", message)
+            self.assertIn("song1", message)
+            self.assertIn("bank budget", message.lower())
+        finally:
+            if out.exists():
+                out.unlink()
+
 
 def _patch_music_asm(music_asm_path):
     """Fix missing entry points in the generated music.asm to ensure compilation."""
