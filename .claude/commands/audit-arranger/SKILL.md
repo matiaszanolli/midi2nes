@@ -304,19 +304,25 @@ Checklist:
   a `control` key either — see Dimension 1). Verify nothing downstream re-injects a duty/volume
   for triangle (triangle has no volume control / no duty — `docs/APU_TRIANGLE_REFERENCE.md`).
 - **#89 (ARR-06) is CLOSED**: Pitch/timer range: `midi_note_to_nes_pitch`
-  (`arranger/pipeline_integration.py:291-316`) no longer hand-rolls a `440.0 * 2**((note-69)/12)`
-  formula. It clamps `midi_note` to 0–127 and delegates to the canonical `nes/pitch_table.py`
-  tables (`NES_TRIANGLE_TABLE` for triangle, `NES_NOTE_TABLE` otherwise) — a single
-  authoritative pitch source shared with the legacy (`NESEmulatorCore`) path and the exporter,
-  including the floor-8 clamp the old float formula did not enforce. Verify-the-fix: confirm
-  both tables are indexable across the full 0–127 range (no IndexError on extreme notes), that
-  triangle vs pulse pick the right table, and that no other call site reintroduces float pitch
-  math.
+  (`arranger/pipeline_integration.py:415-455`) no longer hand-rolls a `440.0 * 2**((note-69)/12)`
+  formula. It delegates to the canonical `nes/pitch_table.py` tables (`NES_TRIANGLE_TABLE` for
+  triangle, `NES_NOTE_TABLE` otherwise) — a single authoritative pitch source shared with the
+  legacy (`NESEmulatorCore`) path and the exporter, including the floor-8 clamp the old float
+  formula did not enforce. **#431/NH-HW-2026-08-21-4 is CLOSED**: the function used to clamp
+  only to the full MIDI 0–127 range before indexing the table; a sub-C1 note (e.g. MIDI 21 on
+  triangle) produced a `pitch` the bytecode serializer's channel-floored base timer (which
+  floors the *stream* note to `CHANNEL_RANGES`'s floor of 24 before deriving its macro base)
+  disagreed with by more than the macro-offset encoding can represent, detuning the note after
+  the offset clamp. It now clamps to `CHANNEL_RANGES[channel]` first (`:451-452`), mirroring
+  `PitchProcessor.get_channel_pitch` exactly. Verify-the-fix: confirm both tables are indexable
+  across the full 0–127 range (no IndexError on extreme notes), that triangle vs pulse pick the
+  right table, and that no call site reintroduces the bare 0–127 clamp or float pitch math.
 - **#90 (ARR-07) is CLOSED**: `midi_note_to_nes_pitch` no longer has an `else`/`'noise'` branch
   that returns a raw, unclamped `midi_note`. Non-triangle channels now return
-  `NES_NOTE_TABLE[midi_note]` on the 0–127-clamped index (`:313-316`); noise is documented as
-  never routing through this function — its period comes from `_allocate_noise`'s 0–15 clamp
-  (Dimension 6). Verify-the-fix: confirm `arrange_for_nes`'s noise conversion (`:269-277`) still
+  `NES_NOTE_TABLE[midi_note]` on the channel-range-clamped index (`:453-455`); noise is
+  documented as never routing through this function — its period comes from
+  `_allocate_noise`'s 0–15 clamp (Dimension 6). Verify-the-fix: confirm `arrange_for_nes`'s
+  noise conversion (`:269-277`) still
   never calls `midi_note_to_nes_pitch`, so no path can feed a noise value into the pulse table.
 - Volume scaling: pulse `volume = max(1, vel // 8)` and noise final `volume = max(1, min(15,
   vel // 8))` (MIDI 0–127 → 1–15). The `max(1, …)` floor was added in #268/NH-30 so a soft

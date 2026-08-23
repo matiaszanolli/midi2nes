@@ -137,6 +137,16 @@ compression is MEDIUM (it guards a CRITICAL failure mode).
   (e.g. `ld65 --dbgfile`, confirming each `song{i}_instrument_table` resolves inside the
   fixed `CODE_8000` window) to be worth anything. A jukebox test class asserting only
   "build succeeded" is a **weak assertion** finding (Dimension 2), not coverage.
+  **#474 is CLOSED** for one specific (a)-shaped gap: #453/MAP-2026-08-21-1's fix (auto-
+  detecting `JUKEBOX_BUILD` from `music.asm`'s own marker when `song_count` is omitted)
+  had a non-CC65 unit test pinning the marker but no proof the **split** `prepare`/`compile`
+  route — the one `main.run_prepare`/`run_compile` actually use, as opposed to
+  `run_song_build`'s single-call path — links a real jukebox ROM this way.
+  `TestJukeboxCompilationIntegration::test_split_prepare_compile_route_links_jukebox_asm_without_song_count`
+  (`tests/test_ca65_export.py:1540`) now covers exactly that: exports a 2-song bank, calls
+  `prepare_project` with no `song_count` (mirroring `main.run_prepare`), and runs a real
+  `compile_rom`, asserting link success. Re-verify this stays a real link (not a mocked
+  one) if `run_prepare`/`run_compile` ever change how they call `prepare_project`.
 - **Fixed (REG-10/#128)**: `tests/test_rom_validation_integration.py` is the designated
   "compile a real ROM and validate its bytes" gate. It previously had 5 of 9 tests SKIP
   even with `ca65`/`ld65` present, because the hand-written `music.asm` fixture defined

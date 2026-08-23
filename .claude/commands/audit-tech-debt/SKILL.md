@@ -68,7 +68,7 @@ unrelated-implementation *check_rom.py* at the repo root were removed in commit
 fixed and reframe the check as: confirm no new stray root-level script, duplicate
 `check_rom.py`/`validate_rom.py`, or other dead module has been reintroduced since.
 
-Non-Python files count too. **Verify fix (#461/TD-41, closed)**: `nes/linker_mmc3.cfg` was
+Non-Python files count too. **Verify fix (#461/TD-41, closed)**: nes/linker_mmc3.cfg was
 checked in but `grep -rn linker_mmc3` found no reference anywhere in the tree — every
 mapper emits its `nes.cfg` programmatically from `generate_linker_config()`, so nothing
 read it. It also failed the "deliberately-kept reference copy" test: its header described a

@@ -371,7 +371,14 @@ found a defect that corrupted every song after the first (EXP-2026-08-07-1, fixe
   `load_song_streams_indexed` in `nes/audio_engine.asm`. Verify the stride constant, the
   channel order, and the `song_count` byte all match on both sides — a stride mismatch
   plays song A's pulse2 stream as song B's triangle, which sounds like corruption rather
-  than an obvious failure.
+  than an obvious failure. **#426 is CLOSED**: that index is 8-bit accumulator/Y-register
+  math on the engine side, so `song_index*5+channel` silently wraps past index 255 — the
+  highest valid `song_index` is `(255-4)//5 = 50`, i.e. 51 songs. `export_song_bank_bytecode`
+  (`:1742-1759`) now computes that same `max_songs` bound and raises `ValueError` before
+  emitting a 52nd+ song, rather than letting it wrap and play the wrong streams on the wrong
+  channels with every downstream gate (bank pool, CC65, ROM validation) still passing.
+  Verify-the-fix: the 51-song bound stays derived from `len(SEQUENCE_CHANNELS)` rather than
+  a hardcoded `51`, so it can't silently drift if a channel is ever added or removed.
 - **`song_instrument_ptr_*` is per-song, not per-channel** (`:1650-1653`) — one entry per
   song, unlike the `song_table_*` arrays. Confirm the engine indexes it with the song
   index alone (no `* 5`).
