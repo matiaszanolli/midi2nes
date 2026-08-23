@@ -560,7 +560,15 @@ audio_update:
     and #$0F      ; Clamps volume to 0-15 to prevent register corruption
     ora temp1
     sta $4000
-    
+.ifdef VISUALIZER_BUILD
+    ; Snapshot the intended volume for --visualizer's on-screen bar. Never
+    ; read back from $4000 (write-only) -- temp_vol is the same value the
+    ; engine just computed and wrote above.
+    lda temp_vol
+    and #$0F
+    sta channel_vis_vol+0
+.endif
+
     lda temp_pitch
     bne @p1_pitch_mod
     ; Fast path: No pitch bend, avoid 16-bit math
@@ -602,7 +610,12 @@ audio_update:
     and #$0F      ; Clamps volume to 0-15 to prevent register corruption
     ora temp1
     sta $4004
-    
+.ifdef VISUALIZER_BUILD
+    lda temp_vol
+    and #$0F
+    sta channel_vis_vol+1
+.endif
+
     lda temp_pitch
     bne @p2_pitch_mod
     ; Fast path: No pitch bend, avoid 16-bit math
@@ -630,8 +643,15 @@ audio_update:
     
 @write_triangle:
     lda temp_vol
+.ifdef VISUALIZER_BUILD
+    ; Triangle has no hardware volume register (on/off only), but temp_vol
+    ; still holds the intended envelope value here -- store it (not `sta`
+    ; affecting the Z flag) so --visualizer's bar tracks the software
+    ; envelope even though the hardware itself only sees on/off.
+    sta channel_vis_vol+2
+.endif
     beq @silence_tri
-    
+
     lda #$FF      ; Halt length/linear counter, max volume
     sta $4008
     
@@ -665,7 +685,12 @@ audio_update:
     and #$0F      ; Clamps volume to 0-15
     ora #$30      ; Constant volume flag & Length counter halt
     sta $400C
-    
+.ifdef VISUALIZER_BUILD
+    lda temp_vol
+    and #$0F
+    sta channel_vis_vol+3
+.endif
+
     lda temp_duty
     lsr           ; Shift lowest bit of duty macro (Noise Mode) into carry
     lda temp_note
@@ -726,21 +751,37 @@ audio_update:
     bne :+
     lda #$30
     sta $4000
+.ifdef VISUALIZER_BUILD
+    lda #0
+    sta channel_vis_vol+0
+.endif
     jmp @next_channel
 :   cpx #1
     bne :+
     lda #$30
     sta $4004
+.ifdef VISUALIZER_BUILD
+    lda #0
+    sta channel_vis_vol+1
+.endif
     jmp @next_channel
 :   cpx #2
     bne :+
     lda #$80      ; Linear Counter Halt (Safely Silences Triangle)
     sta $4008
+.ifdef VISUALIZER_BUILD
+    lda #0
+    sta channel_vis_vol+2
+.endif
     jmp @next_channel
 :   cpx #3
     bne :+
     lda #$30      ; Silence Noise
     sta $400C
+.ifdef VISUALIZER_BUILD
+    lda #0
+    sta channel_vis_vol+3
+.endif
     jmp @next_channel
 :   cpx #4
     bne :+

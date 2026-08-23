@@ -584,6 +584,21 @@ def validate_rom(output_rom):
     return True
 
 
+def _reject_debug_visualizer_combo(args):
+    """--debug and --visualizer both write into the ROM's nametable/CHR-RAM,
+    but neither knows about the other: --debug never enables PPUMASK itself
+    (nes/debug_overlay.py), and --visualizer's small CHR tile set would leave
+    --debug's ASCII-as-tile-index text reading as garbage tiles once
+    rendering is turned on. Reject the combination up front with a clear
+    message instead of silently building a confusing, half-working ROM.
+    """
+    if getattr(args, 'debug', False) and getattr(args, 'visualizer', False):
+        print("[ERROR] --debug and --visualizer cannot be combined yet -- "
+              "both draw into the same on-screen nametable/CHR-RAM region. "
+              "Use one or the other.", file=sys.stderr)
+        sys.exit(2)
+
+
 def run_compile(args):
     """Compile a prepared NES project to a ROM and validate it (#15).
 
@@ -652,9 +667,11 @@ def run_prepare(args):
     except ValueError as e:
         print(f"[ERROR] {e}")
         sys.exit(1)
-    # Honor --debug on the step-by-step `prepare` path the same way the default
-    # pipeline does, instead of silently building a non-debug ROM (#175).
-    builder = NESProjectBuilder(args.output, debug_mode=getattr(args, 'debug', False), mapper=mapper)
+    # Honor --debug/--visualizer on the step-by-step `prepare` path the same
+    # way the default pipeline does, instead of silently building a ROM
+    # without them (#175).
+    builder = NESProjectBuilder(args.output, debug_mode=getattr(args, 'debug', False),
+                                 mapper=mapper, visualizer_mode=getattr(args, 'visualizer', False))
     # prepare_project may raise (bad path/permissions) or return falsy; either
     # way surface a clean nonzero exit instead of an uncaught traceback or a
     # silent exit 0 on failure (#15).
@@ -737,9 +754,10 @@ def run_export(args):
             references,
             args.output,
             standalone=False,  # Don't include header and vectors for project builder
-            mapper=mapper
+            mapper=mapper,
+            visualizer=getattr(args, 'visualizer', False)
         )
-            
+
         # Pack DPCM samples for exported ASM (#380/TD-28: extracted helper
         # shared with run_full_pipeline, so a fix to one path can't
         # silently miss the other).
@@ -1294,7 +1312,8 @@ def export_frames_and_resolve_mapper(frames, pattern_result, music_asm, use_patt
         pattern_result['references'],
         str(music_asm),
         standalone=False,  # We'll create our own project structure
-        mapper=mapper
+        mapper=mapper,
+        visualizer=getattr(args, 'visualizer', False)
     )
 
     # Pack DPCM samples (#380/TD-28: extracted helper shared with run_export,
@@ -1328,7 +1347,8 @@ def export_frames_and_resolve_mapper(frames, pattern_result, music_asm, use_patt
 
 
 def build_and_validate_rom(mapper, music_asm, project_path, output_rom,
-                            debug_mode, skip_validation, args, song_count=None):
+                            debug_mode, skip_validation, args, song_count=None,
+                            visualizer_mode=False):
     """Steps 6-8: PRG capacity pre-flight, NES project prep, ROM compile,
     and (unless skipped) ROM validation.
 
@@ -1354,7 +1374,8 @@ def build_and_validate_rom(mapper, music_asm, project_path, output_rom,
     print(f"  ✓ Music data {data_size:,} bytes fits the {mapper.name} PRG regions")
 
     print("[6/7] Preparing NES project...")
-    builder = NESProjectBuilder(str(project_path), debug_mode=debug_mode, mapper=mapper)
+    builder = NESProjectBuilder(str(project_path), debug_mode=debug_mode, mapper=mapper,
+                                 visualizer_mode=visualizer_mode)
     if not builder.prepare_project(str(music_asm), song_count=song_count):
         # Matches prepare_project's own ExportError type for its other
         # failure mode (missing audio_engine.asm, nes/project_builder.py).
@@ -1471,10 +1492,11 @@ def run_full_pipeline(args):
 
             project_path = temp_path / "nes_project"
             debug_mode = hasattr(args, 'debug') and args.debug
+            visualizer_mode = hasattr(args, 'visualizer') and args.visualizer
             skip_validation = hasattr(args, 'skip_validation') and args.skip_validation
             build_and_validate_rom(
                 mapper, music_asm, project_path, output_rom,
-                debug_mode, skip_validation, args)
+                debug_mode, skip_validation, args, visualizer_mode=visualizer_mode)
 
             # Success!
             rom_size = output_rom.stat().st_size
@@ -1548,6 +1570,7 @@ def main():
     parser.add_argument('--version', action='version', version=f'MIDI2NES {__version__}')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     parser.add_argument('--debug', '-d', action='store_true', help='Enable debug overlay in ROM (shows APU status, frame counter, errors on screen)')
+    parser.add_argument('--visualizer', action='store_true', help='Add an on-screen per-channel volume-bar UI to the ROM (background-tile VU meter for Pulse1/Pulse2/Triangle/Noise). Cannot be combined with --debug.')
     parser.add_argument('--arranger', '-a', action='store_true', help='Use intelligent arranger with arpeggiation for polyphonic content (default pipeline only; no subcommand equivalent yet)')
     
     subparsers = parser.add_subparsers(dest='command', help='Advanced commands (optional - default is MIDI to ROM conversion)')
@@ -1743,6 +1766,7 @@ def main():
             sys.exit(2)
         # It's a subcommand, parse normally
         args = parser.parse_args()
+        _reject_debug_visualizer_combo(args)
         if hasattr(args, 'func'):
             args.func(args)
         else:
@@ -1760,6 +1784,9 @@ def main():
                 global_args.extend([arg])
                 i += 1
             elif arg in ['--debug', '-d']:
+                global_args.extend([arg])
+                i += 1
+            elif arg == '--visualizer':
                 global_args.extend([arg])
                 i += 1
             elif arg in ['--arranger', '-a']:
@@ -1808,6 +1835,7 @@ def main():
             print("  midi2nes --arranger song.mid       # Smart voice allocation + arpeggiation")
             print("  midi2nes --no-patterns song.mid    # Direct export (no compression)")
             print("  midi2nes --debug song.mid          # Debug ROM (shows APU status on screen)")
+            print("  midi2nes --visualizer song.mid     # ROM with on-screen per-channel volume bars")
             print("  midi2nes --skip-validation song.mid # Skip ROM validation after compilation")
             print("  midi2nes --config cfg.yaml song.mid # Override pattern-detection sampling caps")
             print("  midi2nes --mapper auto song.mid    # Auto-select the smallest mapper that fits")
@@ -1822,6 +1850,7 @@ def main():
                 self.verbose = '--verbose' in global_args or '-v' in global_args
                 self.no_patterns = '--no-patterns' in global_args
                 self.debug = '--debug' in global_args or '-d' in global_args
+                self.visualizer = '--visualizer' in global_args
                 self.arranger = '--arranger' in global_args or '-a' in global_args
                 self.skip_validation = '--skip-validation' in global_args
                 self.config = (global_args[global_args.index('--config') + 1]
@@ -1831,6 +1860,7 @@ def main():
                 self.command = None
 
         args = SimpleArgs()
+        _reject_debug_visualizer_combo(args)
         run_full_pipeline(args)
 
 def run_config_init(args):

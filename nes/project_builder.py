@@ -37,6 +37,7 @@ class NESProjectBuilder:
         debug_mode: bool = False,
         mapper: Optional[BaseMapper] = None,
         mapper_name: str = "auto",
+        visualizer_mode: bool = False,
     ):
         """
         Initialize NES project builder.
@@ -46,9 +47,14 @@ class NESProjectBuilder:
             debug_mode: If True, enables on-screen debug overlay
             mapper: Explicit mapper instance (overrides mapper_name)
             mapper_name: Mapper to use ('auto', 'nrom', 'mmc1', 'mmc3')
+            visualizer_mode: If True, enables the on-screen per-channel
+                volume-bar UI (see nes/visualizer.py). Mutually exclusive
+                with debug_mode at the CLI layer (main.py) -- both would
+                write conflicting content into the same nametable/CHR-RAM.
         """
         self.project_path = Path(project_path)
         self.debug_mode = debug_mode
+        self.visualizer_mode = visualizer_mode
         self._mapper = mapper
         self._mapper_name = mapper_name
 
@@ -176,6 +182,30 @@ class NESProjectBuilder:
             # bank is selected when the NMI handler calls debug_update.
             music_content += '\n.segment "CODE"\n'
             music_content += overlay.generate_full_debug_system()
+
+        if self.visualizer_mode:
+            print(f"  Visualizer mode enabled - adding on-screen volume bars")
+            from nes.visualizer import NESVisualizer
+            visualizer = NESVisualizer(enable_visualizer=True)
+            music_content += "\n.global visualizer_init, visualizer_update\n"
+            # visualizer_init/visualizer_update (appended below) reference
+            # channel_vis_vol, which main.asm owns/exports (_generate_main_asm)
+            # -- a real cross-module import, since this code lands in
+            # music.asm, not main.asm, in BOTH export modes. The direct-export
+            # exporter already emits this same import earlier in this exact
+            # music_content when visualizer=True was passed to it
+            # (exporter_ca65.py); only add it here for the bytecode path,
+            # which has no such exporter-side hook.
+            if is_bytecode:
+                music_content += "\n.import channel_vis_vol\n"
+            # Explicit .segment "CODE" for the same reason as the --debug
+            # branch above (#388/MAP-2026-08-05-1): otherwise
+            # visualizer_init/visualizer_update inherit whatever segment was
+            # last active (typically RODATA), which on MMC1 shares the
+            # switchable direct-export window instead of the always-mapped
+            # fixed bank the NMI handler needs to reach.
+            music_content += '\n.segment "CODE"\n'
+            music_content += visualizer.generate_full_visualizer_system()
 
         # fetch_sequence_byte (bytecode runtime only) is .import'ed and called
         # by nes/audio_engine.asm (#314/EXP-12 -- this used to also append a
@@ -345,6 +375,13 @@ read_joypad_once:
                 # assignment, and it must precede the .include below so
                 # audio_engine.asm's own `.ifdef JUKEBOX_BUILD` sees it.
                 main_content += '\nJUKEBOX_BUILD = 1\n'
+            if self.visualizer_mode:
+                # Same rationale as JUKEBOX_BUILD above: must precede the
+                # .include so audio_engine.asm's `.ifdef VISUALIZER_BUILD`
+                # blocks see it. Gates the channel_vis_vol snapshot stores
+                # added there for --visualizer; leaves the engine
+                # byte-identical when visualizer_mode is off.
+                main_content += '\nVISUALIZER_BUILD = 1\n'
             main_content += '\n.include "audio_engine.asm"\n'
             
         (self.project_path / "main.asm").write_text(main_content)
@@ -381,6 +418,12 @@ read_joypad_once:
         debug_imports = ""
         debug_init_call = ""
         debug_update_call = ""
+
+        # Visualizer mode imports, calls, and RAM (see nes/visualizer.py).
+        visualizer_imports = ""
+        visualizer_init_call = ""
+        visualizer_update_call = ""
+        visualizer_bss = ""
 
         # Jukebox-only (#30/F-13): edge-detect the Start button in the NMI
         # handler and skip to the next song on a fresh press. Reuses
@@ -441,6 +484,38 @@ read_joypad_once:
     jsr debug_update
 """
 
+        if self.visualizer_mode:
+            visualizer_imports = """; Import visualizer functions
+.global visualizer_init
+.global visualizer_update
+"""
+            visualizer_init_call = """
+    ; Initialize on-screen volume-bar UI (PPU setup: nametable clear,
+    ; CHR-RAM tile upload, palette init, enable background rendering)
+    jsr visualizer_init
+"""
+            # Same MMC1 direct-export bank-restore rationale as
+            # debug_update_call above -- visualizer_update also lives in the
+            # always-mapped CODE segment and must not run with an arbitrary
+            # bank left selected by update_music's per-table switching.
+            vis_bank_restore = ""
+            if self.mapper.direct_export_bank_size() is not None:
+                vis_bank_restore = "\n" + self.mapper.generate_bank_switch_code(0) + "\n"
+            visualizer_update_call = f"""
+{vis_bank_restore}    ; Update on-screen volume bars
+    jsr visualizer_update
+"""
+            # channel_vis_vol: owned by main.asm regardless of is_bytecode
+            # (see nes/audio_engine.asm and exporter/exporter_ca65.py for the
+            # two writers). Plain BSS, not zeropage -- ZP is already crowded
+            # by the engine's own scratch vars and there's no addressing-mode
+            # benefit here since this is only ever accessed by fixed offset
+            # (channel_vis_vol+N), never `,x`-indexed.
+            visualizer_bss = """.segment "BSS"
+    channel_vis_vol: .res 4  ; per-channel bar height, 0=P1 1=P2 2=Tri 3=Noise
+.export channel_vis_vol
+"""
+
         return f""".segment "HEADER"
 {self.mapper.generate_header_asm()}
 
@@ -452,11 +527,13 @@ read_joypad_once:
 .exportzp temp_ptr, sequence_ptr, sequence_bank
 {frame_counter_def}
 {jukebox_zp}
+{visualizer_bss}
 .segment "CODE"
 ; Import music functions from music.asm
 .global init_music
 .global update_music
 {debug_imports}
+{visualizer_imports}
 
 reset:
     sei                   ; Disable interrupts
@@ -471,6 +548,7 @@ reset:
     sta frame_counter
     sta frame_counter+1
 {debug_init_call}
+{visualizer_init_call}
     ; Initialize APU and music
     jsr init_music
 
@@ -493,6 +571,7 @@ nmi:
     ; Update music - this calls our working frame-based music code
     jsr update_music
 {debug_update_call}
+{visualizer_update_call}
 {jukebox_skip_call}
     ; Restore registers and return
     pla
