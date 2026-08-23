@@ -32,6 +32,7 @@ from main import (
     run_benchmark, run_benchmark_memory, run_full_pipeline, main,
     DETECTOR_MAX_EVENTS, resolve_mapper, get_mapper_choice,
     enforce_direct_export_dpcm_mapper, detect_patterns_or_direct_export,
+    _reject_debug_visualizer_combo,
 )
 from core.exceptions import ConfigurationError, ExportError
 
@@ -590,6 +591,36 @@ class TestRunPrepare:
 
     @patch('main.NESProjectBuilder')
     @patch('builtins.print')
+    def test_run_prepare_honors_visualizer_flag(self, mock_print, mock_builder_class):
+        """--visualizer must reach the builder's visualizer_mode, mirroring
+        --debug's threading (#175)."""
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        args = Namespace(input=str(self.test_input), output=str(self.test_output), visualizer=True)
+
+        run_prepare(args)
+
+        assert mock_builder_class.call_args.kwargs['visualizer_mode'] is True
+
+    @patch('main.NESProjectBuilder')
+    @patch('builtins.print')
+    def test_run_prepare_defaults_visualizer_false(self, mock_print, mock_builder_class):
+        """Without --visualizer (or on a Namespace that lacks the attribute),
+        the builder must still be built with visualizer_mode=False."""
+        mock_builder = Mock()
+        mock_builder.prepare_project.return_value = True
+        mock_builder_class.return_value = mock_builder
+
+        args = Namespace(input=str(self.test_input), output=str(self.test_output))
+
+        run_prepare(args)
+
+        assert mock_builder_class.call_args.kwargs['visualizer_mode'] is False
+
+    @patch('main.NESProjectBuilder')
+    @patch('builtins.print')
     def test_run_prepare_defaults_to_mmc3(self, mock_print, mock_builder_class):
         """Regression (#217/MAP-6): with no --mapper, prepare must still
         default to MMC3, matching pre-existing behavior."""
@@ -638,6 +669,52 @@ class TestRunPrepare:
 
         used_mapper = mock_builder_class.call_args.kwargs['mapper']
         assert isinstance(used_mapper, NROMMapper)
+
+
+class TestRejectDebugVisualizerCombo:
+    """--debug and --visualizer both draw into the ROM's nametable/CHR-RAM
+    (nes/debug_overlay.py, nes/visualizer.py) and would corrupt each other's
+    output if combined -- reject the combination up front instead of
+    building a confusing, half-working ROM."""
+
+    def test_both_set_exits_nonzero(self):
+        args = Namespace(debug=True, visualizer=True)
+        with pytest.raises(SystemExit) as exc:
+            _reject_debug_visualizer_combo(args)
+        assert exc.value.code == 2
+
+    def test_only_debug_is_fine(self):
+        _reject_debug_visualizer_combo(Namespace(debug=True, visualizer=False))  # no raise
+
+    def test_only_visualizer_is_fine(self):
+        _reject_debug_visualizer_combo(Namespace(debug=False, visualizer=True))  # no raise
+
+    def test_neither_is_fine(self):
+        _reject_debug_visualizer_combo(Namespace(debug=False, visualizer=False))  # no raise
+
+    def test_missing_attributes_default_false(self):
+        """A Namespace from a subcommand that doesn't define these flags at
+        all (e.g. `parse`) must not raise."""
+        _reject_debug_visualizer_combo(Namespace())  # no raise
+
+    def test_default_pipeline_cli_rejects_combo(self):
+        """End-to-end through main()'s default-pipeline dispatch (#175-style
+        global-flag path, not the subcommand path)."""
+        with patch('sys.argv', ['main.py', '--debug', '--visualizer', 'song.mid']):
+            with patch('main.run_full_pipeline') as mock_pipeline:
+                with pytest.raises(SystemExit) as exc:
+                    main()
+                assert exc.value.code == 2
+                mock_pipeline.assert_not_called()
+
+    def test_subcommand_cli_rejects_combo(self):
+        """End-to-end through main()'s subcommand dispatch (`prepare`)."""
+        with patch('sys.argv', ['main.py', '--debug', '--visualizer', 'prepare', 'in.asm', 'out_dir']):
+            with patch('main.run_prepare') as mock_run_prepare:
+                with pytest.raises(SystemExit) as exc:
+                    main()
+                assert exc.value.code == 2
+                mock_run_prepare.assert_not_called()
 
 
 class TestResolveMapper:

@@ -526,6 +526,95 @@ class TestDebugModeIntegration:
             )
 
 
+class TestVisualizerModeIntegration:
+    """Test --visualizer's threading through NESProjectBuilder (see
+    nes/visualizer.py). minimal_music_asm has no "MMC3 Macro Bytecode"
+    marker, so prepare_project treats it as a direct-export module -- these
+    tests check content/threading, not a real ca65 compile (that's
+    tests/test_visualizer.py's TestNESVisualizerCompileSmoke, which builds
+    music.asm through the real exporter so the cross-module
+    `.import channel_vis_vol` is actually present)."""
+
+    def test_builder_with_visualizer_mode(self, project_dir):
+        builder = NESProjectBuilder(str(project_dir), visualizer_mode=True)
+        assert builder.visualizer_mode == True
+        assert builder.debug_mode == False
+
+    def test_visualizer_mode_includes_bar_system(self, project_dir, minimal_music_asm):
+        builder = NESProjectBuilder(str(project_dir), visualizer_mode=True)
+        builder.prepare_project(str(minimal_music_asm))
+
+        music_asm = (project_dir / "music.asm").read_text()
+        assert "visualizer_init:" in music_asm
+        assert "visualizer_update:" in music_asm
+        assert "visualizer_chr_tiles:" in music_asm
+
+    def test_visualizer_mode_declares_and_exports_channel_vis_vol_in_main_asm(
+        self, project_dir, minimal_music_asm
+    ):
+        builder = NESProjectBuilder(str(project_dir), visualizer_mode=True)
+        builder.prepare_project(str(minimal_music_asm))
+
+        main_asm = (project_dir / "main.asm").read_text()
+        assert "channel_vis_vol: .res 4" in main_asm
+        assert ".export channel_vis_vol" in main_asm
+        assert "jsr visualizer_init" in main_asm
+        assert "jsr visualizer_update" in main_asm
+
+    def test_normal_mode_excludes_visualizer(self, project_dir, minimal_music_asm):
+        builder = NESProjectBuilder(str(project_dir), visualizer_mode=False)
+        builder.prepare_project(str(minimal_music_asm))
+
+        music_asm = (project_dir / "music.asm").read_text()
+        main_asm = (project_dir / "main.asm").read_text()
+        assert "visualizer_init:" not in music_asm
+        assert "channel_vis_vol" not in main_asm
+
+    def test_visualizer_mode_gets_explicit_code_segment(self, project_dir, temp_dir):
+        """Same #388/MAP-2026-08-05-1 fix applied proactively to the new
+        code path: visualizer_init/visualizer_update must not inherit
+        whatever segment music.asm last left active."""
+        music_asm = temp_dir / "music_ending_in_rodata.asm"
+        music_asm.write_text(
+            '.export init_music, update_music\n'
+            '.segment "CODE"\n'
+            'init_music:\n    rts\n'
+            'update_music:\n    rts\n'
+            '.segment "RODATA"\n'
+            'dpcm_bank_table:\n    .byte $00\n'
+        )
+
+        from mappers.mmc1 import MMC1Mapper
+        builder = NESProjectBuilder(str(project_dir), visualizer_mode=True, mapper=MMC1Mapper())
+        builder.prepare_project(str(music_asm))
+
+        content = (project_dir / "music.asm").read_text()
+        before = content.split("visualizer_init:")[0]
+        last_segment = before.rsplit('.segment', 1)[-1].splitlines()[0].strip()
+        assert last_segment == '"CODE"', (
+            f"visualizer_init inherited segment {last_segment!r} instead of an "
+            "explicit CODE segment"
+        )
+
+    def test_bytecode_build_injects_visualizer_build_symbol(self, project_dir, temp_dir):
+        """VISUALIZER_BUILD must precede the audio_engine.asm .include so its
+        .ifdef VISUALIZER_BUILD blocks see it (mirrors JUKEBOX_BUILD)."""
+        bytecode_music_asm = temp_dir / "music_bytecode.asm"
+        bytecode_music_asm.write_text(
+            '; MMC3 Macro Bytecode\n'
+            '.export init_music, update_music\n'
+            '.segment "CODE"\n'
+            'init_music:\n    jmp audio_init\n'
+            'update_music:\n    jmp audio_update\n'
+        )
+        builder = NESProjectBuilder(str(project_dir), visualizer_mode=True)
+        builder.prepare_project(str(bytecode_music_asm))
+
+        main_asm = (project_dir / "main.asm").read_text()
+        assert "VISUALIZER_BUILD = 1" in main_asm
+        assert main_asm.index("VISUALIZER_BUILD = 1") < main_asm.index('.include "audio_engine.asm"')
+
+
 class TestJukeboxSongCount:
     """Test prepare_project's song_count param (#30/F-13, song bank -> ROM).
 

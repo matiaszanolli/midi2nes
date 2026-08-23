@@ -338,7 +338,18 @@ class CA65Exporter(BaseExporter):
         emit_byte_table('dpcm_note', d_note)
         lines.append('')
 
-    def _emit_pulse1_proc(self, lines, mapper, table_bank, bank_size):
+    def _emit_vis_store(self, chan_index):
+        """--visualizer (nes/visualizer.py): mask the control byte's volume
+        nibble -- still in A, unaffected by the `sta` just before this is
+        spliced in -- into channel_vis_vol[chan_index]. `$30 & $0F == 0`, so
+        the same snippet spliced after a silence write correctly zeroes the
+        bar too."""
+        return [
+            '    and #$0F               ; --visualizer: isolate volume nibble',
+            f'    sta channel_vis_vol+{chan_index}',
+        ]
+
+    def _emit_pulse1_proc(self, lines, mapper, table_bank, bank_size, visualizer=False):
         """Emit the play_pulse1 playback subroutine."""
         lines.extend([
             '.proc play_pulse1',
@@ -368,6 +379,10 @@ class CA65Exporter(BaseExporter):
         lines.extend(self._emit_table_read_lines('pulse1_control', mapper, table_bank))
         lines.extend([
             '    sta $4000',
+        ])
+        if visualizer:
+            lines.extend(self._emit_vis_store(0))
+        lines.extend([
             '    ',
             '    ; Get and write timer low',
         ])
@@ -387,6 +402,10 @@ class CA65Exporter(BaseExporter):
             '    ; Silence the channel',
             '    lda #$30               ; Zero volume, duty 0',
             '    sta $4000',
+        ])
+        if visualizer:
+            lines.extend(self._emit_vis_store(0))
+        lines.extend([
             '    rts',
             '    ',
             '@sustain:',
@@ -396,7 +415,7 @@ class CA65Exporter(BaseExporter):
             ''
         ])
 
-    def _emit_pulse2_proc(self, lines, mapper, table_bank, bank_size):
+    def _emit_pulse2_proc(self, lines, mapper, table_bank, bank_size, visualizer=False):
         """Emit the play_pulse2 playback subroutine."""
         lines.extend([
             '.proc play_pulse2',
@@ -424,6 +443,10 @@ class CA65Exporter(BaseExporter):
         lines.extend(self._emit_table_read_lines('pulse2_control', mapper, table_bank))
         lines.extend([
             '    sta $4004',
+        ])
+        if visualizer:
+            lines.extend(self._emit_vis_store(1))
+        lines.extend([
             '    ',
             '    ; Get and write timer low',
         ])
@@ -442,6 +465,10 @@ class CA65Exporter(BaseExporter):
             '@silence:',
             '    lda #$30',
             '    sta $4004',
+        ])
+        if visualizer:
+            lines.extend(self._emit_vis_store(1))
+        lines.extend([
             '    rts',
             '    ',
             '@sustain:',
@@ -450,7 +477,7 @@ class CA65Exporter(BaseExporter):
             ''
         ])
 
-    def _emit_triangle_proc(self, lines, mapper, table_bank, bank_size):
+    def _emit_triangle_proc(self, lines, mapper, table_bank, bank_size, visualizer=False):
         """Emit the play_triangle playback subroutine."""
         lines.extend([
             '.proc play_triangle',
@@ -478,6 +505,18 @@ class CA65Exporter(BaseExporter):
         lines.extend(self._emit_table_read_lines('triangle_control', mapper, table_bank))
         lines.extend([
             '    sta $4008',
+        ])
+        if visualizer:
+            # Triangle has no hardware volume register (on/off only) and
+            # this direct-export path has no per-frame envelope value
+            # available here (only the on/off control byte) -- unlike the
+            # bytecode engine's temp_vol, so the bar is binary: full when
+            # active, zero when silenced.
+            lines.extend([
+                '    lda #$0F               ; --visualizer: on (no per-frame envelope here)',
+                '    sta channel_vis_vol+2',
+            ])
+        lines.extend([
             '    ',
             '    ; Get and write timer low',
         ])
@@ -496,6 +535,13 @@ class CA65Exporter(BaseExporter):
             '@silence:',
             '    lda #$00',
             '    sta $4008',
+        ])
+        if visualizer:
+            lines.extend([
+                '    lda #$00               ; --visualizer: off',
+                '    sta channel_vis_vol+2',
+            ])
+        lines.extend([
             '    rts',
             '    ',
             '@sustain:',
@@ -504,7 +550,7 @@ class CA65Exporter(BaseExporter):
             ''
         ])
 
-    def _emit_noise_proc(self, lines, mapper, table_bank, bank_size):
+    def _emit_noise_proc(self, lines, mapper, table_bank, bank_size, visualizer=False):
         """Emit the play_noise playback subroutine."""
         lines.extend([
             '.proc play_noise',
@@ -526,6 +572,10 @@ class CA65Exporter(BaseExporter):
         lines.extend(self._emit_table_read_lines('noise_ctrl', mapper, table_bank))
         lines.extend([
             '    sta $400C',
+        ])
+        if visualizer:
+            lines.extend(self._emit_vis_store(3))
+        lines.extend([
             '    ; $400E from noise_reg (mode bit 7 | period)',
         ])
         lines.extend(self._emit_table_read_lines('noise_reg', mapper, table_bank))
@@ -537,6 +587,10 @@ class CA65Exporter(BaseExporter):
             '@silence:',
             '    lda #$30             ; constant volume 0 - silence noise',
             '    sta $400C',
+        ])
+        if visualizer:
+            lines.extend(self._emit_vis_store(3))
+        lines.extend([
             '    rts',
             '.endproc',
             ''
@@ -600,12 +654,19 @@ class CA65Exporter(BaseExporter):
             ''
         ])
 
-    def export_direct_frames(self, frames, output_path, standalone=True, mapper=None):
+    def export_direct_frames(self, frames, output_path, standalone=True, mapper=None,
+                              visualizer=False):
         """Export frames data directly using efficient lookup tables.
 
         ``mapper`` selects the iNES header emitted for a standalone ROM; it
         defaults to the pipeline default (MMC3) so the header matches the
         project's linker config instead of hardcoding MMC1 (#36).
+
+        ``visualizer`` (--visualizer, see nes/visualizer.py): when True, each
+        channel proc below also snapshots the volume nibble it just wrote
+        into `channel_vis_vol` for the on-screen bar UI to read -- the APU is
+        write-only, so this is the only way that UI can know a channel's
+        current volume. No-op / no added bytes when False (default).
         """
         print("🔧 CA65 Exporter: Direct frame export mode (table-based)")
 
@@ -661,6 +722,20 @@ class CA65Exporter(BaseExporter):
             lines.append('frame_counter: .res 2')
             lines.append('temp_ptr: .res 2')
             lines.append('')
+
+        # --visualizer's channel_vis_vol (see nes/visualizer.py): a plain
+        # (non-zeropage) BSS array, one byte per non-DPCM channel. Owned by
+        # main.asm and imported here in the normal (project-builder-managed)
+        # case; a standalone export has no main.asm partner, so it reserves
+        # its own copy instead.
+        if visualizer:
+            if not standalone:
+                lines.append('.import channel_vis_vol')
+                lines.append('')
+            else:
+                lines.append('.segment "BSS"')
+                lines.append('channel_vis_vol: .res 4')
+                lines.append('')
 
         # BSS segment for last note tracking (prevents buzzing)
         lines.append('.segment "BSS"')
@@ -950,16 +1025,16 @@ class CA65Exporter(BaseExporter):
         # methods; pulse1/pulse2 keep their historical comment asymmetry
         # verbatim so the emitted bytes are unchanged).
         if 'pulse1' in all_channels:
-            self._emit_pulse1_proc(lines, mapper, table_bank, bank_size)
+            self._emit_pulse1_proc(lines, mapper, table_bank, bank_size, visualizer)
 
         if 'pulse2' in all_channels:
-            self._emit_pulse2_proc(lines, mapper, table_bank, bank_size)
+            self._emit_pulse2_proc(lines, mapper, table_bank, bank_size, visualizer)
 
         if 'triangle' in all_channels:
-            self._emit_triangle_proc(lines, mapper, table_bank, bank_size)
+            self._emit_triangle_proc(lines, mapper, table_bank, bank_size, visualizer)
 
         if has_noise:
-            self._emit_noise_proc(lines, mapper, table_bank, bank_size)
+            self._emit_noise_proc(lines, mapper, table_bank, bank_size, visualizer)
 
         if has_dpcm:
             self._emit_dpcm_proc(lines, mapper, table_bank, bank_size)
@@ -1522,7 +1597,8 @@ class CA65Exporter(BaseExporter):
         # safe with this function's per-call byte accounting.
         return lines, current_bank + 1, channel_start_banks, notes_clamped
 
-    def export_tables_with_patterns(self, frames, patterns, references, output_path, standalone=True, mapper=None):
+    def export_tables_with_patterns(self, frames, patterns, references, output_path, standalone=True,
+                                     mapper=None, visualizer=False):
         """Export NES audio assembly from per-frame channel data.
 
         All emitted bytes derive from ``frames``. ``patterns`` is used only as a
@@ -1532,9 +1608,16 @@ class CA65Exporter(BaseExporter):
         ``references`` argument is **not consumed** — the detector's pattern
         references are analysis/metrics only and have no effect on output bytes
         (#4). It is retained for call-site compatibility.
+
+        ``visualizer`` (--visualizer) only matters on the direct-export branch
+        below -- it's passed through to ``export_direct_frames`` so its
+        per-channel procs snapshot volume into ``channel_vis_vol``. The
+        macro-bytecode branch needs no exporter change: nes/audio_engine.asm
+        (included by NESProjectBuilder, gated on its own ``VISUALIZER_BUILD``
+        symbol) does the equivalent snapshot itself.
         """
         if not patterns:
-            return self.export_direct_frames(frames, output_path, standalone, mapper)
+            return self.export_direct_frames(frames, output_path, standalone, mapper, visualizer)
 
         print("🔧 CA65 Exporter: MMC3 Macro Bytecode mode")
 
