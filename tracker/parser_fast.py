@@ -111,18 +111,27 @@ def _parse_frames_and_tempo_map(midi_path):
 
     track_events = defaultdict(list)
 
+    # GM program is channel-scoped, not track-scoped, and can change mid-song;
+    # track each channel's currently active program so it can be carried on
+    # every note event for the arranger's GM role/timbre hint (#86) -- without
+    # this, program is unreachable and every track defaults to Acoustic Grand
+    # Piano. Built ONCE across the whole file (not reset per track, #492): a
+    # real GM/Type-1 convention has a dedicated "conductor" track issue
+    # program changes for channels whose notes live on other tracks -- a
+    # per-track dict used to make that program change invisible to every
+    # other track sharing the channel, silently defaulting them back to
+    # program 0 even though mido iterates `mid.tracks` (and therefore this
+    # loop) in the file's fixed track order, so an earlier conductor track's
+    # program change is already visible by the time a later track's notes
+    # are processed.
+    channel_programs = {}
+
     # Second pass: process notes efficiently
     dropped_note_events = 0
     last_drop_reason = None
     for i, track in enumerate(mid.tracks):
         current_tick = 0
         track_name = f"track_{i}"
-        # GM program is channel-scoped and can change mid-track; track each
-        # channel's currently active program so it can be carried on every
-        # note event for the arranger's GM role/timbre hint (#86) -- without
-        # this, program is unreachable and every track defaults to Acoustic
-        # Grand Piano.
-        channel_programs = {}
 
         for msg in track:
             current_tick += msg.time
