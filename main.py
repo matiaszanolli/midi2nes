@@ -172,7 +172,7 @@ def pack_dpcm_into_asm(frames, asm_path, *, verbose=False, start_bank=0) -> Dpcm
     call sites; only the pack logic and the broad-except handling live here.
 
     `start_bank`: the first physical DPCM_NN bank this song's samples may
-    use (#519/DP-2026-08-23-1). DPCM_NN and the bytecode exporter's own
+    use (#522/DPCM-2026-08-23-1). DPCM_NN and the bytecode exporter's own
     BANK_NN sequence segments share the same physical PRG_BANK_NN pool
     (mappers/mmc3.py), so packing DPCM always starting at bank 0 -- with no
     regard for how much of bank 0 the song's bytecode already consumed --
@@ -775,7 +775,7 @@ def run_export(args):
         # bytecode exporter's own BANK_NN segments (getattr covers the
         # direct-export branch, which never sets next_bank) so DPCM_NN and
         # BANK_NN don't collide in the same physical PRG bank
-        # (#519/DP-2026-08-23-1).
+        # (#522/DPCM-2026-08-23-1).
         pack_result = pack_dpcm_into_asm(
             frames, args.output, verbose=getattr(args, 'verbose', False),
             start_bank=getattr(exporter, 'next_bank', 0))
@@ -1348,7 +1348,7 @@ def export_frames_and_resolve_mapper(frames, pattern_result, music_asm, use_patt
     # continues after the bytecode exporter's own BANK_NN segments (getattr
     # covers the direct-export branch, which never sets next_bank) so
     # DPCM_NN and BANK_NN don't collide in the same physical PRG bank
-    # (#519/DP-2026-08-23-1).
+    # (#522/DPCM-2026-08-23-1).
     print("[5.5/7] Packing DPCM samples...")
     pack_result = pack_dpcm_into_asm(
         frames, music_asm, verbose=args.verbose,

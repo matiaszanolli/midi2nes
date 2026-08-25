@@ -75,7 +75,7 @@ class CA65Exporter(BaseExporter):
         # sequence bytecode; defaults to 0 (no bytecode banks used yet) so
         # it's always a real int a caller can read straight off a fresh
         # instance -- export_tables_with_patterns overwrites it once the
-        # bytecode branch actually runs (#519/DP-2026-08-23-1). A caller
+        # bytecode branch actually runs (#522/DPCM-2026-08-23-1). A caller
         # packing DPCM samples afterward (main.py's pack_dpcm_into_asm)
         # reads this to start DPCM_NN numbering after the song's own banks,
         # since DPCM_NN and BANK_NN share the same physical PRG_BANK_NN
@@ -1705,7 +1705,7 @@ class CA65Exporter(BaseExporter):
         # pack_dpcm_into_asm) can start DPCM_NN numbering at the first bank
         # this song's own BANK_NN sequence bytecode didn't use, instead of
         # both independently starting at bank 0 and colliding in the same
-        # physical PRG_BANK_00 region (#519/DP-2026-08-23-1).
+        # physical PRG_BANK_00 region (#522/DPCM-2026-08-23-1).
         self.next_bank = next_bank
 
         # Per-channel starting-bank table (#328/EXP-13). Emitted into the fixed
