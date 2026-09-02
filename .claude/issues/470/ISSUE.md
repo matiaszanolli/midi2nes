@@ -1,6 +1,6 @@
 # TD-37: _build_song_bytecode is the largest method in exporter_ca65.py and grew again
 
-- **Issue**: #470
+Labels: enhancement, low, tech-debt
 
 **Severity:** LOW · **Domain:** tech-debt · **Source:** AUDIT_TECH_DEBT_2026-08-21.md
 
@@ -24,3 +24,4 @@ When next touched for a functional change, extract per-channel stream emission a
 ## Completeness Checks
 - [ ] **SIBLING**: Any extraction mirrors the #136 per-channel emitter pattern already used by `export_direct_frames`
 - [ ] **TESTS**: A golden-file diff across the existing bytecode-path test configs confirms zero output-byte change from the refactor
+

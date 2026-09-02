@@ -172,7 +172,7 @@ def pack_dpcm_into_asm(frames, asm_path, *, verbose=False, start_bank=0) -> Dpcm
     call sites; only the pack logic and the broad-except handling live here.
 
     `start_bank`: the first physical DPCM_NN bank this song's samples may
-    use (#519/DP-2026-08-23-1). DPCM_NN and the bytecode exporter's own
+    use (#522/DPCM-2026-08-23-1). DPCM_NN and the bytecode exporter's own
     BANK_NN sequence segments share the same physical PRG_BANK_NN pool
     (mappers/mmc3.py), so packing DPCM always starting at bank 0 -- with no
     regard for how much of bank 0 the song's bytecode already consumed --
@@ -554,13 +554,20 @@ def validate_rom(output_rom):
     subcommand (#15) so step-by-step ROMs get the same gate as the default path.
 
     Returns True if the ROM is bootable. On a boot-fatal defect (invalid
-    $FFFA-$FFFF vectors or no APU init) it returns False — the caller owns backup
-    restore (#26). Non-fatal health issues are warned but pass. A diagnostics
-    engine failure (e.g. a broken `debug` import) is treated as a validation
-    failure (#177/PL-04): callers only reach this function when the user did
-    NOT pass --skip-validation, so silently accepting the ROM here would defeat
-    the one gate that catches unbootable ROMs. The warning always prints, not
-    just under --verbose, so a skipped validation is never silent.
+    $FFFA-$FFFF vectors, no APU init, or -- #517/PIPE-2026-08-24-1 -- NMI
+    never actually firing when the ROM is run from its RESET vector in a
+    real 6502 execution smoke test, `debug/rom_smoke_test.py`) it returns
+    False — the caller owns backup restore (#26). The smoke-test check only
+    applies when the ROM's mapper is one it implements (NROM/MMC3); an
+    unsupported mapper (e.g. MMC1) or a smoke-test-internal error is treated
+    as "not checked", never as a defect, so it can't spuriously fail an
+    otherwise-valid ROM. Non-fatal health issues are warned but pass. A
+    diagnostics engine failure (e.g. a broken `debug` import) is treated as a
+    validation failure (#177/PL-04): callers only reach this function when
+    the user did NOT pass --skip-validation, so silently accepting the ROM
+    here would defeat the one gate that catches unbootable ROMs. The warning
+    always prints, not just under --verbose, so a skipped validation is
+    never silent.
     """
     try:
         from debug.rom_diagnostics import ROMDiagnostics
@@ -574,6 +581,18 @@ def validate_rom(output_rom):
         fatal_defects.append("invalid reset/NMI/IRQ vectors ($FFFA-$FFFF)")
     if rom_result.apu_pattern_count == 0:
         fatal_defects.append("no APU initialization code found")
+    # Execution-based smoke test (#517/PIPE-2026-08-24-1): the two checks
+    # above are static byte-pattern/vector-range matching -- they cannot
+    # tell "the right bytes exist somewhere in the file" apart from "the
+    # CPU, run from the real RESET vector, actually executes them and NMI
+    # fires." `smoke_test_ran` is False for a mapper the smoke test doesn't
+    # implement (only NROM/MMC3) or if the smoke test itself failed to
+    # run -- both are "not checked", never treated as a defect.
+    if rom_result.smoke_test_ran and not rom_result.smoke_test_nmi_fired:
+        fatal_defects.append(
+            "NMI never fires when the ROM is executed from its RESET vector "
+            "(execution smoke test) -- the ROM is structurally valid but "
+            "will be silent on real hardware/an accurate emulator")
     if fatal_defects:
         print("[ERROR] ROM validation failed - unbootable ROM:")
         for defect in fatal_defects:
@@ -592,6 +611,9 @@ def validate_rom(output_rom):
         print(f"  ✓ ROM Health: {rom_result.overall_health}")
         print(f"  ✓ APU Patterns: {rom_result.apu_pattern_count}")
         print(f"  ✓ Assembly Score: {rom_result.assembly_code_score}/220")
+    if rom_result.smoke_test_ran:
+        print(f"  ✓ Execution smoke test: NMI fires, "
+              f"{'notes detected' if rom_result.smoke_test_notes_detected else 'no notes detected (silent song?)'}")
     return True
 
 
@@ -775,7 +797,7 @@ def run_export(args):
         # bytecode exporter's own BANK_NN segments (getattr covers the
         # direct-export branch, which never sets next_bank) so DPCM_NN and
         # BANK_NN don't collide in the same physical PRG bank
-        # (#519/DP-2026-08-23-1).
+        # (#522/DPCM-2026-08-23-1).
         pack_result = pack_dpcm_into_asm(
             frames, args.output, verbose=getattr(args, 'verbose', False),
             start_bank=getattr(exporter, 'next_bank', 0))
@@ -1348,7 +1370,7 @@ def export_frames_and_resolve_mapper(frames, pattern_result, music_asm, use_patt
     # continues after the bytecode exporter's own BANK_NN segments (getattr
     # covers the direct-export branch, which never sets next_bank) so
     # DPCM_NN and BANK_NN don't collide in the same physical PRG bank
-    # (#519/DP-2026-08-23-1).
+    # (#522/DPCM-2026-08-23-1).
     print("[5.5/7] Packing DPCM samples...")
     pack_result = pack_dpcm_into_asm(
         frames, music_asm, verbose=args.verbose,

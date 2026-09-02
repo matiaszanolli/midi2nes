@@ -66,10 +66,20 @@ full suite (`python -m pytest`, no `-m` filter) once as a final gate, not per it
 # Quick ROM health check
 python -m debug.check_rom output.nes
 
-# Comprehensive ROM diagnostics
+# Comprehensive ROM diagnostics -- includes an execution-based smoke test
+# (debug/rom_smoke_test.py, #517): a real (if minimal) 6502 interpreter
+# runs the ROM from its actual RESET vector and confirms NMI fires and a
+# real per-frame APU write happens, for NROM/MMC3 ROMs (MMC1 unsupported,
+# reported as "not checked", not a defect). This is the one check in
+# diagnose_rom that isn't purely static byte-pattern/vector-range matching
+# -- see debug/rom_smoke_test.py's module docstring for why that distinction
+# matters (a ROM can pass every static check while being silent at runtime).
 python debug/rom_diagnostics.py output.nes --verbose
 
-# Full ROM build/playback test harness
+# Launches the ROM in a local emulator for a human to check by ear/eye --
+# NOT an automated harness (shells out to `open -a Nestopia <rom>`,
+# macOS-only, performs no verification of its own). For automated
+# execution-based verification use rom_diagnostics.py above instead.
 python -m debug.rom_tester
 
 # Performance benchmarking (via main.py, not a debug module)
@@ -268,7 +278,14 @@ External tools:
 - Unit tests for individual components
 - Integration tests for pipeline stages
 - Performance tests in `tests/test_performance_suite.py`
-- ROM generation tests in `debug/rom_tester.py`
+- Execution-based ROM smoke test (`debug/rom_smoke_test.py`, `debug/cpu6502.py`,
+  #517): `tests/test_cpu6502.py` pins the 6502 interpreter's correctness in
+  isolation; `tests/test_rom_smoke_test.py` proves it catches a real
+  broken-reset ROM (missing PPU warm-up wait) and passes a real
+  pipeline-built one -- the only tests in this suite that actually run
+  generated 6502 code rather than just inspecting the emitted bytes
+- Manual playback check: `debug/rom_tester.py` launches a ROM in a local
+  emulator for a human to verify by ear/eye -- not an automated test
 - Run full test suite before major changes
 - Coverage analysis available via pytest-cov
 

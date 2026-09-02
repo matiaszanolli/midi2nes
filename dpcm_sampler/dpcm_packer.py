@@ -7,7 +7,7 @@ class DpcmPacker:
 
     def __init__(self, start_bank: int = 0):
         """`start_bank`: the first physical `DPCM_NN`/`PRG_BANK_NN` index this
-        packer may use (#519/DP-2026-08-23-1). DPCM_NN and the song's own
+        packer may use (#522/DPCM-2026-08-23-1). DPCM_NN and the song's own
         BANK_NN sequence bytecode are deliberately linked into the same
         physical PRG_BANK_NN pool (mappers/mmc3.py), so packing always
         starting at bank 0 collided with a song whose bytecode already fills

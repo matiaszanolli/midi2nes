@@ -1226,7 +1226,7 @@ class TestRunExport:
         # Real CA65Exporter always carries a real int next_bank (0 by
         # default -- see its __init__), which pack_dpcm_into_asm's caller
         # reads via getattr to pick DpcmPacker's start_bank
-        # (#519/DP-2026-08-23-1). A bare Mock() auto-vivifies `.next_bank`
+        # (#522/DPCM-2026-08-23-1). A bare Mock() auto-vivifies `.next_bank`
         # as a child Mock instead, which isn't an int and breaks packing --
         # set it explicitly to mirror the real contract.
         mock_exporter_class.return_value.next_bank = 0
@@ -1876,8 +1876,9 @@ class TestSongBankCommands:
     @patch('builtins.print')
     def test_run_song_add_value_error_exits_cleanly(self, mock_print, mock_bank_class):
         """Regression (#455/SAFE-2026-08-21-1): add_song's bare ValueError
-        (duplicate song name, or "Not enough bank space") must exit(1) with
-        a clean [ERROR] message, not a raw traceback."""
+        (e.g. a duplicate song name -- add_song no longer rejects on
+        virtual bank capacity at all, #468/TD-33) must exit(1) with a
+        clean [ERROR] message, not a raw traceback."""
         mock_bank = Mock()
         mock_bank.add_song_from_midi.side_effect = ValueError(
             "Song 'Test Song' already exists in the bank")

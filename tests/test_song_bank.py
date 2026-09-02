@@ -119,52 +119,55 @@ class TestSongBank(unittest.TestCase):
         self.assertEqual(self.bank.songs['first']['metadata']['order'], 0)
         self.assertEqual(self.bank.songs['second']['metadata']['order'], 1)
 
-    def test_bank_size_limits(self):
-        """Test bank size limitations"""
-        # Create a song that will take about 1/4 of a bank
-        quarter_bank_events = []
-        for i in range(500):  # 500 events * 8 bytes = 4000 bytes
-            quarter_bank_events.append({
-                'frame': i,
-                'note': 60,
-                'velocity': 100
-            })
-        
+    def test_add_song_never_rejects_on_the_virtual_bank_model(self):
+        """#468/TD-33: add_song's virtual 16KB*8 bank model is independent
+        of -- and not reconciled with -- the real MMC3 capacity `song
+        build` checks against actual emitted bytecode, so it must never
+        reject a song on its own account, however "full" the virtual banks
+        look. The real capacity gate lives solely in `check_mapper_capacity`
+        at `song build` time (main.py), not here."""
+        # Create a song that will take about 1/4 of a virtual bank.
+        quarter_bank_events = [
+            {'frame': i, 'note': 60, 'velocity': 100} for i in range(500)
+        ]
         medium_song_data = {
             'events': quarter_bank_events,
             'patterns': {},
-            'frames': list(range(200))  # 200 frames * 4 bytes = 800 bytes
+            'frames': list(range(200))
         }
-        
-        # First, verify we can add at least one song
-        self.bank.add_song('test_song_0', medium_song_data, {'tempo_base': 120})
-        self.assertEqual(len(self.bank.songs), 1)
-        
-        # Now add more songs until we fill the banks
-        songs_added = 1
-        try:
-            while True:
-                self.bank.add_song(f'test_song_{songs_added}', 
-                                medium_song_data, 
+
+        # Add far more songs than the virtual model (8 banks * 16KB) could
+        # ever hold -- this must never raise.
+        for i in range(60):
+            self.bank.add_song(f'test_song_{i}', medium_song_data,
                                 {'tempo_base': 120})
-                songs_added += 1
-                
-                # Safety check to prevent infinite loop
-                if songs_added > 50:
-                    self.fail("Added too many songs without hitting bank limit")
-        except ValueError as e:
-            # Expected when banks are full
-            self.assertIn("bank space", str(e).lower())
-        
-        # We should be able to add at least 3 songs per bank
-        # With 8 banks, we should get at least 24 songs total
-        self.assertGreater(songs_added, 3)
-        
-        # Verify bank usage
+        self.assertEqual(len(self.bank.songs), 60)
+
+        # bank/size stay populated as informational estimates (used by
+        # song list/debugging), even once every virtual bank is nominally
+        # "full" by this disconnected model.
+        for song_data in self.bank.songs.values():
+            self.assertIn('bank', song_data)
+            self.assertIn('size', song_data)
+            self.assertGreaterEqual(song_data['bank'], 0)
+            self.assertLess(song_data['bank'], self.bank.total_banks)
+
+    def test_calculate_bank_assignment_falls_back_to_least_full_bank(self):
+        """Once every virtual bank is nominally full, _calculate_bank_
+        assignment must report the least-full bank rather than raising --
+        the estimate degrades gracefully instead of gating anything."""
+        big_song = {
+            'events': [{'frame': i, 'note': 60, 'velocity': 100}
+                       for i in range(3000)],
+            'patterns': {},
+            'frames': list(range(2000)),
+        }
+        for i in range(20):
+            self.bank.add_song(f'big_{i}', big_song, {'tempo_base': 120})
+        # No exception raised above is the actual assertion; also confirm
+        # every assigned bank is still a valid virtual bank index.
         usage = self.bank.calculate_bank_usage()
-        self.assertTrue(any(size > 0 for size in usage.values()))
-        # Fix: Use self.bank.max_bank_size instead of self.max_bank_size
-        self.assertTrue(all(size <= self.bank.max_bank_size for size in usage.values()))
+        self.assertTrue(all(0 <= b < self.bank.total_banks for b in usage))
 
     def test_get_song_data(self):
         """Test retrieving song data"""
