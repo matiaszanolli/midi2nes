@@ -1876,8 +1876,9 @@ class TestSongBankCommands:
     @patch('builtins.print')
     def test_run_song_add_value_error_exits_cleanly(self, mock_print, mock_bank_class):
         """Regression (#455/SAFE-2026-08-21-1): add_song's bare ValueError
-        (duplicate song name, or "Not enough bank space") must exit(1) with
-        a clean [ERROR] message, not a raw traceback."""
+        (e.g. a duplicate song name -- add_song no longer rejects on
+        virtual bank capacity at all, #468/TD-33) must exit(1) with a
+        clean [ERROR] message, not a raw traceback."""
         mock_bank = Mock()
         mock_bank.add_song_from_midi.side_effect = ValueError(
             "Song 'Test Song' already exists in the bank")

@@ -43,9 +43,12 @@ class SongBank:
     them, sized off raw MIDI event counts) is independent of -- and not
     reconciled with -- the real MMC3 capacity model ``song build`` actually
     builds against (8KB physical banks from a shared 60-bank pool, sized
-    off emitted bytecode). A song accepted here by ``add_song``/``bank``
-    accounting is not guaranteed to fit the real ROM, and vice versa; see
-    docs/ROADMAP.md.
+    off emitted bytecode). Given that, ``add_song`` (#468/TD-33) treats the
+    virtual model as informational/display only -- it never rejects a song
+    on its account, however "full" the virtual banks look, and never fails
+    to add a song that later fails to fit the real ROM either. ``song
+    build``'s ``check_mapper_capacity`` (against real emitted bytecode) is
+    the sole authority on whether a bank actually fits; see docs/ROADMAP.md.
     """
 
     def __init__(self):
@@ -156,12 +159,13 @@ class SongBank:
         )
         meta.validate()
 
-        # Calculate size and bank assignment
+        # Calculate size and bank assignment -- informational only (#468/
+        # TD-33): this virtual 16KB*8 model has no bearing on whether the
+        # song actually fits a real ROM (song build's check_mapper_capacity
+        # is the sole authority on that, against real emitted bytecode).
+        # add_song never rejects a song on this estimate's account.
         size = self._estimate_segment_size(segments)
         bank = self._calculate_bank_assignment(size)
-        
-        if bank >= self.total_banks:
-            raise ValueError(f"Not enough bank space for song '{name}'")
 
         self.songs[name] = {
             'segments': segments,
@@ -172,14 +176,21 @@ class SongBank:
         }
 
     def _calculate_bank_assignment(self, size: int) -> int:
-        """Calculate which bank this song should go into based on size"""
+        """Estimate which virtual bank this song would land in (#468/
+        TD-33). Informational/display only -- see add_song's comment and
+        the class docstring: this virtual model is independent of, and not
+        reconciled with, the real MMC3 capacity `song build` checks, so
+        this never raises. If no virtual bank has room by this (disconnected)
+        model, report the least-full bank rather than refusing to add the
+        song -- `bank`/`size` are estimates for `song list`/debugging, not a
+        gate."""
         usage = self.calculate_bank_usage()
-        
+
         for bank in range(self.total_banks):
             if usage.get(bank, 0) + size <= self.max_bank_size:
                 return bank
-        
-        raise ValueError("No available bank space")
+
+        return min(range(self.total_banks), key=lambda b: usage.get(b, 0))
 
     def _estimate_segment_size(self, segments: Dict) -> int:
         """Estimate the size of segments in bytes"""

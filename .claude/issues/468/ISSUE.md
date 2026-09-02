@@ -1,6 +1,6 @@
 # TD-33: SongBank's virtual capacity model still disconnected from the real ROM capacity song build uses
 
-- **Issue**: #468
+Labels: bug, low, tech-debt, documentation
 
 **Severity:** LOW · **Domain:** tech-debt, documentation · **Source:** AUDIT_TECH_DEBT_2026-08-21.md
 
@@ -24,3 +24,4 @@ PERF-B-04 (2026-08-21, if/when filed), docs/ROADMAP.md follow-ups list. TD-34 (d
 ## Completeness Checks
 - [ ] **CONTRACT**: If `add_song`'s acceptance model changes, `song build`'s real capacity check stays the sole source of truth for buildability
 - [ ] **DOC**: `nes/song_bank.py`'s docstring is updated again once the models are reconciled (currently documents the gap, not a fix)
+
