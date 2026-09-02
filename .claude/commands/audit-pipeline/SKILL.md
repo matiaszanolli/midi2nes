@@ -376,26 +376,44 @@ bank via `nes/song_bank.py` (`SongBank.add_song_from_midi`, `export_bank`, `impo
   `docs/ROADMAP.md:69-76` — flag those only as doc-rot if the code and the roadmap disagree,
   never as functional defects. Anything **not** on that list is a real finding.
 - **Bank ordering and re-parse contract**: `run_song_build` sorts by
-  `bank.songs[name]['metadata'].get('order', 0)` (`main.py:1025-1026`) — this is the first and
+  `bank.songs[name]['metadata'].get('order', 0)` (`main.py:1052-1053`) — this is the first and
   only consumer of `order`, which `run_song_add` has always written; `order` collisions after a
   remove+add cycle were fixed by **#488/PIPE-2026-08-22-4** (`SongBank._next_order`,
   `nes/song_bank.py:57-70`, derives the next value from `max(existing) + 1` instead of
   `len(self.songs)`, which used to reuse a removed song's freed slot — verify this still holds).
   `run_song_build` then rebuilds frames from each song's recorded `midi_path`
-  (`main.py:1046-1050` via `midi_to_frames_for_song`), **not** from the stored `segments`.
+  (via `midi_to_frames_for_song`, `main.py:1087`), **not** from the stored `segments`.
   Verify: `segments` are raw parsed events with no channel mapping, so any future change that
   makes `song build` read them instead is a silent corruption, not a shortcut; and a bank whose
   `midi_path` is missing or has moved must still exit non-zero with a clear message
-  (`main.py:1036-1042`) rather than building a partial ROM.
-- **Per-song DPCM rejection**: `_song_has_dpcm_events(frames)` (`main.py:982-998`, called at
-  `:1052`) hard-fails the whole build with an explanatory error before any export. Verify it
-  inspects the *frames* actually being exported (not the bank metadata) so a song that gains
-  DPCM via `--arranger` can't slip past, and that a rejection leaves no partial `.nes` on disk
-  (the whole build runs inside a `tempfile.TemporaryDirectory`, `main.py:1077`).
+  (`main.py:1078-1083`) rather than building a partial ROM.
+  **#504/PERF-B-01 and #505/PERF-B-02 are CLOSED**: this per-song parse used to happen
+  inside an eager loop that built a full `songs` list (all N songs' frames dicts resident
+  at once, ~12-13 MB/song) before a single batched `export_song_bank_bytecode` call, and
+  `bank.import_bank` always retained every song's raw `segments` payload even though this
+  path never reads it. The parse loop is now a generator, `_songs_for_build`
+  (`main.py:1060-1099`), consumed one song at a time by `export_song_bank_bytecode`
+  (which now accepts any iterable plus an explicit `song_count`, `exporter/exporter_ca65.py:1755`)
+  so only one song's frames dict is ever resident, and `import_bank` is called with
+  `keep_segments=False` (`main.py:1042`) since this path never reads `segments`. Verify-the-fix:
+  confirm `_songs_for_build` is still a generator (not accidentally listified before being
+  passed in) and that `keep_segments=False` stays paired with `run_song_build`/`run_song_list`
+  specifically — `run_song_add`/`run_song_remove` re-export the full bank afterward and
+  still need `segments` retained.
+- **Per-song DPCM rejection**: `song_has_dpcm_events(frames)` (`main.py:1093`) hard-fails
+  the whole build with an explanatory error before any export. **Verify fix (#509/EXP-2026-08-23-2,
+  closed)**: this used to be a `main.py`-private `_song_has_dpcm_events` duplicate of the
+  exporter's own guard; the private copy was deleted (not kept alongside) and `main.py` now
+  imports the shared `song_has_dpcm_events` from `exporter.exporter_ca65` (`main.py:22`) —
+  the same function `export_song_bank_bytecode` itself now also calls per-song as a
+  self-contained guard (see `/audit-exporters` Dimension 9). Verify it inspects the *frames*
+  actually being exported (not the bank metadata) so a song that gains DPCM via `--arranger`
+  can't slip past, and that a rejection leaves no partial `.nes` on disk (the whole build
+  runs inside a `tempfile.TemporaryDirectory`, `main.py:1119`).
 - **Capacity pre-flight**: since **#486/PIPE-2026-08-22-2 and #467/TD-32** (both closed),
   `run_song_build` no longer runs its own inline `check_mapper_capacity` call — it now shares
-  the same `build_and_validate_rom` helper (`main.py:1355-1400`, capacity check at `:1379`)
-  that `run_full_pipeline` uses, called at `main.py:1094-1096`. Verify N songs sharing one
+  the same `build_and_validate_rom` helper (`main.py:1404-1448`, capacity check at `:1428`)
+  that `run_full_pipeline` uses, called at `main.py:1136`. Verify N songs sharing one
   60-bank MMC3 pool are sized against the same limit the single-song path uses, now
   structurally guaranteed by sharing the one call site — an N-song overrun that only surfaces
   as a CC65 link error is a HIGH contract break.

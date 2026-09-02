@@ -372,9 +372,14 @@ from the ordinary pipeline. Audit it as new code, not as a verify-the-fix pass.
   corruption, not an audible failure).
 - **The `song_table` stride contract.** `load_song_streams_indexed` (`:259-286`) reads
   `song_table_ptr_lo` / `_hi` / `song_table_bank` at `song_index * 5 + channel`; the
-  producer is `CA65Exporter.export_song_bank_bytecode`. Verify the stride, the channel
-  order (`SEQUENCE_CHANNELS`), and the `song_count` comparison in `audio_advance_song`
-  (`:310-318`) match the emitted tables exactly — see `/audit-exporters` Dimension 9 for
+  producer is `CA65Exporter.export_song_bank_bytecode`. **#469/TD-36 is CLOSED**: this
+  section now `.import`s the producer's `SONG_TABLE_STRIDE` constant and `.assert`s it
+  equals 5 immediately before the shift-add multiply (`:252-259`), so a stride mismatch
+  from a future `SEQUENCE_CHANNELS` length change fails at link time instead of silently
+  misindexing every song past the first. Verify the `.assert` still sits before the first
+  use of the multiply, and — since only the count is asserted, not the order — still
+  verify the channel order (`SEQUENCE_CHANNELS`) and the `song_count` comparison in
+  `audio_advance_song` (`:310-318`) match the emitted tables exactly — see `/audit-exporters` Dimension 9 for
   the producer side. Note `song_instrument_ptr_*` is indexed by song alone (no `* 5`).
 - **Auto-advance trigger condition** (`nes/audio_engine.asm:740-761`). The end-of-stream
   handler sets `channel_ended, x` and scans all 5 entries, advancing only when **every**

@@ -360,7 +360,7 @@ silently no-op'ing. Check:
 ### Dimension 9: Multi-Song Jukebox Export (`export_song_bank_bytecode`)
 New in #30/F-13 and the youngest exporter surface — audit it as new code, not as a
 verify-the-fix pass. `CA65Exporter.export_song_bank_bytecode(songs, output_path)`
-(`exporter/exporter_ca65.py:1548`) writes the `music.asm` for a `song build` ROM by
+(`exporter/exporter_ca65.py:1755`) writes the `music.asm` for a `song build` ROM by
 calling the shared `_build_song_bytecode` helper once per song. Its first audit pass
 found a defect that corrupted every song after the first (EXP-2026-08-07-1, fixed in
 `8ea7ac3`); assume more.
@@ -378,28 +378,37 @@ found a defect that corrupted every song after the first (EXP-2026-08-07-1, fixe
   dynamic bank) — a build that merely succeeds proves nothing here. Treat a regression as
   CRITICAL (silent song corruption).
 - **Symbol namespacing.** Every symbol a song defines is prefixed `song{i}_`
-  (`:1593`). Grep the emitted output for any un-prefixed definition inside a per-song
+  (`:1822`). Grep the emitted output for any un-prefixed definition inside a per-song
   block — one collision silently merges two songs' tables at link time.
 - **Shared vs per-song data.** Pulse/triangle period tables are emitted **once**
-  (`_emit_period_tables`, `:1071`) because they are pure hardware constants; instrument
+  (`_emit_period_tables`, `:1244`) because they are pure hardware constants; instrument
   and macro tables are per-song with **no cross-song dedup**. Verify nothing that
   legitimately varies per song got hoisted into the shared emission, and that the
   no-dedup choice is a size cost only, never a correctness one.
 - **`song_table` indexing.** Three parallel byte arrays (`song_table_ptr_lo`/`_hi`/
-  `song_table_bank`, `:1636-1641`) are indexed `song_index * 5 + channel` with channel
-  order fixed by `SEQUENCE_CHANNELS` (`:1069`). The consumer is
+  `song_table_bank`, `:1949-1954`) are indexed `song_index * 5 + channel` with channel
+  order fixed by `SEQUENCE_CHANNELS` (`:1242`). The consumer is
   `load_song_streams_indexed` in `nes/audio_engine.asm`. Verify the stride constant, the
   channel order, and the `song_count` byte all match on both sides — a stride mismatch
   plays song A's pulse2 stream as song B's triangle, which sounds like corruption rather
   than an obvious failure. **#426 is CLOSED**: that index is 8-bit accumulator/Y-register
   math on the engine side, so `song_index*5+channel` silently wraps past index 255 — the
   highest valid `song_index` is `(255-4)//5 = 50`, i.e. 51 songs. `export_song_bank_bytecode`
-  (`:1742-1759`) now computes that same `max_songs` bound and raises `ValueError` before
+  (`:1805-1813`) now computes that same `max_songs` bound and raises `ValueError` before
   emitting a 52nd+ song, rather than letting it wrap and play the wrong streams on the wrong
   channels with every downstream gate (bank pool, CC65, ROM validation) still passing.
   Verify-the-fix: the 51-song bound stays derived from `len(SEQUENCE_CHANNELS)` rather than
   a hardcoded `51`, so it can't silently drift if a channel is ever added or removed.
-- **`song_instrument_ptr_*` is per-song, not per-channel** (`:1650-1653`) — one entry per
+  **#469/TD-36 is CLOSED**: the stride itself used to be a bare `5` tied together only by
+  matching comments on each side. `export_song_bank_bytecode` now also emits
+  `SONG_TABLE_STRIDE = len(SEQUENCE_CHANNELS)` as an exported ca65 constant
+  (`exporter/exporter_ca65.py:1926-1934`), and `audio_engine.asm`'s jukebox section
+  imports it and `.assert`s it equals 5 immediately before the `current_song*5` shift-add
+  multiply. Verify-the-fix: a future `SEQUENCE_CHANNELS` length change now fails at link
+  time via that `.assert` instead of silently misindexing every song past the first — the
+  channel *order* (not just the count) is still an unasserted convention, so still verify
+  that by hand.
+- **`song_instrument_ptr_*` is per-song, not per-channel** (`:1963-1966`) — one entry per
   song, unlike the `song_table_*` arrays. Confirm the engine indexes it with the song
   index alone (no `* 5`).
 - **Bank pool exhaustion across N songs.** `next_bank` threads from song to song and each
@@ -407,10 +416,9 @@ found a defect that corrupted every song after the first (EXP-2026-08-07-1, fixe
   `bytes_in_current_bank` accounting is per-call). Verify the `MAX_SEQUENCE_BANK` guard
   fires on the cumulative count, and that the per-song rounding waste is accounted for by
   the `check_mapper_capacity` pre-flight in `main.py:run_song_build`.
-- **Empty input.** `songs == []` raises `ValueError` (`export_song_bank_bytecode`, line
-  number has drifted since this was written -- grep `requires at least one song`) rather
-  than emitting a degenerate `song_count: .byte $00`. Verify the caller surfaces it as a
-  clean CLI error.
+- **Empty input.** `songs == []` raises `ValueError` (`export_song_bank_bytecode:1791-1792`)
+  rather than emitting a degenerate `song_count: .byte $00`. Verify the caller surfaces it
+  as a clean CLI error.
 - **Verify fix (#509/EXP-2026-08-23-2, closed)**: for three audit cycles this method had
   no self-contained DPCM guard -- only `main.py`'s caller-side `_song_has_dpcm_events`
   protected the CLI path, leaving any direct API consumer free to feed it a DPCM-bearing
