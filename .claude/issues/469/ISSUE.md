@@ -1,6 +1,6 @@
 # TD-36: Jukebox 5-channel stride is a bare 5 with no shared named constant
 
-- **Issue**: #469
+Labels: enhancement, low, tech-debt
 
 **Severity:** LOW · **Domain:** tech-debt · **Source:** AUDIT_TECH_DEBT_2026-08-21.md
 
@@ -32,3 +32,4 @@ NH-HW-2026-08-21-3 / PIPE-2026-08-21-3 (the `current_song*5` 8-bit overflow at 5
 ## Completeness Checks
 - [ ] **CONTRACT**: The stride constant is emitted from a single Python source (`len(SEQUENCE_CHANNELS)`) and consumed identically by the asm engine — no independent hardcoded `5` remains on either side
 - [ ] **TESTS**: A regression test (or the #426 overflow fix's own test) exercises a channel-count change and confirms both sides stay in sync
+

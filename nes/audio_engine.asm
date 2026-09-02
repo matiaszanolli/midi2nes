@@ -249,13 +249,22 @@ audio_init_hw_and_state:
 ; ---------------------------------------------------------------------------
 .export audio_init_song, audio_advance_song
 
+; SONG_TABLE_STRIDE (#469/TD-36): the exporter's own len(SEQUENCE_CHANNELS),
+; exported from music.asm. This .assert -- not just the comments below --
+; is what actually ties the shift-add multiply's hardcoded assumption
+; (stride=5, computed as *4 then +1) to the real channel count: a future
+; change to SEQUENCE_CHANNELS' length becomes a hard link-time error here
+; instead of every song past the first silently misindexing.
+.import SONG_TABLE_STRIDE
+.assert SONG_TABLE_STRIDE = 5, error, "audio_engine.asm's current_song*SONG_TABLE_STRIDE shift-add math hardcodes stride=5 (*4 then +1) -- update load_song_streams_indexed's multiply before changing SEQUENCE_CHANNELS' length"
+
 ; load_song_streams_indexed
 ; Loads channel 0-4's stream_ptr_lo/hi + stream_bank from the song_table_*
-; arrays at index current_song*5 + channel (instead of audio_init's fixed
-; per-channel labels), and instrument_table_ptr from song_instrument_ptr_*
-; at index current_song (see EVAL_MACRO). 6502 has no multiply --
-; current_song*5 is computed as (current_song*4) + current_song rather than
-; a loop.
+; arrays at index current_song*SONG_TABLE_STRIDE + channel (instead of
+; audio_init's fixed per-channel labels), and instrument_table_ptr from
+; song_instrument_ptr_* at index current_song (see EVAL_MACRO). 6502 has no
+; multiply -- current_song*5 is computed as (current_song*4) + current_song
+; rather than a loop.
 load_song_streams_indexed:
     lda current_song
     tax
@@ -268,7 +277,7 @@ load_song_streams_indexed:
     asl a
     asl a               ; A = current_song * 4
     clc
-    adc current_song    ; A = current_song * 5
+    adc current_song    ; A = current_song * SONG_TABLE_STRIDE (5)
     tay
 
     ldx #0

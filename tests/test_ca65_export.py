@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import pytest
 from pathlib import Path
+from unittest.mock import patch
 from exporter.exporter_ca65 import CA65Exporter, TRIANGLE_CONTROL_ON
 from nes.project_builder import NESProjectBuilder
 from mappers.mmc3 import MMC3Mapper
@@ -940,6 +941,32 @@ class TestExportSongBankBytecode(unittest.TestCase):
     def test_requires_at_least_one_song(self):
         with self.assertRaises(ValueError):
             self.exporter.export_song_bank_bytecode([], "unused.asm")
+
+    def test_song_table_stride_constant_matches_sequence_channels_length(self):
+        """#469/TD-36: SONG_TABLE_STRIDE must be exported into the jukebox
+        music.asm, derived from len(SEQUENCE_CHANNELS) -- not a second
+        hardcoded literal that could drift from the real channel count."""
+        songs = [self._song(60, n_events=1)]
+        out = Path(self.temp_dir.name) / "test_stride.asm"
+        self.exporter.export_song_bank_bytecode(songs, str(out))
+        content = out.read_text()
+        self.assertIn(
+            f'SONG_TABLE_STRIDE = {len(self.exporter.SEQUENCE_CHANNELS)}',
+            content)
+        self.assertIn('.export SONG_TABLE_STRIDE', content)
+
+    def test_song_table_stride_tracks_a_shortened_sequence_channels(self):
+        """If SEQUENCE_CHANNELS' length ever changes, the emitted constant
+        must follow it automatically -- this is the actual drift-prevention
+        contract #469 asked for, not just a fixed '5' in a new location."""
+        songs = [self._song(60, n_events=1)]
+        out = Path(self.temp_dir.name) / "test_stride_shortened.asm"
+        with patch.object(CA65Exporter, 'SEQUENCE_CHANNELS',
+                           ['pulse1', 'pulse2', 'triangle']):
+            exporter = CA65Exporter()
+            exporter.export_song_bank_bytecode(songs, str(out))
+        content = out.read_text()
+        self.assertIn('SONG_TABLE_STRIDE = 3', content)
 
     def test_rejects_more_than_51_songs(self):
         # song_table is indexed song_index*5 + channel by the jukebox

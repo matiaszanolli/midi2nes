@@ -1923,6 +1923,16 @@ class CA65Exporter(BaseExporter):
                 f"`songs` has at least one more song beyond that."
             )
 
+        # SONG_TABLE_STRIDE (#469/TD-36): the song_table's per-song entry
+        # width, shared with nes/audio_engine.asm's `current_song*5`
+        # shift-add math (load_song_streams_indexed/audio_advance_song) via
+        # a linker-checked `.assert`, not just a comment on each side --
+        # a future change to SEQUENCE_CHANNELS' length would otherwise
+        # silently desync the two and misindex every song past the first.
+        lines.append(f'SONG_TABLE_STRIDE = {len(self.SEQUENCE_CHANNELS)}')
+        lines.append('.export SONG_TABLE_STRIDE')
+        lines.append('')
+
         # song_table: 3 parallel arrays (addr-lo/addr-hi/bank), indexed
         # song_index*5 + channel, channel order = SEQUENCE_CHANNELS. Emitted
         # into CODE_8000 (fixed, always-mapped) like channel_start_banks was
