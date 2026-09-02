@@ -541,6 +541,25 @@ reset:
     ldx #$FF
     txs                   ; Set up stack
 
+    ; Wait for two VBlanks so the PPU is warmed up before anything below
+    ; touches a PPU register. Real hardware and PPU-accurate emulators
+    ; (Nestopia included) silently IGNORE writes to $2000/$2001/$2005/$2006
+    ; for ~29,658 cycles after reset while the PPU stabilizes -- without
+    ; this wait, the "Enable NMI" write to $2000 below lands inside that
+    ; ignored window, so NMI (and therefore update_music, which only ever
+    ; runs from the NMI handler) never actually fires: mainloop spins
+    ; forever and every note is silently dropped even though reset's own
+    ; one-time APU init still runs (#3, audit finding
+    ; AUDIT_MAPPERS_2026-08-24). Mirrors visualizer_init's identical wait
+    ; (nes/visualizer.py) -- that path happened to sidestep this bug for
+    ; its own PPUMASK write; this is the same fix for the shared reset path.
+@vblankwait1:
+    bit $2002
+    bpl @vblankwait1
+@vblankwait2:
+    bit $2002
+    bpl @vblankwait2
+
 {self.mapper.generate_init_code()}
 
     ; Initialize frame counter
