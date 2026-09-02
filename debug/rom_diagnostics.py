@@ -20,7 +20,7 @@ import sys
 import struct
 import json
 import argparse
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 
 
@@ -44,6 +44,19 @@ class ROMDiagnosticResult:
     overall_health: str
     issues: List[str]
     recommendations: List[str]
+    # Execution-based smoke test (#517/PIPE-2026-08-24-1): everything above
+    # this point is a static byte-pattern/vector-range check -- it cannot
+    # tell "the right bytes exist somewhere in the file" apart from "the
+    # CPU, run from the real RESET vector, actually executes them." These
+    # fields come from debug/rom_smoke_test.py's real 6502 interpreter run.
+    # `smoke_test_ran` is False (all the rest default/inert) when the ROM's
+    # mapper isn't one the smoke test implements (only NROM/MMC3) or the
+    # smoke test itself failed to run -- callers must treat that as "not
+    # checked", never as a defect.
+    smoke_test_ran: bool = False
+    smoke_test_nmi_fired: bool = False
+    smoke_test_notes_detected: bool = False
+    smoke_test_error: Optional[str] = None
 
 
 class ROMDiagnostics:
@@ -113,7 +126,8 @@ class ROMDiagnostics:
             apu_count = self._check_apu_patterns(rom_data)
             pattern_density = self._check_pattern_density(rom_data)
             assembly_score = self._check_assembly_patterns(prg_data)
-            
+            smoke = self._run_smoke_test(rom_path)
+
             # Determine overall health and issues
             issues = []
             recommendations = []
@@ -143,6 +157,17 @@ class ROMDiagnostics:
             if pattern_density < 5:
                 issues.append(f"Low pattern data density ({pattern_density:.1f}%)")
                 recommendations.append("Check if MIDI data was properly converted to patterns")
+
+            if smoke.smoke_test_ran and not smoke.smoke_test_nmi_fired:
+                issues.append(
+                    "Execution smoke test: NMI never fires when run from the "
+                    "RESET vector -- the ROM is structurally valid but will be "
+                    "silent on real hardware/an accurate emulator")
+                recommendations.append(
+                    "Check reset code for a PPU warm-up wait (bit $2002/bpl "
+                    "twice) before enabling NMI -- a write to $2000 before "
+                    "the ~2-vblank post-reset window closes is silently "
+                    "dropped (#517/MAP-2026-08-24-1)")
             
             if assembly_score < 50:
                 issues.append(f"Low assembly code activity (score: {assembly_score})")
@@ -178,7 +203,11 @@ class ROMDiagnostics:
                 assembly_code_score=assembly_score,
                 overall_health=overall_health,
                 issues=issues,
-                recommendations=recommendations
+                recommendations=recommendations,
+                smoke_test_ran=smoke.smoke_test_ran,
+                smoke_test_nmi_fired=smoke.smoke_test_nmi_fired,
+                smoke_test_notes_detected=smoke.smoke_test_notes_detected,
+                smoke_test_error=smoke.smoke_test_error,
             )
             
         except Exception as e:
@@ -205,7 +234,45 @@ class ROMDiagnostics:
             issues=[error_msg],
             recommendations=["Ensure ROM file exists and is readable"]
         )
-    
+
+    def _run_smoke_test(self, rom_path: str):
+        """Run the execution-based smoke test (#517/PIPE-2026-08-24-1) and
+        translate its result into the three fields `diagnose_rom` folds
+        into `ROMDiagnosticResult`. Fails open (mirrors the diagnostics-
+        import guard `main.py:validate_rom` uses one level up): any
+        exception from the smoke test itself -- an emulator bug, not a ROM
+        defect -- must never crash or fail the rest of `diagnose_rom`,
+        so it's caught here and reported as `smoke_test_ran=False` with the
+        exception text preserved for `--verbose` debugging, not raised.
+        An unsupported mapper (`mapper_supported=False`, e.g. MMC1) is the
+        same "not checked" outcome, not a defect -- neither case adds an
+        issue in `diagnose_rom`.
+        """
+        from dataclasses import dataclass as _dataclass
+
+        @_dataclass
+        class _Summary:
+            smoke_test_ran: bool = False
+            smoke_test_nmi_fired: bool = False
+            smoke_test_notes_detected: bool = False
+            smoke_test_error: Optional[str] = None
+
+        try:
+            from debug.rom_smoke_test import run_smoke_test
+            result = run_smoke_test(rom_path)
+        except Exception as e:
+            return _Summary(smoke_test_error=f"smoke test could not run: {e}")
+
+        if not result.mapper_supported:
+            return _Summary(smoke_test_error=result.error)
+
+        return _Summary(
+            smoke_test_ran=True,
+            smoke_test_nmi_fired=result.nmi_fired,
+            smoke_test_notes_detected=result.notes_detected,
+            smoke_test_error=result.error,
+        )
+
     def _check_zero_bytes(self, prg_data: bytes) -> float:
         """Check percentage of zero bytes in PRG data."""
         if not prg_data:
